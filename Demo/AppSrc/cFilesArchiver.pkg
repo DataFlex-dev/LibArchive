@@ -1,0 +1,585 @@
+﻿Use Archive.h.pkg
+Use Classes\cDateTimeHandler.pkg
+
+Struct tArchiveFormat
+    String sFormat
+    Integer eFormat
+End_Struct
+
+Class cFilesArchiver is a cObject
+    Procedure Construct_Object
+        Forward Send Construct_Object
+
+        { DesignTime = False }
+        Property String[] psFileNamesToArchive
+        Property String psArchiveFileName
+        { EnumList = "ARCHIVE_FORMAT_CPIO, ARCHIVE_FORMAT_CPIO_POSIX, ARCHIVE_FORMAT_CPIO_BIN_LE, ARCHIVE_FORMAT_CPIO_BIN_BE, ARCHIVE_FORMAT_CPIO_SVR4_NOCRC" }
+        { EnumList += "ARCHIVE_FORMAT_CPIO_SVR4_CRC, ARCHIVE_FORMAT_CPIO_AFIO_LARGE, ARCHIVE_FORMAT_CPIO_PWB, ARCHIVE_FORMAT_SHAR, ARCHIVE_FORMAT_SHAR_BASE" }
+        { EnumList += "ARCHIVE_FORMAT_SHAR_DUMP, ARCHIVE_FORMAT_TAR, ARCHIVE_FORMAT_TAR_USTAR, ARCHIVE_FORMAT_TAR_PAX_INTERCHANGE, ARCHIVE_FORMAT_TAR_PAX_RESTRICTED" }
+        { EnumList += "ARCHIVE_FORMAT_TAR_GNUTAR, ARCHIVE_FORMAT_ISO9660, ARCHIVE_FORMAT_ISO9660_ROCKRIDGE, ARCHIVE_FORMAT_ZIP, ARCHIVE_FORMAT_EMPTY, ARCHIVE_FORMAT_AR" }
+        { EnumList += "ARCHIVE_FORMAT_AR_GNU, ARCHIVE_FORMAT_AR_BSD, ARCHIVE_FORMAT_MTREE, ARCHIVE_FORMAT_RAW, ARCHIVE_FORMAT_XAR, ARCHIVE_FORMAT_LHA, ARCHIVE_FORMAT_CAB" }
+        { EnumList += "ARCHIVE_FORMAT_RAR, ARCHIVE_FORMAT_7ZIP, ARCHIVE_FORMAT_WARC, ARCHIVE_FORMAT_RAR_V5" }
+        { InitialValue = ARCHIVE_FORMAT_ZIP }
+        Property Integer peArchiveFormat
+        { DesignTime = False }
+        Property Pointer ppArchive
+        { DesignTime = False }
+        Property tArchiveFormat[] pArchiveFormats
+
+        Object oDateTimeHandler is a cDateTimeHandler
+        End_Object
+
+        Send CreateArchiveFormats
+    End_Procedure
+
+    { Visibility = Private }
+    Procedure CreateArchiveFormats
+        tArchiveFormat[] ArchiveFormats
+        Integer iElement
+
+        Move "cpio" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_CPIO to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "cpio_posix" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_CPIO_POSIX to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "cpio_bin_le" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_CPIO_BIN_LE to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "cpio_bin_be" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_CPIO_BIN_BE to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "cpio_svr4_nocrc" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_CPIO_SVR4_NOCRC to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "cpio_svr4_crc" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_CPIO_SVR4_CRC to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "cpio_afio_large" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_CPIO_AFIO_LARGE to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "cpio_pwb" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_CPIO_PWB to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "shar" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_SHAR to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "shar_base" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_SHAR_BASE to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "shar_dump" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_SHAR_DUMP to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "tar" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_TAR to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "tar_ustar" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_TAR_USTAR to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "tar_pax_interchange" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_TAR_PAX_INTERCHANGE to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "tar_pax_restricted" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_TAR_PAX_RESTRICTED to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "tar_gnutar" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_TAR_GNUTAR to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "iso9660" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_ISO9660 to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "iso9660_rockridge" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_ISO9660_ROCKRIDGE to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "zip" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_ZIP to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "empty" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_EMPTY to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "ar" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_AR to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "ar_gnu" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_AR_GNU to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "ar_bsd" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_AR_BSD to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "mtree" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_MTREE to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "raw" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_RAW to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "xar" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_XAR to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "lha" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_LHA to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "cab" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_CAB to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "rar" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_RAR to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "7zip" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_7ZIP to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "warc" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_WARC to ArchiveFormats[iElement].eFormat
+        Increment iElement
+
+        Move "rar_v5" to ArchiveFormats[iElement].sFormat
+        Move ARCHIVE_FORMAT_RAR_V5 to ArchiveFormats[iElement].eFormat
+
+        Set pArchiveFormats to ArchiveFormats
+    End_Procedure
+
+    // Can be used to reset the object properties
+    Procedure Init
+        String[] sFileNames
+
+        Set psFileNamesToArchive to sFileNames
+        Set psArchiveFileName to ""
+    End_Procedure
+
+    { Visibility = Private }
+    Procedure FreeArchiveWrite
+        Pointer pArchive
+        Void_Type iVoid
+
+        Get ppArchive to pArchive
+        If (pArchive <> 0) Begin
+            Move (archive_write_free (pArchive)) to iVoid
+            Set ppArchive to 0
+        End
+    End_Procedure
+
+    { Visibility = Private }
+    Procedure OpenNewArchive
+        Pointer pArchive
+
+        Send FreeArchiveWrite // in case the developer forgot to do this
+        Move (archive_write_new ()) to pArchive
+        Set ppArchive to pArchive
+    End_Procedure
+
+    Procedure WriteFilesToArchive
+        Boolean bOk
+
+        Send OpenNewArchive
+        Get SetArchiveFormat to bOk
+        If (bOk) Begin
+            Get SetArchiveFileName to bOK
+            If (bOk) Begin
+                Send AddFilesToArchive
+                Get FinishAndCloseArchive to bOk
+            End
+        End
+    End_Procedure
+
+    { Visibility = Private }
+    Function FinishAndCloseArchive Returns Boolean
+        Pointer pArchive
+        Integer iResult
+
+        Get ppArchive to pArchive
+        If (pArchive <> 0) Begin
+            Move (archive_write_close (pArchive)) to iResult
+            If (iResult <> ARCHIVE_OK) Begin
+                Send HandleArchiveError 'Close Archive Failed'
+            End
+            Send FreeArchiveWrite
+        End
+        Else Begin
+            Error DFERR_PROGRAM "Invalid use: Archive Pointer is zero"
+        End
+
+        Function_Return (iResult = ARCHIVE_OK)
+    End_Function
+
+    { Visibility = Private }
+    Procedure AddFilesToArchive
+        Integer iFileElements iFileElement iFileAttributes
+        Boolean bOk
+        Pointer pArchive
+        String[] sFileNamesToArchive
+        String sFileName
+
+        Get ppArchive to pArchive
+        If (pArchive <> 0) Begin
+            Get psFileNamesToArchive to sFileNamesToArchive
+            Move (SizeOfArray (sFileNamesToArchive)) to iFileElements
+            If (iFileElements > 0) Begin
+                Decrement iFileElements
+
+                For iFileElement from 0 to iFileElements
+                    Move (Trim (sFileNamesToArchive[iFileElement])) to sFileName
+                    Move (GetFileAttributes (sFileName)) to iFileAttributes
+                    If (iFileAttributes <> INVALID_FILE_ATTRIBUTES) Begin
+                        If (not (IsFlagIn (FILE_ATTRIBUTE_DIRECTORY, iFileAttributes))) Begin
+                            Send WriteFileToArchive sFileName pArchive
+                        End
+                        Else Begin
+                            Send AddFolder sFileName (ExtractFilePath (sFileName))
+                        End
+                    End
+                    Else Begin
+                        Error DFERR_OPERATOR (sFileName * 'is neither a file or a folder')
+                    End
+                Loop
+            End
+        End
+    End_Procedure
+    
+    { Description = "Gets called by AddFilesToArchive" }
+    { Visibility = Private }
+    Procedure WriteFileToArchive String sFileName Pointer pArchive
+        UChar[] ucData
+        Integer iRetval iFileSize iSeconds
+        String sFileNameWithoutPath
+        Void_Type iVoid
+        Pointer pArchiveEntry
+        
+        Get FileContents sFileName (&ucData) to iRetval
+        If (iRetval > 0) Begin
+            Move (archive_entry_new ()) to pArchiveEntry
+            Get FileFolderCreationUnixDateTime sFileName to iSeconds
+            Move (ExtractFileName (sFileName)) to sFileNameWithoutPath
+            Move (archive_entry_set_mtime (pArchiveEntry, iSeconds, 0)) to iVoid
+            Move (SizeOfArray (ucData)) to iFileSize
+            Move (archive_entry_set_pathname (pArchiveEntry, AddressOf (sFileNameWithoutPath))) to iVoid
+            Move (archive_entry_set_size (pArchiveEntry, iFileSize)) to iVoid
+            Move (archive_entry_set_perm (pArchiveEntry, ARCHIVE_FOR_REGULAR_FILES)) to iVoid
+            Move (archive_entry_set_filetype (pArchiveEntry, AE_IFREG)) to iVoid
+            Move (archive_write_header (pArchive, pArchiveEntry)) to iRetval
+            If (iRetval = ARCHIVE_OK) Begin
+                Move (archive_write_data (pArchive, AddressOf (ucData), iFileSize)) to iRetval
+            End
+            Else Begin
+                Send HandleArchiveError 'Write header failed'
+            End
+            Move (archive_entry_free (pArchiveEntry)) to iVoid
+        End
+    End_Procedure
+
+    Function FileFolderCreationUnixDateTime String sFolderPath Returns Integer
+        Handle hFileFind
+        Integer iVoid
+        tWin32FindDataW Win32FindData
+        DateTime dtFolderCreated
+        Integer iUnixTime
+
+        Move (winFindFirstFileW (sFolderPath, AddressOf(Win32FindData))) to hFileFind
+        If (hFileFind <> INVALID_HANDLE_VALUE) Begin
+            Get FileTimeToDateTime of oDateTimeHandler Win32FindData.ftCreationTime to dtFolderCreated
+            Get DateTimeToUnixTime of oDateTimeHandler dtFolderCreated to iUnixTime
+            Move (winFindClose (hFileFind)) to iVoid
+        End
+
+        Function_Return iUnixTime
+    End_Function
+
+    Procedure AddFolder String sFolderPath String sBasePath
+        Pointer pDirEntry pArchive
+        Integer iSeconds iPos iVoid eResult
+        String sFolder
+
+        Get FileFolderCreationUnixDateTime sFolderPath to iSeconds
+
+        Move (archive_entry_new ()) to pDirEntry
+        Move (Trim (Replace (sBasePath, sFolderPath, ''))) to sFolder
+        If (sFolder = "") Begin
+            Move (SysConf (SYSCONF_DIR_SEPARATOR)) to sFolder // Without the archive_write_header will GPF
+        End
+        Move (archive_entry_set_pathname (pDirEntry, AddressOf (sFolder))) to iVoid
+        Move (archive_entry_set_perm (pDirEntry, ARCHIVE_FOR_REGULAR_FILES)) to iVoid
+        Move (archive_entry_set_filetype (pDirEntry, AE_IFDIR)) to iVoid
+        Move (archive_entry_set_mtime (pDirEntry, iSeconds, 0)) to iVoid
+        Get ppArchive to pArchive
+        Move (archive_write_header (pArchive, pDirEntry)) to eResult
+        If (eResult < ARCHIVE_OK) Begin
+            Send HandleArchiveError ('Write Header failed for root directory' * sFolderPath)
+        End
+
+        Get AddFolderRecursive pArchive sFolderPath sBasePath to eResult
+        Move (archive_entry_free (pDirEntry)) to iVoid
+    End_Procedure
+
+    Function AddFolderRecursive Pointer pArchive String sFolderPath String sBasePath Returns Integer
+        Handle hFileFind
+        tWin32FindDataW Win32FindData
+        String sFileName sFolderPathWithFileMask sFullPath
+        Integer iRetval eResult iFileSize
+        Boolean bOk
+        Void_Type iVoid
+        UChar[] ucData
+        Pointer pFileEntry
+
+        // Check if the path is already ending on a file mask
+        If (Right (sFolderPath, Length (SysConf (SYSCONF_FILE_MASK))) <> SysConf (SYSCONF_FILE_MASK)) Begin
+            // if the path does not end on a backslash
+            If (Right (sFolderPath, 1) <> SysConf (SYSCONF_DIR_SEPARATOR)) Begin
+                Move (sFolderPath - SysConf (SYSCONF_DIR_SEPARATOR)) to sFolderPath
+            End
+            // Add files mask to find the files in the folder
+            If (Right (sFolderPath, Length (SysConf (SYSCONF_FILE_MASK))) <> SysConf (SYSCONF_FILE_MASK)) Begin
+                Move (sFolderPath - SysConf (SYSCONF_FILE_MASK)) to sFolderPathWithFileMask
+            End
+        End
+        Else Begin
+            Move sFolderPath to sFolderPathWithFileMask
+        End
+
+        Move (winFindFirstFileW (sFolderPathWithFileMask, AddressOf(Win32FindData))) to hFileFind
+        If (hFileFind <> INVALID_HANDLE_VALUE) Begin
+            Repeat
+                Move (PointerToWString (AddressOf (Win32FindData) + SizeOfType (tWin32FindData) - MAX_PATH - MAX_ALTPATH)) to sFileName
+                If (sFileName <> '.' and sFileName <> '..') Begin
+                    If (IsFlagIn (FILE_ATTRIBUTE_DIRECTORY, Win32FindData.dwFileAttributes)) Begin
+                        Send AddFolder (sFolderPath - sFileName) sBasePath
+                    End
+                    Else Begin
+                        Move (sFolderPath - sFileName) to sFullPath
+                        Get FileContents sFullPath (&ucData) to iRetval
+                        If (iRetval > 0) Begin
+                            Move (archive_entry_new ()) to pFileEntry
+                            Move (SizeOfArray (ucData)) to iFileSize
+                            Move (Replace (sBasePath, sFullPath, '')) to sFileName
+                            If (Left (sFileName, 1) = SysConf (SYSCONF_DIR_SEPARATOR)) Begin
+                                Move (Remove (sFileName, 1, 1)) to sFileName
+                            End
+                            Move (archive_entry_set_pathname (pFileEntry, AddressOf (sFileName))) to iVoid
+                            Move (archive_entry_set_size (pFileEntry, iFileSize)) to iVoid
+                            Move (archive_entry_set_perm (pFileEntry, ARCHIVE_FOR_REGULAR_FILES)) to iVoid
+                            Move (archive_entry_set_filetype (pFileEntry, AE_IFREG)) to iVoid
+                            Move (archive_write_header (pArchive, pFileEntry)) to iRetval
+                            If (iRetval = ARCHIVE_OK) Begin
+                                Move (archive_write_data (pArchive, AddressOf (ucData), iFileSize)) to iRetval
+                            End
+                            Move (archive_entry_free (pFileEntry)) to iVoid
+                        End
+                    End
+                End
+                Move (winFindNextFileW (hFileFind, AddressOf (Win32FindData))) to iRetval
+                // If iRetval = false the function call fails but GetLastError fails to tell me if
+                // this was because we do not find any files anymore.
+            Until (not (iRetval))
+
+            Move (winFindClose (hFileFind)) to iVoid
+        End
+
+        Function_Return eResult
+    End_Function
+
+    Function FileContents String sFileName UChar[] ByRef ucFileData Returns Integer
+        Integer iChannel eDataReadStatus
+
+        Move (Seq_New_Channel ()) to iChannel
+        If (iChannel >= DF_SEQ_CHANNEL_MIN and iChannel <= DF_SEQ_CHANNEL_MAX) Begin
+            Direct_Input channel iChannel ('BINARY:' + sFileName)
+            If (not (SeqEof)) Begin
+                Read_Block channel iChannel ucFileData -1
+                Move (SizeOfArray (ucFileData) > 0) to eDataReadStatus
+            End
+            Send Seq_Release_Channel iChannel
+            Close_Input channel iChannel
+        End
+        Else Begin
+            Move -1 to eDataReadStatus
+        End
+
+        // Will be -1 if there is no free channel
+        // Will be 0 when the file could not be opened for reading or does not contain data
+        Function_Return eDataReadStatus
+    End_Function
+
+    { Visibility = Private }
+    Function SetArchiveFileName Returns Boolean
+        String sArchiveFileName
+        Pointer pArchive
+        Integer eResult
+
+        Get psArchiveFileName to sArchiveFileName
+        If (sArchiveFileName <> "") Begin
+            Get ppArchive to pArchive
+            If (pArchive <> 0) Begin
+                Move (archive_write_open_filename (pArchive, AddressOf (sArchiveFileName))) to eResult
+                If (eResult <> ARCHIVE_OK) Begin
+                    Send HandleArchiveError 'Set Archive Filename Failed'
+                End
+            End
+        End
+
+        Function_Return (eResult = ARCHIVE_OK)
+    End_Function
+
+    { Visibility = Private }
+    Function SetArchiveFormat Returns Boolean
+        Pointer pArchive
+        Integer eArchiveFormat eRetval
+
+        Get ppArchive to pArchive
+        If (pArchive <> 0) Begin
+            Get peArchiveFormat to eArchiveFormat
+            Case Begin
+                Case (eArchiveFormat = ARCHIVE_FORMAT_CPIO)
+                    Move (archive_write_set_format_cpio (pArchive)) to eRetval
+                    Case Break
+                Case (eArchiveFormat = ARCHIVE_FORMAT_CPIO_POSIX)
+                    Move (archive_write_set_format_cpio_odc (pArchive)) to eRetval
+                    Case Break
+                Case (eArchiveFormat = ARCHIVE_FORMAT_CPIO_BIN_LE)
+                Case (eArchiveFormat = ARCHIVE_FORMAT_CPIO_BIN_BE)
+                    Move (archive_write_set_format_cpio_bin (pArchive)) to eRetval
+                    Case Break
+                Case (eArchiveFormat = ARCHIVE_FORMAT_CPIO_SVR4_NOCRC)
+                Case (eArchiveFormat = ARCHIVE_FORMAT_CPIO_SVR4_CRC)
+                Case (eArchiveFormat = ARCHIVE_FORMAT_CPIO_AFIO_LARGE)
+                    Error DFERR_PROGRAM "There is no function for CPIO_SRV4_NOCRC, CPIO_SRV4_CRC or CPIO_AFIO_LARGE"
+                    Case Break
+                Case (eArchiveFormat = ARCHIVE_FORMAT_CPIO_PWB)
+                    Move (archive_write_set_format_cpio_pwb (pArchive)) to eRetval
+                    Case Break
+                Case (eArchiveFormat = ARCHIVE_FORMAT_SHAR)
+                Case (eArchiveFormat = ARCHIVE_FORMAT_SHAR_BASE)
+                    Move (archive_write_set_format_shar (pArchive)) to eRetval
+                    Case Break
+                Case (eArchiveFormat = ARCHIVE_FORMAT_SHAR_DUMP)
+                    Move (archive_write_set_format_shar_dump (pArchive)) to eRetval
+                    Case Break
+                Case (eArchiveFormat = ARCHIVE_FORMAT_TAR)
+                    Move (archive_write_set_format_pax (pArchive)) to eRetval
+                    Case Break
+                Case (eArchiveFormat = ARCHIVE_FORMAT_TAR_USTAR)
+                    Move (archive_write_set_format_ustar (pArchive)) to eRetval
+                    Case Break
+                Case (eArchiveFormat = ARCHIVE_FORMAT_TAR_PAX_INTERCHANGE)
+                Case (eArchiveFormat = ARCHIVE_FORMAT_TAR_PAX_RESTRICTED)
+                    Move (archive_write_set_format_pax_restricted (pArchive)) to eRetval
+                    Case Break
+                Case (eArchiveFormat = ARCHIVE_FORMAT_TAR_GNUTAR)
+                    Move (archive_write_set_format_gnutar (pArchive)) to eRetval
+                    Case Break
+                Case (eArchiveFormat = ARCHIVE_FORMAT_ISO9660)
+                Case (eArchiveFormat = ARCHIVE_FORMAT_ISO9660_ROCKRIDGE)
+                    Move (archive_write_set_format_iso9660 (pArchive)) to eRetval
+                    Case Break
+                Case (eArchiveFormat = ARCHIVE_FORMAT_ZIP)
+                    Move (archive_write_set_format_zip (pArchive)) to eRetval
+                    Case Break
+                Case (eArchiveFormat = ARCHIVE_FORMAT_EMPTY)
+                    Error DFERR_PROGRAM "There is no function for EMPTY"
+                    Case Break
+                Case (eArchiveFormat = ARCHIVE_FORMAT_AR)
+                    Move (archive_write_set_format_ar_svr4 (pArchive)) to eRetval
+                    Case Break
+                Case (eArchiveFormat = ARCHIVE_FORMAT_AR_GNU)
+                    Move (archive_write_set_format_ar_gnu (pArchive)) to eRetval
+                    Case Break
+                Case (eArchiveFormat = ARCHIVE_FORMAT_AR_BSD)
+                    Move (archive_write_set_format_ar_bsd (pArchive)) to eRetval
+                    Case Break
+                Case (eArchiveFormat = ARCHIVE_FORMAT_MTREE)
+                    Move (archive_write_set_format_mtree (pArchive)) to eRetval
+                    Case Break
+                Case (eArchiveFormat = ARCHIVE_FORMAT_RAW)
+                    Move (archive_write_set_format_raw (pArchive)) to eRetval
+                    Case Break
+                Case (eArchiveFormat = ARCHIVE_FORMAT_XAR)
+                    Move (archive_write_set_format_xar (pArchive)) to eRetval
+                    Case Break
+                Case (eArchiveFormat = ARCHIVE_FORMAT_LHA)
+                Case (eArchiveFormat = ARCHIVE_FORMAT_CAB)
+                Case (eArchiveFormat = ARCHIVE_FORMAT_RAR)
+                    Error DFERR_PROGRAM "There is no function for LHA, CAB, RAR"
+                    Case Break
+                Case (eArchiveFormat = ARCHIVE_FORMAT_7ZIP)
+                    Move (archive_write_set_format_7zip (pArchive)) to eRetval
+                    Case Break
+                Case (eArchiveFormat = ARCHIVE_FORMAT_WARC)
+                    Move (archive_write_set_format_warc (pArchive)) to eRetval
+                    Case Break
+                Case (eArchiveFormat = ARCHIVE_FORMAT_RAR_V5)
+                    Error DFERR_PROGRAM "There is no function for RAR_V5"
+                    Case Break
+            Case End
+
+            If (eRetval <> ARCHIVE_OK) Begin
+                Send HandleArchiveError 'SetArchiveFormat failed'
+            End
+        End
+        Else Begin
+            Error DFERR_PROGRAM "SetArchiveFormat Invalid use: Archive Pointer is zero"
+        End
+
+        Function_Return (eRetval = ARCHIVE_OK)
+    End_Function
+
+    // Add a file to the array of files to add to the archive
+    Procedure AddFileToArchive String sFileNameWithPath
+        String[] sFileNamesToArchive
+
+        Get psFileNamesToArchive to sFileNamesToArchive
+        Move sFileNameWithPath to sFileNamesToArchive[-1]
+        Set psFileNamesToArchive to sFileNamesToArchive
+    End_Procedure
+
+    // Instead of calling AddFileToArchive you can fill the array of filenames directly.
+    Procedure AddMultipleFiles String[] sFileNames
+        Set psFileNamesToArchive to sFileNames
+    End_Procedure
+
+    { Visibility = Private }
+    Procedure HandleArchiveError String sErrorText
+        Pointer pArchive pError
+        String sErrorString
+        Integer iErrorNumber
+
+        Get ppArchive to pArchive
+        If (pArchive <> 0) Begin
+            Move (archive_errno (pArchive)) to iErrorNumber
+            Move (archive_error_string (pArchive)) to pError
+            If (pError <> 0) Begin
+                Move (PointerToString (pError)) to sErrorString
+                Move (SFormat ("%1 %2 Code: %3", sErrorText, sErrorString, iErrorNumber)) to sErrorText
+            End
+            Else Begin
+                Move (SFormat ("%1 Code: %2", sErrorText, iErrorNumber)) to sErrorText
+            End
+            Error DFERR_PROGRAM sErrorText
+        End
+    End_Procedure
+End_Class
