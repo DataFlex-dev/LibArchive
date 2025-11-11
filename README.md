@@ -1,21 +1,36 @@
-# Library Template
+# LibArchive Library
 
 ---
+Libarchive is a free and open-source library for reading and writing various archive and compression formats. It is written in C and works on most Unix-like systems and Windows.
+
+See: https://en.wikipedia.org/wiki/Libarchive
+See: https://github.com/libarchive/libarchive
+
 
 ## Library Information
 
-This repository is a template for developing DataFlex Libraries. The `Library` directory should contain the library, and the `Demo` directory should be a demo workspace that uses the library. (Optional) the `help` directory can be used for documentation and release notes.
+The library in this repository contains a Windows demo / test application that let you select or enter file and folder names and choose what archive to use.
+
+Not all functions that are present in the DLL are included yet or available with a test program/code
+
+No unit testing available yet either.
 
 ###### External Components
 
 If applicable, list the external components used in the table below:
 
-| Component | Version |
-| --------- | ------- |
-|           |         |
+| Component           | Version | 
+| ------------------- | ------- | 
+| archive.dll         |         | 
+| bz2.dll             |         | 
+| libcrypto-3-x64.dll | 3.4.0.0 | 
+| liblzma.dll         | 5.6.3   | 
+| lz4.dll             |         | 
+| zlib1.dll           | 1.3.1.0 | 
+| zstd.dll            | 1.5.6.0 | 
 
 ## General Information
 
 | Product  | Version           |
 | -------- | ----------------- |
-| DataFlex | 23.0, 24.0, 25.0  |
+| DataFlex | 25.0              |

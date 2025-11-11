@@ -13,16 +13,16 @@ The purpose of this demo workspace is to provide examples and usage scenarios fo
 - `DDSrc/`: Contains Data Dictionary source files.
 - `Programs/`: Compiled executable files for the demo application.
 
-##### Notes
-
-- `AppHtml/DfEngine` and `AppHtml/CssThemes` should not be included within the demo
-
-
 ## Getting Started
 
 1. Ensure that the library in the `Library` directory is properly set up.
 2. Open the demo workspace in DataFlex.
 3. Compile and run the demo application to see the library in action.
+
+## DLLs
+The programs folder contains 7 64 bit DLL files. At this moment there is no plan to make 32 bit DLLs.
+The archive.dll file is the main file, the others are used when needed.
+These files, when you use the library in your own environment, need to be present as well in your programs folder. The files are plain DLLs, it is not COM, no regsvr32 can and should be used.
 
 ## Requirements
 
