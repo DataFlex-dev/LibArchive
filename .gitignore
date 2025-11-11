@@ -7,7 +7,6 @@
 **.log
 **/IdeSrc/*
 **/LoginEncryptionKey.inc
-Demo/Programs/**.dll
 Demo/AppHtml/CssThemes
 Demo/AppHtml/DfEngine
 Demo/AppHtml/web.config
