@@ -10,4 +10,4 @@ Is$Win64=True
 [Projects]
 Project0=Demo.src
 [Libraries]
-Lib1=..\..\DateTime\Library\DateTime.sws
+Lib2=..\Library\LibArchive.sws
