@@ -1,8 +1,12 @@
-[Properties]
-Version=25.0
-[WorkspacePaths]
-ConfigFile=.\Programs\Config.ws
-[Preferences]
-DefaultFormHeight=12
-[Libraries]
-Lib1=AppSrc\Libraries\DateAndTime\Library\DateTime.sws
+{
+    "dependencies": [
+        "Appsrc/Libraries/DateAndTime/Library/DateTime.sws"
+    ],
+    "df": 26.0,
+    "paths": {
+        "appSrc": "Appsrc"
+    },
+    "studio": {
+        "DefaultFormHeight": 12
+    }
+}
