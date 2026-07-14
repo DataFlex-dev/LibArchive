@@ -1,6 +1,6 @@
 # LibArchive for DataFlex
 
-DataFlex 25 wrapper and 64-bit Windows demo for [libarchive](https://github.com/libarchive/libarchive). The library can create several archive formats and now provides a security-focused ZIP reader for inspecting and extracting untrusted uploads.
+DataFlex 26 wrapper and 64-bit Windows demo for [libarchive](https://github.com/libarchive/libarchive). The library can create several archive formats and now provides a security-focused ZIP reader for inspecting and extracting untrusted uploads.
 
 ## Safe ZIP inspection and extraction
 
@@ -47,7 +47,7 @@ Only unfiltered, single-volume, non-ZIP64 seekable ZIP input with stored or defl
 
 ## Tests
 
-The test runner generates its fixtures, compiles the DataFlex test executable, runs the security assertions, and removes its disposable data:
+The dedicated `ArchiveReaderTests` project in `Library\LibArchive.sws` uses DFUnit for test discovery, reporting, assertions, and process exit codes. The PowerShell entry point generates adversarial ZIP fixtures, builds the DF26 project, runs it in console mode, and removes its disposable data:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Demo\Tests\RunArchiveReaderTests.ps1
@@ -72,5 +72,5 @@ The bundled `archive.dll` currently reports libarchive 3.7.7. Treat native DLL u
 
 ## Requirements
 
-- DataFlex 25.0, x64
+- DataFlex 26.0, x64
 - The native DLL set from `Demo\Programs`

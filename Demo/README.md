@@ -4,7 +4,7 @@ This directory should include a demo DataFlex workspace that uses the library in
 
 ## Overview
 
-The workspace contains the archive-writer GUI and the headless security tests for `cArchiveReader`.
+The workspace contains the archive-writer GUI. The DFUnit security-test project for `cArchiveReader` is part of the migrated `Library\LibArchive.sws` workspace.
 
 ## Structure
 
@@ -12,7 +12,7 @@ The workspace contains the archive-writer GUI and the headless security tests fo
 - `Data/`: Includes any sample data files required for the demo.
 - `DDSrc/`: Contains Data Dictionary source files.
 - `Programs/`: Compiled executable files for the demo application.
-- `Tests/RunArchiveReaderTests.ps1`: Generates adversarial ZIP fixtures, compiles the test project, and runs it.
+- `Tests/RunArchiveReaderTests.ps1`: Generates adversarial ZIP fixtures, builds the library's DFUnit project, and runs it.
 
 ## Getting Started
 
@@ -26,7 +26,7 @@ To exercise inspection and bounded extraction directly:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Tests\RunArchiveReaderTests.ps1
 ```
 
-Pass `-KeepFixtures` to retain generated archives and extracted output for debugging. The runner uses `df-cli build` with the DataFlex 25 x64 toolchain by default; override these with `-DfCli` or `-Toolchain` when needed.
+Pass `-KeepFixtures` to retain generated archives, extracted output, and the DFUnit XML report for debugging. The runner uses `df-cli build` with the DataFlex 26 x64 toolchain by default; override these with `-DfCli` or `-Toolchain` when needed.
 
 ## DLLs
 The programs folder contains 7 64 bit DLL files. At this moment there is no plan to make 32 bit DLLs.

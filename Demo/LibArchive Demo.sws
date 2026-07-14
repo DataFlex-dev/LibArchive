@@ -9,6 +9,5 @@ Is$WebApp=False
 Is$Win64=True
 [Projects]
 Project0=Demo.src
-Project1=ArchiveReaderTests.src
 [Libraries]
 Lib2=..\Library\LibArchive.sws

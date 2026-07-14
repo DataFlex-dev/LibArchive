@@ -1,0 +1,21 @@
+Use DFUnit.pkg
+
+// The repository keeps libarchive and its native dependencies beside the demo
+// executable. Add that directory before DFUnit constructs and runs the tests.
+External_Function ArchiveReaderTestsSetDllDirectoryW "SetDllDirectoryW" Kernel32.dll ;
+    WString wDirectory ;
+    Returns Integer
+
+Object oApplication is a cApplication
+End_Object
+
+Integer iDllDirectoryResult
+WString wNativeDirectory
+Move (FullPathName("..\Demo\Programs")) to wNativeDirectory
+Move (ArchiveReaderTestsSetDllDirectoryW(wNativeDirectory)) to iDllDirectoryResult
+
+Object oTestApplication is a cDFUnitTestApplication
+    Set psTestFixtureName to "LibArchive tests"
+
+    Use Tests\ArchiveReader_spec.pkg
+End_Object

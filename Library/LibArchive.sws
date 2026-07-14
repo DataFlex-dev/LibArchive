@@ -1,11 +1,19 @@
 {
     "dependencies": [
-        "Appsrc/Libraries/DateAndTime/Library/DateTime.sws"
+        "Appsrc/Libraries/DateAndTime/Library/DateTime.sws",
+        {
+            "source": "https://github.com/DataFlex-dev/DFUnit.git",
+            "sws": "DFUnit/DFUnit.sws",
+            "version": "26-0-package-manager"
+        }
     ],
     "df": 26.0,
     "paths": {
         "appSrc": "Appsrc"
     },
+    "projects": [
+        "ArchiveReaderTests.src"
+    ],
     "studio": {
         "DefaultFormHeight": 12
     }

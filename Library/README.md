@@ -35,3 +35,13 @@ The detailed result message is intended for trusted logs. Server endpoints shoul
 - Keep the native libarchive DLL and its dependencies current.
 
 The reader accepts only plain, single-volume, non-ZIP64 seekable ZIP files whose entries use stored or deflate compression. It requires matching local and central compression metadata, rejects encryption markers in either header, and validates the end record, every bounded central-directory record, and each compressed-data extent before libarchive can allocate or rescan seekable data. It deliberately avoids `archive_read_extract`; application-owned block writes allow actual decompressed bytes to be checked before they reach disk.
+
+## Tests
+
+`LibArchive.sws` contains the DFUnit-based `ArchiveReaderTests` project. From the repository root, generate its adversarial ZIP fixtures, build it with the DataFlex 26 x64 toolchain, and run it in console mode with:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Demo\Tests\RunArchiveReaderTests.ps1
+```
+
+The script returns a failing process exit code when the build or any DFUnit test fails. Pass `-KeepFixtures` only when the generated archives or JUnit-compatible XML report are needed for debugging.

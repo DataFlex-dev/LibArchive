@@ -8,7 +8,8 @@
 **.log
 **/IdeSrc/*
 **/LoginEncryptionKey.inc
-/Demo/Data/ArchiveReaderTests/
+/Library/Data/ArchiveReaderTests/
+/Library/DfPkg/
 Demo/AppHtml/CssThemes
 Demo/AppHtml/DfEngine
 Demo/AppHtml/web.config

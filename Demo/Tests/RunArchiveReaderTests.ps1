@@ -1,16 +1,18 @@
 [CmdletBinding()]
 param(
     [string] $DfCli = 'df-cli',
-    [string] $Toolchain = '25.0.0+windows-64',
+    [string] $Toolchain = '26.0.0+windows-64',
     [switch] $KeepFixtures
 )
 
 $ErrorActionPreference = 'Stop'
-$demoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$workspace = Join-Path $demoRoot 'LibArchive Demo.sws'
-$fixtureRoot = Join-Path $demoRoot 'Data\ArchiveReaderTests'
-$testExe = Join-Path $demoRoot 'Programs\ArchiveReaderTests64.exe'
-$logFile = Join-Path $fixtureRoot 'results.log'
+$repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+$libraryRoot = Join-Path $repoRoot 'Library'
+$workspace = Join-Path $libraryRoot 'LibArchive.sws'
+$fixtureRoot = Join-Path $libraryRoot 'Data\ArchiveReaderTests'
+$testExe = Join-Path $libraryRoot 'Programs\ArchiveReaderTests64.exe'
+$nativeRoot = Join-Path $repoRoot 'Demo\Programs'
+$resultsFile = Join-Path $fixtureRoot 'results.xml'
 
 Add-Type -AssemblyName System.IO.Compression
 
@@ -291,7 +293,7 @@ function Corrupt-CompressedPayload {
 }
 
 # Keep all generated and extracted data under one verified, disposable root.
-$expectedFixtureRoot = [IO.Path]::GetFullPath((Join-Path $demoRoot 'Data\ArchiveReaderTests'))
+$expectedFixtureRoot = [IO.Path]::GetFullPath((Join-Path $libraryRoot 'Data\ArchiveReaderTests'))
 if ([IO.Path]::GetFullPath($fixtureRoot) -ne $expectedFixtureRoot) {
     throw 'Refusing to clean an unexpected fixture path.'
 }
@@ -461,7 +463,7 @@ try {
     Corrupt-CompressedPayload $corruptPath
 
     # If traversal ever regresses, the crafted path still lands inside this
-    # disposable fixture root rather than beside it in Demo\Data.
+    # disposable fixture root rather than beside it in Library\Data.
     New-Item -ItemType Directory -Path (Join-Path $fixtureRoot 'sandbox') | Out-Null
 
     & $DfCli build $workspace --project 'ArchiveReaderTests.src' --toolchain $Toolchain --rebuild
@@ -469,10 +471,30 @@ try {
         throw "DataFlex build failed with exit code $LASTEXITCODE."
     }
 
-    $process = Start-Process -FilePath $testExe -WorkingDirectory $demoRoot -Wait -PassThru
-    if (Test-Path -LiteralPath $logFile) {
-        Get-Content -LiteralPath $logFile
+    $savedPath = $env:PATH
+    try {
+        $env:PATH = $nativeRoot + [IO.Path]::PathSeparator + $savedPath
+        $process = Start-Process -FilePath $testExe -WorkingDirectory $libraryRoot -Wait -PassThru `
+            -NoNewWindow -ArgumentList @('--console', '--output', $resultsFile)
+    } finally {
+        $env:PATH = $savedPath
     }
+
+    if (-not (Test-Path -LiteralPath $resultsFile)) {
+        throw 'DFUnit did not produce its XML result file.'
+    }
+
+    [xml] $results = Get-Content -Raw -LiteralPath $resultsFile
+    $testCases = @($results.SelectNodes('//testcase'))
+    if ($testCases.Count -eq 0) {
+        throw 'DFUnit did not discover any archive-reader tests.'
+    }
+    $assertionCount = ($testCases | Measure-Object -Property assertions -Sum).Sum
+    $failureCount = @($results.SelectNodes('//failure')).Count
+    $errorCount = @($results.SelectNodes('//error')).Count
+    Write-Output ("DFUnit: {0} tests, {1} assertions, {2} failures, {3} errors." -f `
+        $testCases.Count, $assertionCount, $failureCount, $errorCount)
+
     if ($process.ExitCode -ne 0) {
         throw "Archive reader tests failed with exit code $($process.ExitCode)."
     }
