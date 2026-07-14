@@ -165,6 +165,15 @@ Define ARCHIVE_FAILED   for -25 /* Current operation cannot complete. */
 /* But if write_header is "fatal," then this archive is dead and useless. */
 Define ARCHIVE_FATAL    for -30 /* No more operations are possible. */
 
+// Encryption detection can return an indeterminate result. Security-sensitive
+// callers should fail closed for both values rather than treating them as "not
+// encrypted".
+Define ARCHIVE_READ_FORMAT_ENCRYPTION_UNSUPPORTED for -2
+Define ARCHIVE_READ_FORMAT_ENCRYPTION_DONT_KNOW   for -1
+
+// Win32 GetFileAttributes returns all bits set when the path cannot be read.
+Define ARCHIVE_INVALID_FILE_ATTRIBUTES for -1
+
 Define ARCHIVE_READ_WRITE_EXECUTE_FOR_ALL           for 511 // 0777    rwxrwxrwx    Read/Write/execute for All
 Define ARCHIVE_COMMON_FOR_EXECUTABLE_FILES_AND_DIRS for 493 // 0755    rwxr-xr-x    Common for executable files/dirs
 Define ARCHIVE_FOR_REGULAR_FILES                    for 420 // 0644    rw-r--r--    Common for regular files
@@ -247,6 +256,35 @@ What is does:
 External_Function archive_entry_free "archive_entry_free" archive.dll ;
     Pointer pEntry ;
     Returns Void_Type
+
+// Read-only entry metadata. These functions do not decompress the entry body.
+External_Function archive_entry_size "archive_entry_size" archive.dll ;
+    Pointer pEntry ;
+    Returns BigInt
+
+External_Function archive_entry_size_is_set "archive_entry_size_is_set" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+External_Function archive_entry_pathname_w "archive_entry_pathname_w" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+External_Function archive_entry_filetype "archive_entry_filetype" archive.dll ;
+    Pointer pEntry ;
+    Returns UShort
+
+External_Function archive_entry_symlink_w "archive_entry_symlink_w" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+External_Function archive_entry_hardlink_w "archive_entry_hardlink_w" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+External_Function archive_entry_is_encrypted "archive_entry_is_encrypted" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
 
 /*
 A function that allocates and returns a new, empty archive entry object.
@@ -780,6 +818,45 @@ External_Function archive_read_next_header "archive_read_next_header" archive.dl
 External_Function archive_read_next_header2 "archive_read_next_header2" archive.dll ;
     Pointer pArchive ;
     Pointer pArchiveEntry ;
+    Returns Integer
+
+// Wide filename support avoids losing Windows paths that cannot be represented
+// in the active ANSI code page. The block size is an I/O hint, not a limit.
+External_Function archive_read_open_filename_w "archive_read_open_filename_w" archive.dll ;
+    Pointer pArchive ;
+    WString wFileName ;
+    ULongPtr ulBlockSize ;
+    Returns Integer
+
+// Reads decompressed bytes for the current entry. A positive return value is a
+// byte count, zero is end-of-entry, and a negative value is an archive error.
+External_Function archive_read_data "archive_read_data" archive.dll ;
+    Pointer pArchive ;
+    Pointer pBuffer ;
+    ULongPtr ulBufferSize ;
+    Returns LongPtr
+
+External_Function archive_read_data_skip "archive_read_data_skip" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+External_Function archive_read_close "archive_read_close" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+External_Function archive_read_free "archive_read_free" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+// Returns the detected archive format after at least one header has been read.
+External_Function archive_format "archive_format" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+// Returns 1 when encryption was found, 0 when none was found, and one of the
+// ARCHIVE_READ_FORMAT_ENCRYPTION_* values when detection is inconclusive.
+External_Function archive_read_has_encrypted_entries "archive_read_has_encrypted_entries" archive.dll ;
+    Pointer pArchive ;
     Returns Integer
 
 /*

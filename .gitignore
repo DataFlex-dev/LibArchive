@@ -1,12 +1,14 @@
 **/config/classlist.xml
 **.dep
 **.prn
+**.err
 **.manifest
 **.dbg
 **.exe
 **.log
 **/IdeSrc/*
 **/LoginEncryptionKey.inc
+/Demo/Data/ArchiveReaderTests/
 Demo/AppHtml/CssThemes
 Demo/AppHtml/DfEngine
 Demo/AppHtml/web.config

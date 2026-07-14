@@ -248,7 +248,7 @@ Class cFilesArchiver is a cObject
                 For iFileElement from 0 to iFileElements
                     Move (Trim (sFileNamesToArchive[iFileElement])) to sFileName
                     Move (GetFileAttributes (sFileName)) to iFileAttributes
-                    If (iFileAttributes <> INVALID_FILE_ATTRIBUTES) Begin
+                    If (iFileAttributes <> ARCHIVE_INVALID_FILE_ATTRIBUTES) Begin
                         If (not (IsFlagIn (FILE_ATTRIBUTE_DIRECTORY, iFileAttributes))) Begin
                             Send WriteFileToArchive sFileName pArchive
                         End
