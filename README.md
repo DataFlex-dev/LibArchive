@@ -22,6 +22,8 @@ Object oPackageArchiveReader is a cArchiveReader
     Set piMaxCentralDirectoryBytes to 8388608
     Set piMaxEntries to 10000
     Set piMaxPathComponents to 100000
+    // Optional compatibility for a controlled producer that pads output blocks.
+    Set pbAllowTrailingZeroPadding to True
 End_Object
 
 tArchiveOperationResult Result
@@ -35,7 +37,7 @@ If (not(Result.bSuccess)) Begin
 End
 ```
 
-All limits must be positive. `piMaxArchiveBytes` bounds the uploaded ZIP itself; `piMaxTotalUncompressedBytes` is the sum of regular-file sizes, while `piMaxEntryUncompressedBytes` bounds each file. `piMaxCentralDirectoryBytes` limits metadata allocation before libarchive runs, and `piMaxPathComponents` conservatively bounds implicit directory creation work across the archive.
+All limits must be positive. `piMaxArchiveBytes` bounds the uploaded ZIP itself; `piMaxTotalUncompressedBytes` is the sum of regular-file sizes, while `piMaxEntryUncompressedBytes` bounds each file. `piMaxCentralDirectoryBytes` limits metadata allocation before libarchive runs, and `piMaxPathComponents` conservatively bounds implicit directory creation work across the archive. `pbAllowTrailingZeroPadding` defaults to `False`; when enabled it accepts only zero-filled bytes after a complete ZIP end record, and those bytes still count toward the archive-size limit.
 
 ## Security boundary
 

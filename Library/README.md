@@ -21,6 +21,7 @@ Configure positive values for:
 - `piMaxPathLength` (1-259)
 - `piMaxPathComponents`
 - `piReadBlockSize` (4 KiB-1 MiB)
+- `pbAllowTrailingZeroPadding` (default `False`)
 
 Defaults are 100 MiB for the archive, each entry, and the extracted total; 8 MiB of central-directory metadata; 10,000 entries; 240 relative-path characters; 100,000 aggregate path components; and 64 KiB read blocks.
 
@@ -34,7 +35,7 @@ The detailed result message is intended for trusted logs. Server endpoints shoul
 - Use an existing, application-owned, non-reparse destination parent that untrusted processes cannot modify.
 - Keep the native libarchive DLL and its dependencies current.
 
-The reader accepts only plain, single-volume, non-ZIP64 seekable ZIP files whose entries use stored or deflate compression. It requires matching local and central compression metadata, rejects encryption markers in either header, and validates the end record, every bounded central-directory record, and each compressed-data extent before libarchive can allocate or rescan seekable data. It deliberately avoids `archive_read_extract`; application-owned block writes allow actual decompressed bytes to be checked before they reach disk.
+The reader accepts only plain, single-volume, non-ZIP64 seekable ZIP files whose entries use stored or deflate compression. It requires matching local and central compression metadata, rejects encryption markers in either header, and validates the end record, every bounded central-directory record, and each compressed-data extent before libarchive can allocate or rescan seekable data. End-record validation requires physical EOF by default. Callers that control their ZIP producer may set `pbAllowTrailingZeroPadding` to accept only zero-filled writer block padding; arbitrary trailing content remains invalid and still counts toward `piMaxArchiveBytes`. The reader deliberately avoids `archive_read_extract`; application-owned block writes allow actual decompressed bytes to be checked before they reach disk.
 
 ## Tests
 

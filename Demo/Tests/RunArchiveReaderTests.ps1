@@ -74,6 +74,20 @@ function Find-ZipSignature {
     throw ('ZIP signature 0x{0:X8} was not found.' -f $Signature)
 }
 
+function Add-TrailingBytes {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [byte[]] $Bytes
+    )
+
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try {
+        $stream.Write($Bytes, 0, $Bytes.Length)
+    } finally {
+        $stream.Dispose()
+    }
+}
+
 function Set-EncryptedFlag {
     param([Parameter(Mandatory)] [string] $Path)
 
@@ -313,6 +327,17 @@ try {
         @{ Name = 'folder/binary.bin'; Bytes = $binary; Compression = [IO.Compression.CompressionLevel]::NoCompression }
     )
 
+    $paddedPath = Join-Path $fixtureRoot 'padded.zip'
+    Copy-Item -LiteralPath (Join-Path $fixtureRoot 'valid.zip') -Destination $paddedPath
+    # Reproduce libarchive's default 10 KiB output blocking by extending the
+    # final record to the next block boundary with zero bytes.
+    $paddingLength = 10240 - ((Get-Item -LiteralPath $paddedPath).Length % 10240)
+    Add-TrailingBytes $paddedPath (New-Object byte[] $paddingLength)
+
+    $trailingDataPath = Join-Path $fixtureRoot 'trailing-data.zip'
+    Copy-Item -LiteralPath (Join-Path $fixtureRoot 'valid.zip') -Destination $trailingDataPath
+    Add-TrailingBytes $trailingDataPath ([byte[]] (0, 0, 1, 0))
+
     [byte[]] $bomb = [Text.Encoding]::ASCII.GetBytes(('A' * 1048576))
     New-TestZip (Join-Path $fixtureRoot 'bomb.zip') @(
         @{ Name = 'bomb.bin'; Bytes = $bomb }
@@ -475,7 +500,7 @@ try {
     try {
         $env:PATH = $nativeRoot + [IO.Path]::PathSeparator + $savedPath
         $process = Start-Process -FilePath $testExe -WorkingDirectory $libraryRoot -Wait -PassThru `
-            -NoNewWindow -ArgumentList @('--console', '--output', $resultsFile)
+            -NoNewWindow -ArgumentList @('--console', '--output', ('"{0}"' -f $resultsFile))
     } finally {
         $env:PATH = $savedPath
     }

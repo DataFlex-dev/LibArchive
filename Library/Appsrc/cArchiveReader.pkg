@@ -135,6 +135,10 @@ Class cArchiveReader is a cObject
         Property Integer piMaxPathLength C_ARCHIVE_DEFAULT_MAX_PATH_LENGTH
         Property Integer piMaxPathComponents C_ARCHIVE_DEFAULT_MAX_PATH_COMPONENTS
         Property Integer piReadBlockSize C_ARCHIVE_DEFAULT_READ_BLOCK_SIZE
+        // Strict EOF validation remains the safe default. Callers that control
+        // archive creation may opt into accepting only zero-filled writer block
+        // padding after an otherwise complete ZIP end record.
+        Property Boolean pbAllowTrailingZeroPadding False
     End_Procedure
 
     { Visibility = Private }
@@ -312,8 +316,8 @@ Class cArchiveReader is a cObject
     // allocation is bounded by both byte and entry limits.
     { Visibility = Private }
     Function ReadZipDirectoryMetadata String sArchivePath Returns tZipDirectoryMetadata
-        Boolean bOk
-        Integer iChannel iTailSize iEocd iOffset iCommentLength
+        Boolean bOk bEocdComplete
+        Integer iChannel iTailSize iEocd iOffset iCommentLength iEocdEnd iPaddingOffset
         Integer iDiskNumber iCentralDisk iEntriesOnDisk iEntriesTotal
         Integer iPosition iNameLength iExtraLength iEntryCommentLength iEntryDiskNumber iRecordLength iActualEntries
         Integer iCentralFlags iCentralCompression iLocalErrorCode
@@ -378,7 +382,24 @@ Class cArchiveReader is a cObject
                 If (aucTail[iOffset] = $50 and aucTail[iOffset + 1] = $4B and ;
                     aucTail[iOffset + 2] = $05 and aucTail[iOffset + 3] = $06) Begin
                     Get LittleEndianUInt16 (&aucTail) (iOffset + 20) to iCommentLength
-                    If (iOffset + C_ARCHIVE_ZIP_EOCD_MIN_SIZE + iCommentLength = SizeOfArray(aucTail)) ;
+                    Move (iOffset + C_ARCHIVE_ZIP_EOCD_MIN_SIZE + iCommentLength) to iEocdEnd
+                    Move (iEocdEnd = SizeOfArray(aucTail)) to bEocdComplete
+
+                    // The opt-in relaxes only zero padding. Arbitrary trailing
+                    // data still rejects so executable/polyglot suffixes cannot
+                    // hide behind the compatibility flag.
+                    If (not(bEocdComplete) and pbAllowTrailingZeroPadding(Self) and ;
+                        iEocdEnd < SizeOfArray(aucTail)) Begin
+                        Move True to bEocdComplete
+                        Move iEocdEnd to iPaddingOffset
+                        While (bEocdComplete and iPaddingOffset < SizeOfArray(aucTail))
+                            If (aucTail[iPaddingOffset] <> 0) ;
+                                Move False to bEocdComplete
+                            Increment iPaddingOffset
+                        Loop
+                    End
+
+                    If (bEocdComplete) ;
                         Move iOffset to iEocd
                 End
                 Decrement iOffset

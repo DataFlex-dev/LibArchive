@@ -24,6 +24,7 @@ Object Archive_Reader_Spec is a cTestFixture
         Set piMaxPathLength of oArchiveReader to 240
         Set piMaxPathComponents of oArchiveReader to 1000
         Set piReadBlockSize of oArchiveReader to 4096
+        Set pbAllowTrailingZeroPadding of oArchiveReader to False
     End_Procedure
 
     Procedure Setup
@@ -287,6 +288,33 @@ Object Archive_Reader_Spec is a cTestFixture
             "fake EOCD inside a ZIP comment cannot redirect libarchive"
         Send ExpectInspectFailure "zip64-entry.zip" C_ARCHIVE_RESULT_UNSUPPORTED_FORMAT ;
             "entry-level ZIP64 size sentinel is rejected before libarchive"
+    End_Procedure
+
+    { Published=True }
+    Procedure Trailing_zero_padding_is_opt_in
+        tArchiveOperationResult Result
+
+        Get InspectZipArchive of oArchiveReader (FixturePath(Self, "padded.zip")) to Result
+        Send AssertIAreEqual C_ARCHIVE_RESULT_MALFORMED Result.iErrorCode ;
+            "strict EOF validation rejects trailing zero padding by default"
+
+        Set pbAllowTrailingZeroPadding of oArchiveReader to True
+        Get InspectZipArchive of oArchiveReader (FixturePath(Self, "padded.zip")) to Result
+        Send Assert Result.bSuccess ;
+            ("opt-in accepts zero-filled writer block padding: " + Result.sErrorMessage)
+        Send AssertBIAreEqual 11 Result.biDeclaredUncompressedBytes ;
+            "uncompressed metadata is still inspected after accepting padding"
+
+        Set piMaxTotalUncompressedBytes of oArchiveReader to 10
+        Get InspectZipArchive of oArchiveReader (FixturePath(Self, "padded.zip")) to Result
+        Send AssertIAreEqual C_ARCHIVE_RESULT_TOTAL_TOO_LARGE Result.iErrorCode ;
+            "uncompressed-size limits still reject padded archives"
+
+        Send ResetReader
+        Set pbAllowTrailingZeroPadding of oArchiveReader to True
+        Get InspectZipArchive of oArchiveReader (FixturePath(Self, "trailing-data.zip")) to Result
+        Send AssertIAreEqual C_ARCHIVE_RESULT_MALFORMED Result.iErrorCode ;
+            "the opt-in does not accept non-zero trailing content"
     End_Procedure
 
     { Published=True }
