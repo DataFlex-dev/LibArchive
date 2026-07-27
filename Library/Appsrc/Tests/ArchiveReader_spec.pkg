@@ -1,10 +1,14 @@
 Use seq_chnl.pkg
 Use cArchiveReader.pkg
+Use cFilesArchiver.pkg
 
 Object Archive_Reader_Spec is a cTestFixture
     Set psTestFixtureName to "Archive reader security"
 
     Object oArchiveReader is a cArchiveReader
+    End_Object
+
+    Object oFilesArchiver is a cFilesArchiver
     End_Object
 
     Property String psFixtureRoot "Data\ArchiveReaderTests"
@@ -35,7 +39,7 @@ Object Archive_Reader_Spec is a cTestFixture
         Boolean bExists
 
         File_Exist sPath bExists
-        Function_Return (bExists or IsDirectory(sPath))
+        Function_Return (bExists or ArchivePathIsPhysicalDirectory(sPath))
     End_Function
 
     Function ExtractedBinaryMatches Returns Boolean
@@ -117,6 +121,29 @@ Object Archive_Reader_Spec is a cTestFixture
         Get FixturePath "valid-output\hello.txt" to sPath
         Send Assert (PathExists(Self, sPath)) "text file was extracted"
         Send Assert (ExtractedBinaryMatches(Self)) "binary bytes are extracted without text conversion"
+    End_Procedure
+
+    { Published=True }
+    Procedure Portable_archiver_enumerates_nested_folders
+        tArchiveOperationResult Result
+        String sArchivePath sInputPath
+
+        Get FixturePath "writer-output.zip" to sArchivePath
+        Get FixturePath "writer-input" to sInputPath
+        Send Init of oFilesArchiver
+        Set psArchiveFileName of oFilesArchiver to sArchivePath
+        Set peArchiveFormat of oFilesArchiver to ARCHIVE_FORMAT_ZIP
+        Send AddFileToArchive of oFilesArchiver sInputPath
+        Send WriteFilesToArchive of oFilesArchiver
+
+        Set pbAllowTrailingZeroPadding of oArchiveReader to True
+        Get InspectZipArchive of oArchiveReader sArchivePath to Result
+        Send Assert Result.bSuccess ;
+            ("portable directory enumeration produced a valid ZIP: " + Result.sErrorMessage)
+        Send AssertIAreEqual 4 Result.iEntryCount ;
+            "root directory, nested directory, and both files were archived"
+        Send AssertBIAreEqual 9 Result.biDeclaredUncompressedBytes ;
+            "both generated file bodies were archived"
     End_Procedure
 
     { Published=True }

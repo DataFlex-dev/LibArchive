@@ -327,6 +327,19 @@ try {
         @{ Name = 'folder/binary.bin'; Bytes = $binary; Compression = [IO.Compression.CompressionLevel]::NoCompression }
     )
 
+    # cFilesArchiver consumes ordinary files and folders. This fixture checks
+    # the portable DataFlex DIR: enumeration path, including one nested folder.
+    $writerInput = Join-Path $fixtureRoot 'writer-input'
+    New-Item -ItemType Directory -Path (Join-Path $writerInput 'nested') | Out-Null
+    [IO.File]::WriteAllBytes(
+        (Join-Path $writerInput 'root.txt'),
+        [Text.Encoding]::ASCII.GetBytes('root')
+    )
+    [IO.File]::WriteAllBytes(
+        (Join-Path $writerInput 'nested\child.txt'),
+        [Text.Encoding]::ASCII.GetBytes('child')
+    )
+
     $paddedPath = Join-Path $fixtureRoot 'padded.zip'
     Copy-Item -LiteralPath (Join-Path $fixtureRoot 'valid.zip') -Destination $paddedPath
     # Reproduce libarchive's default 10 KiB output blocking by extending the

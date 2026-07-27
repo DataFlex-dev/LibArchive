@@ -1,6 +1,6 @@
 # LibArchive for DataFlex
 
-DataFlex 26 wrapper and 64-bit Windows demo for [libarchive](https://github.com/libarchive/libarchive). The library can create several archive formats and now provides a security-focused ZIP reader for inspecting and extracting untrusted uploads.
+DataFlex 26 wrapper for [libarchive](https://github.com/libarchive/libarchive), with a 64-bit Windows demo and native binary set. The library can create several archive formats and provides a security-focused ZIP reader for inspecting and extracting untrusted uploads.
 
 ## Safe ZIP inspection and extraction
 
@@ -9,7 +9,7 @@ DataFlex 26 wrapper and 64-bit Windows demo for [libarchive](https://github.com/
 - `InspectZipArchive` validates the ZIP end record and bounded central directory, then reads entry metadata without extracting entry bodies.
 - `ExtractZipArchive` always performs that preflight first, then reopens the ZIP and streams every regular file through application-enforced byte limits.
 
-Before libarchive opens the file, the reader bounds the compressed archive and central-directory byte sizes, parses every central and local header, verifies the real record count, and bounds each compressed-data extent plus their aggregate. It then rejects encrypted or encryption-indeterminate entries, links and special files, non-empty directory bodies, unsafe Windows paths, duplicate/colliding paths, excessive path-component work, and declared or actual uncompressed sizes above the configured limits. Extraction uses a new private destination and atomically creates each file without overwriting existing data. A failed extraction removes the files and directories it created; cleanup failure is reported separately.
+Before libarchive opens the file, the reader bounds the compressed archive and central-directory byte sizes, parses every central and local header, verifies the real record count, and bounds each compressed-data extent plus their aggregate. It then rejects encrypted or encryption-indeterminate entries, links and special files, non-empty directory bodies, unsafe paths, duplicate/colliding paths, excessive path-component work, and declared or actual uncompressed sizes above the configured limits. Extraction uses libarchive's platform-native disk writer with secure path and no-overwrite options. A failed extraction removes the files and directories it created; cleanup failure is reported separately.
 
 ```dataflex
 Use cArchiveReader.pkg
@@ -43,7 +43,7 @@ All limits must be positive. `piMaxArchiveBytes` bounds the uploaded ZIP itself;
 
 The package manager must still enforce its HTTP/request upload-size limit before persisting the upload. Set `piMaxArchiveBytes` to the same value so direct library callers get a second check. The server should also apply its normal request timeout and resource controls.
 
-Keep the uploaded source file immutable for the whole operation. The extraction destination must not exist, and its parent must be an application-owned, non-reparse directory that untrusted users cannot modify. These requirements prevent another local process from swapping the source or replacing an intermediate directory with a junction between checks.
+Keep the uploaded source file immutable for the whole operation. The extraction destination must not exist, and its parent must be an application-owned physical directory, not a symbolic link or junction, that untrusted users cannot modify. These requirements prevent another local process from swapping the source or redirecting an intermediate path between checks.
 
 Only unfiltered, single-volume, non-ZIP64 seekable ZIP input with stored or deflated entries is accepted by this reader. The local and central headers must agree on the compression method, and encryption markers in either header are rejected. With the default 100 MiB policy, ZIP64 adds no useful package capacity and would require a more complex metadata gate. The existing archive writer retains its broader format support.
 
@@ -55,9 +55,13 @@ The dedicated `ArchiveReaderTests` project in `Library\LibArchive.sws` uses DFUn
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Demo\Tests\RunArchiveReaderTests.ps1
 ```
 
-The suite covers compressed and uncompressed ZIP bombs, overlapping compressed-data amplification, forged central counts, central-directory and path-component budgets, local/central-header disagreement, mixed-separator traversal, rooted/ADS/device paths, links, encryption, duplicate and file-parent collisions, ZIP64 rejection, malformed/corrupt input, binary output, no-overwrite behavior, and failure cleanup.
+The suite covers compressed and uncompressed ZIP bombs, overlapping compressed-data amplification, forged central counts, central-directory and path-component budgets, local/central-header disagreement, mixed-separator traversal, rooted/ADS/device paths, links, encryption, duplicate and file-parent collisions, ZIP64 rejection, malformed/corrupt input, binary output, no-overwrite behavior, failure cleanup, and portable nested-folder enumeration by `cFilesArchiver`.
 
-## Native dependencies
+## Platform and native dependencies
+
+The runtime library source no longer imports `Kernel32.dll`. File and directory discovery uses DataFlex filesystem primitives, timestamps come from libarchive's disk reader, and extraction uses libarchive's disk writer. The Windows-only `DateAndTime` submodule is therefore no longer a runtime dependency.
+
+Native libarchive itself is still an external platform dependency. `Archive.h.pkg` currently names it `archive.dll`, and this repository only includes and tests the Windows x64 binary set. A non-Windows deployment must supply a compatible native libarchive build and adapt that library-name binding to the target DataFlex runtime's shared-library convention.
 
 The seven 64-bit DLLs in `Demo\Programs` must be deployed beside the application executable. They are native libraries, not COM components, and must not be registered with `regsvr32`.
 

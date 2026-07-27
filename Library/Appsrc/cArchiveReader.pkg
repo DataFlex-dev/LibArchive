@@ -1,6 +1,5 @@
-Use GlobalFunctionsProcedures.pkg
 Use seq_chnl.pkg
-Use Archive.h.pkg
+Use ArchivePath.pkg
 
 // Conservative defaults keep accidental use bounded. Applications should set
 // both byte limits to their own upload policy before inspecting or extracting.
@@ -36,13 +35,6 @@ Define C_ARCHIVE_RESULT_ARCHIVE_TOO_LARGE for 17
 Define C_ARCHIVE_RESULT_CENTRAL_DIRECTORY_TOO_LARGE for 18
 
 Define C_ARCHIVE_READ_OPEN_BLOCK_SIZE for 10240
-Define C_ARCHIVE_INVALID_HANDLE_VALUE for -1
-Define C_ARCHIVE_GENERIC_WRITE for |CI$40000000
-Define C_ARCHIVE_CREATE_NEW for 1
-Define C_ARCHIVE_FILE_ATTRIBUTE_NORMAL for |CI$00000080
-Define C_ARCHIVE_FILE_FLAG_SEQUENTIAL_SCAN for |CI$08000000
-Define C_ARCHIVE_FILE_FLAG_OPEN_REPARSE_POINT for |CI$00200000
-Define C_ARCHIVE_FILE_TYPE_DISK for 1
 Define C_ARCHIVE_ZIP_EOCD_MIN_SIZE for 22
 // EOCD (22) + maximum comment (65,535) + a possible ZIP64 locator (20).
 Define C_ARCHIVE_ZIP_EOCD_MAX_SEARCH for 65577
@@ -86,39 +78,6 @@ Struct tArchiveEntryInfo
     Integer iPathComponentCount
     BigInt biDeclaredSize
 End_Struct
-
-// Used only to remove the private extraction directory after a failed operation.
-External_Function ArchiveRemoveDirectoryW "RemoveDirectoryW" Kernel32.dll ;
-    WString wPath ;
-    Returns Integer
-
-// CREATE_NEW gives the final file component an atomic no-overwrite check. The
-// reparse-point flag ensures a concurrently-created link is never followed.
-External_Function ArchiveCreateFileW "CreateFileW" Kernel32.dll ;
-    WString wPath ;
-    DWord dwDesiredAccess ;
-    DWord dwShareMode ;
-    Pointer pSecurityAttributes ;
-    DWord dwCreationDisposition ;
-    DWord dwFlagsAndAttributes ;
-    Handle hTemplateFile ;
-    Returns Handle
-
-External_Function ArchiveWriteFile "WriteFile" Kernel32.dll ;
-    Handle hFile ;
-    Pointer pBuffer ;
-    DWord dwBytesToWrite ;
-    Pointer pBytesWritten ;
-    Pointer pOverlapped ;
-    Returns Integer
-
-External_Function ArchiveCloseHandle "CloseHandle" Kernel32.dll ;
-    Handle hObject ;
-    Returns Integer
-
-External_Function ArchiveGetFileType "GetFileType" Kernel32.dll ;
-    Handle hFile ;
-    Returns DWord
 
 // Reads ZIP metadata and extracts ZIP entries through bounded, application-owned
 // writes. It intentionally does not call archive_read_extract because that API
@@ -745,7 +704,7 @@ Class cArchiveReader is a cObject
             Function_Return False
         End
 
-        Move (StrSplitToArray(sPath, "\")) to asComponents
+        Move (ArchiveSplitString(sPath, "\")) to asComponents
         For i from 0 to (SizeOfArray(asComponents) - 1)
             Move asComponents[i] to sComponent
 
@@ -842,7 +801,7 @@ Class cArchiveReader is a cObject
         Move C_ARCHIVE_RESULT_OK to EntryInfo.iErrorCode
         Move sNormalizedPath to EntryInfo.sPath
         Move (usFileType = AE_IFDIR) to EntryInfo.bDirectory
-        Move (StrSplitToArray(sNormalizedPath, "\")) to asPathComponents
+        Move (ArchiveSplitString(sNormalizedPath, "\")) to asPathComponents
         Move (SizeOfArray(asPathComponents)) to EntryInfo.iPathComponentCount
 
         If (archive_entry_size_is_set(pEntry) = 0) ;
@@ -894,7 +853,7 @@ Class cArchiveReader is a cObject
         // Check every parent rather than only the next sorted path: an unrelated
         // name such as "a!x" can sort between file "a" and "a\child".
         For i from 0 to (SizeOfArray(asPaths) - 1)
-            Move (StrSplitToArray(asPaths[i], "\")) to asComponents
+            Move (ArchiveSplitString(asPaths[i], "\")) to asComponents
             Move "" to sParent
             For iComponent from 0 to (SizeOfArray(asComponents) - 2)
                 If (sParent = "") ;
@@ -935,7 +894,7 @@ Class cArchiveReader is a cObject
             Function_Return Result
         End
 
-        Move (FullPathName(sArchivePath)) to sArchivePath
+        Move (ArchiveFullPathName(sArchivePath)) to sArchivePath
         Get ReadZipDirectoryMetadata sArchivePath to ZipMetadata
         Move ZipMetadata.biArchiveBytes to Result.biArchiveBytes
         Move ZipMetadata.biCentralDirectoryBytes to Result.biCentralDirectoryBytes
@@ -1043,37 +1002,60 @@ Class cArchiveReader is a cObject
         Function_Return Result
     End_Function
 
-    // Builds directories one component at a time under the new private root.
-    // Existing reparse points are rejected to prevent a local path redirection.
+    // Creates one private directory through libarchive's platform-native disk
+    // writer. NO_OVERWRITE and SECURE_SYMLINKS are configured by the caller.
     { Visibility = Private }
-    Function EnsureRelativeDirectory String sRoot String sRelativeDirectory String[] ByRef asCreatedDirectories String ByRef sErrorMessage Returns Boolean
-        Integer i iAttributes
-        Boolean bError
-        String sCurrentPath
+    Function CreateDiskDirectory Pointer pDisk String sPath String[] ByRef asCreatedDirectories String ByRef sErrorMessage Returns Boolean
+        Integer iResult iIgnored
+        Pointer pEntry
+
+        Move (archive_entry_new()) to pEntry
+        If (pEntry = 0) Begin
+            Move "Unable to allocate an extraction directory entry." to sErrorMessage
+            Function_Return False
+        End
+
+        Move (archive_entry_set_pathname(pEntry, AddressOf(sPath))) to iIgnored
+        Move (archive_entry_set_filetype(pEntry, AE_IFDIR)) to iIgnored
+        Move (archive_entry_set_perm(pEntry, ARCHIVE_USER_ONLY_FULL_ACCESS)) to iIgnored
+        Move (archive_write_header(pDisk, pEntry)) to iResult
+        If (iResult = ARCHIVE_OK) Begin
+            Move sPath to asCreatedDirectories[-1]
+            Move (archive_write_finish_entry(pDisk)) to iResult
+        End
+
+        If (iResult <> ARCHIVE_OK) ;
+            Get NativeError pDisk ("Unable to create destination directory: " + sPath) to sErrorMessage
+
+        Move (archive_entry_free(pEntry)) to iIgnored
+        Function_Return (iResult = ARCHIVE_OK)
+    End_Function
+
+    // Builds directories one component at a time under the new private root.
+    { Visibility = Private }
+    Function EnsureRelativeDirectory Pointer pDisk String sRoot String sRelativeDirectory String[] ByRef asCreatedDirectories String ByRef sErrorMessage Returns Boolean
+        Integer i
+        Boolean bExists bOk
+        String sCurrentPath sSeparator
         String[] asComponents
 
         If (sRelativeDirectory = "") ;
             Function_Return True
 
-        Move (StrSplitToArray(sRelativeDirectory, "\")) to asComponents
+        Move (SysConf(SYSCONF_DIR_SEPARATOR)) to sSeparator
+        Move (ArchiveSplitString(sRelativeDirectory, sSeparator)) to asComponents
         Move sRoot to sCurrentPath
 
         For i from 0 to (SizeOfArray(asComponents) - 1)
-            Move (sCurrentPath + "\" + asComponents[i]) to sCurrentPath
-            Move (GetFileAttributes(sCurrentPath)) to iAttributes
+            Move (sCurrentPath + sSeparator + asComponents[i]) to sCurrentPath
+            File_Exist sCurrentPath bExists
 
-            If (iAttributes = ARCHIVE_INVALID_FILE_ATTRIBUTES) Begin
-                Move False to Err
-                Make_Directory sCurrentPath
-                Move (Err) to bError
-                If (bError) Begin
-                    Move ("Unable to create destination directory: " + sCurrentPath) to sErrorMessage
+            If (not(bExists or ArchivePathIsPhysicalDirectory(sCurrentPath))) Begin
+                Get CreateDiskDirectory pDisk sCurrentPath (&asCreatedDirectories) (&sErrorMessage) to bOk
+                If (not(bOk)) ;
                     Function_Return False
-                End
-                Move sCurrentPath to asCreatedDirectories[-1]
             End
-            Else If (not(IsFlagIn(FILE_ATTRIBUTE_DIRECTORY, iAttributes)) or ;
-                     IsFlagIn(FILE_ATTRIBUTE_REPARSE_POINT, iAttributes)) Begin
+            Else If (not(ArchivePathIsPhysicalDirectory(sCurrentPath))) Begin
                 Move ("Destination path is not a safe directory: " + sCurrentPath) to sErrorMessage
                 Function_Return False
             End
@@ -1083,32 +1065,35 @@ Class cArchiveReader is a cObject
     End_Function
 
     { Visibility = Private }
-    Function ExtractCurrentFile Pointer pArchive String sFullPath BigInt biDeclaredSize BigInt ByRef biActualTotal String[] ByRef asCreatedFiles Integer ByRef iErrorCode String ByRef sErrorMessage Returns Boolean
+    Function ExtractCurrentFile Pointer pArchive Pointer pDisk String sFullPath BigInt biDeclaredSize BigInt ByRef biActualTotal String[] ByRef asCreatedFiles Integer ByRef iErrorCode String ByRef sErrorMessage Returns Boolean
         Boolean bOk
-        Handle hFile
-        Integer iBlockSize iWriteResult iBytesWritten iCloseResult
+        Integer iBlockSize iWriteResult iHeaderResult iFinishResult iIgnored
         LongPtr lpBytesRead
         BigInt biEntryActual biMaxEntry biMaxTotal
         UChar[] aucBuffer
-        WString wFullPath
+        Pointer pEntry
 
-        Move sFullPath to wFullPath
-        Move (ArchiveCreateFileW(wFullPath, C_ARCHIVE_GENERIC_WRITE, 0, 0, C_ARCHIVE_CREATE_NEW, ;
-            (C_ARCHIVE_FILE_ATTRIBUTE_NORMAL ior C_ARCHIVE_FILE_FLAG_SEQUENTIAL_SCAN ior ;
-             C_ARCHIVE_FILE_FLAG_OPEN_REPARSE_POINT), 0)) to hFile
-        If (hFile = C_ARCHIVE_INVALID_HANDLE_VALUE) Begin
+        Move (archive_entry_new()) to pEntry
+        If (pEntry = 0) Begin
             Move C_ARCHIVE_RESULT_IO_ERROR to iErrorCode
-            Move ("Unable to create extracted file: " + sFullPath) to sErrorMessage
+            Move "Unable to allocate an extracted file entry." to sErrorMessage
             Function_Return False
         End
 
-        Move sFullPath to asCreatedFiles[-1]
-        If (ArchiveGetFileType(hFile) <> C_ARCHIVE_FILE_TYPE_DISK) Begin
-            Move (ArchiveCloseHandle(hFile)) to iCloseResult
-            Move C_ARCHIVE_RESULT_UNSAFE_TYPE to iErrorCode
-            Move "Extraction target is not a disk file." to sErrorMessage
+        Move (archive_entry_set_pathname(pEntry, AddressOf(sFullPath))) to iIgnored
+        // Keep the disk-writer size unset. This class enforces the validated
+        // declaration while streaming, and an unknown writer size lets a failed
+        // entry close without padding a partial file up to its declared size.
+        Move (archive_entry_set_filetype(pEntry, AE_IFREG)) to iIgnored
+        Move (archive_entry_set_perm(pEntry, ARCHIVE_PRIVATE_USER_READABLE_WRITEABLE)) to iIgnored
+        Move (archive_write_header(pDisk, pEntry)) to iHeaderResult
+        If (iHeaderResult <> ARCHIVE_OK) Begin
+            Get NativeError pDisk ("Unable to create extracted file: " + sFullPath) to sErrorMessage
+            Move (archive_entry_free(pEntry)) to iIgnored
+            Move C_ARCHIVE_RESULT_IO_ERROR to iErrorCode
             Function_Return False
         End
+        Move sFullPath to asCreatedFiles[-1]
 
         Get piReadBlockSize to iBlockSize
         Move (ResizeArray(aucBuffer, iBlockSize)) to aucBuffer
@@ -1143,12 +1128,12 @@ Class cArchiveReader is a cObject
                     Move False to bOk
                 End
                 Else Begin
-                    Move 0 to iBytesWritten
-                    Move (ArchiveWriteFile(hFile, AddressOf(aucBuffer), Integer(lpBytesRead), ;
-                        AddressOf(iBytesWritten), 0)) to iWriteResult
-                    If (iWriteResult = 0 or iBytesWritten <> Integer(lpBytesRead)) Begin
+                    Move (archive_write_data(pDisk, AddressOf(aucBuffer), Integer(lpBytesRead))) to iWriteResult
+                    // archive_write_disk may return zero after a successful
+                    // write, so only negative values indicate failure.
+                    If (iWriteResult < 0) Begin
                         Move C_ARCHIVE_RESULT_IO_ERROR to iErrorCode
-                        Move ("Unable to write extracted file: " + sFullPath) to sErrorMessage
+                        Get NativeError pDisk ("Unable to write extracted file: " + sFullPath) to sErrorMessage
                         Move False to bOk
                     End
                     Else Begin
@@ -1159,25 +1144,33 @@ Class cArchiveReader is a cObject
             End
         Until (not(bOk) or lpBytesRead = 0)
 
-        Move (ArchiveCloseHandle(hFile)) to iCloseResult
-        If (bOk and iCloseResult = 0) Begin
-            Move C_ARCHIVE_RESULT_IO_ERROR to iErrorCode
-            Move ("Unable to close extracted file: " + sFullPath) to sErrorMessage
-            Move False to bOk
-        End
-
         If (bOk and biEntryActual <> biDeclaredSize) Begin
             Move C_ARCHIVE_RESULT_SIZE_MISMATCH to iErrorCode
             Move ("Actual and declared entry sizes differ for: " + sFullPath) to sErrorMessage
             Move False to bOk
         End
 
+        If (bOk) Begin
+            Move (archive_write_finish_entry(pDisk)) to iFinishResult
+            If (iFinishResult <> ARCHIVE_OK) Begin
+                Move C_ARCHIVE_RESULT_IO_ERROR to iErrorCode
+                Get NativeError pDisk ("Unable to finish extracted file: " + sFullPath) to sErrorMessage
+                Move False to bOk
+            End
+        End
+        Else Begin
+            // The writer has no declared size, so finishing only closes the
+            // partial file and cannot allocate attacker-controlled padding.
+            Move (archive_write_finish_entry(pDisk)) to iIgnored
+        End
+
+        Move (archive_entry_free(pEntry)) to iIgnored
         Function_Return bOk
     End_Function
 
     { Visibility = Private }
     Function CleanupExtraction String[] asCreatedFiles String[] asCreatedDirectories String ByRef sCleanupError Returns Boolean
-        Integer i iRemoveResult
+        Integer i
         Boolean bExists bOk
 
         Move True to bOk
@@ -1200,8 +1193,9 @@ Class cArchiveReader is a cObject
 
         Move (SizeOfArray(asCreatedDirectories) - 1) to i
         While (i >= 0)
-            Move (ArchiveRemoveDirectoryW(asCreatedDirectories[i])) to iRemoveResult
-            If (iRemoveResult = 0) Begin
+            Move False to Err
+            Remove_Directory asCreatedDirectories[i]
+            If (Err) Begin
                 Move False to bOk
                 If (sCleanupError = "") ;
                     Move ("Unable to remove partial directory: " + asCreatedDirectories[i]) to sCleanupError
@@ -1218,16 +1212,18 @@ Class cArchiveReader is a cObject
     // must be application-owned and not writable by untrusted processes.
     Function ExtractZipArchive String sArchivePath String sDestination Returns tArchiveOperationResult
         Boolean bExists bOk bReading bCleanupOk
-        Integer iHeaderResult iSkipResult iEncryptedEntries iExtractionEntryCount iExtractionErrorCode iAttributes iExtractionPathComponents
-        Pointer pArchive pEntry
+        Integer iHeaderResult iSkipResult iEncryptedEntries iExtractionEntryCount iExtractionErrorCode iExtractionPathComponents
+        Integer iDiskResult iDiskCloseResult iDiskFreeResult iIgnored
+        Pointer pArchive pEntry pDisk
         BigInt biExtractionDeclaredTotal biActualTotal
         String sErrorMessage sCleanupError sRoot sParent sRelativeParent sFullPath sPathReason
+        String sSeparator sNativeRelativePath
         String[] asCreatedFiles asCreatedDirectories asExtractionPaths asExtractionFilePaths
         tArchiveEntryInfo EntryInfo
         tZipDirectoryMetadata ZipMetadata
         tArchiveOperationResult Result
 
-        Move (FullPathName(sArchivePath)) to sArchivePath
+        Move (ArchiveFullPathName(sArchivePath)) to sArchivePath
         Get InspectZipArchive sArchivePath to Result
         If (not(Result.bSuccess)) ;
             Function_Return Result
@@ -1237,27 +1233,25 @@ Class cArchiveReader is a cObject
             Function_Return Result
         End
 
-        Move (FullPathName(sDestination)) to sRoot
-        While (Length(sRoot) > 3 and Right(sRoot, 1) = "\")
+        Move (ArchiveFullPathName(sDestination)) to sRoot
+        Move (SysConf(SYSCONF_DIR_SEPARATOR)) to sSeparator
+        While (Length(sRoot) > 3 and Right(sRoot, 1) = sSeparator)
             Move (Left(sRoot, Length(sRoot) - 1)) to sRoot
         Loop
 
         File_Exist sRoot bExists
-        If (bExists or IsDirectory(sRoot)) Begin
+        If (bExists or ArchivePathIsPhysicalDirectory(sRoot)) Begin
             Send SetFailure C_ARCHIVE_RESULT_DESTINATION_EXISTS "Destination already exists." (&Result)
             Function_Return Result
         End
 
-        Move (ExtractFilePath(sRoot)) to sParent
-        While (Length(sParent) > 3 and Right(sParent, 1) = "\")
+        Move (ArchivePathDirectory(sRoot)) to sParent
+        While (Length(sParent) > 3 and Right(sParent, 1) = sSeparator)
             Move (Left(sParent, Length(sParent) - 1)) to sParent
         Loop
-        Move (GetFileAttributes(sParent)) to iAttributes
-        If (iAttributes = ARCHIVE_INVALID_FILE_ATTRIBUTES or ;
-            not(IsFlagIn(FILE_ATTRIBUTE_DIRECTORY, iAttributes)) or ;
-            IsFlagIn(FILE_ATTRIBUTE_REPARSE_POINT, iAttributes)) Begin
+        If (not(ArchivePathIsPhysicalDirectory(sParent))) Begin
             Send SetFailure C_ARCHIVE_RESULT_INVALID_ARGUMENT ;
-                "Destination parent must be an existing non-reparse directory." (&Result)
+                "Destination parent must be an existing directory." (&Result)
             Function_Return Result
         End
 
@@ -1277,20 +1271,28 @@ Class cArchiveReader is a cObject
             Function_Return Result
         End
 
-        Move False to Err
-        Make_Directory sRoot
-        If (Err) Begin
-            Send SetFailure C_ARCHIVE_RESULT_IO_ERROR "Unable to create destination directory." (&Result)
+        Move (archive_write_disk_new()) to pDisk
+        If (pDisk = 0) Begin
+            Send SetFailure C_ARCHIVE_RESULT_IO_ERROR "Unable to initialize the extraction disk writer." (&Result)
             Function_Return Result
         End
-        Move sRoot to asCreatedDirectories[-1]
 
-        Move (GetFileAttributes(sRoot)) to iAttributes
-        If (iAttributes = ARCHIVE_INVALID_FILE_ATTRIBUTES or ;
-            not(IsFlagIn(FILE_ATTRIBUTE_DIRECTORY, iAttributes)) or ;
-            IsFlagIn(FILE_ATTRIBUTE_REPARSE_POINT, iAttributes)) Begin
-            Send SetFailure C_ARCHIVE_RESULT_UNSAFE_PATH ;
-                "New extraction root is not a safe directory." (&Result)
+        Move (archive_write_disk_set_options(pDisk, ;
+            (ARCHIVE_EXTRACT_NO_OVERWRITE ior ARCHIVE_EXTRACT_SECURE_SYMLINKS ior ;
+             ARCHIVE_EXTRACT_SECURE_NODOTDOT ior ARCHIVE_EXTRACT_NO_AUTODIR))) to iDiskResult
+        If (iDiskResult <> ARCHIVE_OK) Begin
+            Get NativeError pDisk "Unable to configure the extraction disk writer" to sErrorMessage
+            Send SetFailure C_ARCHIVE_RESULT_IO_ERROR sErrorMessage (&Result)
+            Move (archive_write_free(pDisk)) to iIgnored
+            Function_Return Result
+        End
+
+        Get CreateDiskDirectory pDisk sRoot (&asCreatedDirectories) (&sErrorMessage) to bOk
+        If (not(bOk)) Begin
+            Send SetFailure C_ARCHIVE_RESULT_IO_ERROR sErrorMessage (&Result)
+            Move (archive_write_close(pDisk)) to iIgnored
+            Move (archive_write_free(pDisk)) to iIgnored
+            Move 0 to pDisk
             Get CleanupExtraction asCreatedFiles asCreatedDirectories (&sCleanupError) to bCleanupOk
             If (not(bCleanupOk)) ;
                 Send SetFailure C_ARCHIVE_RESULT_CLEANUP_FAILED sCleanupError (&Result)
@@ -1300,6 +1302,9 @@ Class cArchiveReader is a cObject
         Move (OpenZipReader(Self, sArchivePath, (&sErrorMessage))) to pArchive
         If (pArchive = 0) Begin
             Send SetFailure C_ARCHIVE_RESULT_OPEN_FAILED sErrorMessage (&Result)
+            Move (archive_write_close(pDisk)) to iIgnored
+            Move (archive_write_free(pDisk)) to iIgnored
+            Move 0 to pDisk
             Get CleanupExtraction asCreatedFiles asCreatedDirectories (&sCleanupError) to bCleanupOk
             If (not(bCleanupOk)) ;
                 Send SetFailure C_ARCHIVE_RESULT_CLEANUP_FAILED sCleanupError (&Result)
@@ -1341,23 +1346,19 @@ Class cArchiveReader is a cObject
                         Move (Lowercase(EntryInfo.sPath)) to asExtractionPaths[-1]
                         If (not(EntryInfo.bDirectory)) ;
                             Move (Lowercase(EntryInfo.sPath)) to asExtractionFilePaths[-1]
-                        Move (FullPathName(sRoot + "\" + EntryInfo.sPath)) to sFullPath
+                        Move (Replace("\", EntryInfo.sPath, sSeparator)) to sNativeRelativePath
+                        Move (ArchiveFullPathName(sRoot + sSeparator + sNativeRelativePath)) to sFullPath
                         // This is a defense-in-depth boundary check after path
                         // normalization; IsSafeArchivePath already rejects dots.
                         If (Left(Lowercase(sFullPath), Length(sRoot) + 1) <> ;
-                            Lowercase(sRoot + "\")) Begin
+                            Lowercase(sRoot + sSeparator)) Begin
                             Send SetFailure C_ARCHIVE_RESULT_UNSAFE_PATH "Expanded destination path escapes the extraction root." (&Result)
-                            Move False to bOk
-                            Move False to bReading
-                        End
-                        Else If (Length(sFullPath) >= 260) Begin
-                            Send SetFailure C_ARCHIVE_RESULT_UNSAFE_PATH "Expanded destination path exceeds the supported Windows path length." (&Result)
                             Move False to bOk
                             Move False to bReading
                         End
                         Else If (EntryInfo.bDirectory) Begin
                             Move C_ARCHIVE_RESULT_IO_ERROR to iExtractionErrorCode
-                            Get EnsureRelativeDirectory sRoot EntryInfo.sPath (&asCreatedDirectories) (&sErrorMessage) to bOk
+                            Get EnsureRelativeDirectory pDisk sRoot sNativeRelativePath (&asCreatedDirectories) (&sErrorMessage) to bOk
                             If (bOk) Begin
                                 Move (archive_read_data_skip(pArchive)) to iSkipResult
                                 Move (iSkipResult = ARCHIVE_OK) to bOk
@@ -1372,15 +1373,15 @@ Class cArchiveReader is a cObject
                             End
                         End
                         Else Begin
-                            Move (ExtractFilePath(EntryInfo.sPath)) to sRelativeParent
-                            While (Length(sRelativeParent) > 0 and Right(sRelativeParent, 1) = "\")
+                            Move (ArchivePathDirectory(sNativeRelativePath)) to sRelativeParent
+                            While (Length(sRelativeParent) > 0 and Right(sRelativeParent, 1) = sSeparator)
                                 Move (Left(sRelativeParent, Length(sRelativeParent) - 1)) to sRelativeParent
                             Loop
 
                             Move C_ARCHIVE_RESULT_IO_ERROR to iExtractionErrorCode
-                            Get EnsureRelativeDirectory sRoot sRelativeParent (&asCreatedDirectories) (&sErrorMessage) to bOk
+                            Get EnsureRelativeDirectory pDisk sRoot sRelativeParent (&asCreatedDirectories) (&sErrorMessage) to bOk
                             If (bOk) ;
-                                Get ExtractCurrentFile pArchive sFullPath EntryInfo.biDeclaredSize (&biActualTotal) ;
+                                Get ExtractCurrentFile pArchive pDisk sFullPath EntryInfo.biDeclaredSize (&biActualTotal) ;
                                     (&asCreatedFiles) (&iExtractionErrorCode) (&sErrorMessage) to bOk
 
                             If (not(bOk)) Begin
@@ -1423,6 +1424,16 @@ Class cArchiveReader is a cObject
         Else Begin
             Send DiscardZipReader pArchive
             Move 0 to pArchive
+        End
+
+        // Close explicitly before freeing: the disk writer can otherwise keep
+        // the current file open until its implicit close path has completed.
+        Move (archive_write_close(pDisk)) to iDiskCloseResult
+        Move (archive_write_free(pDisk)) to iDiskFreeResult
+        Move 0 to pDisk
+        If (bOk and (iDiskCloseResult <> ARCHIVE_OK or iDiskFreeResult <> ARCHIVE_OK)) Begin
+            Send SetFailure C_ARCHIVE_RESULT_IO_ERROR "Unable to close the extraction disk writer cleanly." (&Result)
+            Move False to bOk
         End
 
         Move biActualTotal to Result.biExtractedBytes

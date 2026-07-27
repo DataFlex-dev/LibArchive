@@ -1,5 +1,6 @@
 ﻿Use Archive.h.pkg
-Use Libraries\DateAndTime\Library\AppSrc\Classes\cDateTimeHandler.pkg
+Use seq_chnl.pkg
+Use ArchivePath.pkg
 
 Struct tArchiveFormat
     String sFormat
@@ -25,9 +26,6 @@ Class cFilesArchiver is a cObject
         Property Pointer ppArchive
         { DesignTime = False }
         Property tArchiveFormat[] pArchiveFormats
-
-        Object oDateTimeHandler is a cDateTimeHandler
-        End_Object
 
         Send CreateArchiveFormats
     End_Procedure
@@ -232,8 +230,8 @@ Class cFilesArchiver is a cObject
 
     { Visibility = Private }
     Procedure AddFilesToArchive
-        Integer iFileElements iFileElement iFileAttributes
-        Boolean bOk
+        Integer iFileElements iFileElement
+        Boolean bExists
         Pointer pArchive
         String[] sFileNamesToArchive
         String sFileName
@@ -247,13 +245,13 @@ Class cFilesArchiver is a cObject
 
                 For iFileElement from 0 to iFileElements
                     Move (Trim (sFileNamesToArchive[iFileElement])) to sFileName
-                    Move (GetFileAttributes (sFileName)) to iFileAttributes
-                    If (iFileAttributes <> ARCHIVE_INVALID_FILE_ATTRIBUTES) Begin
-                        If (not (IsFlagIn (FILE_ATTRIBUTE_DIRECTORY, iFileAttributes))) Begin
-                            Send WriteFileToArchive sFileName pArchive
+                    File_Exist sFileName bExists
+                    If (bExists) Begin
+                        If (ArchivePathIsPhysicalDirectory (sFileName)) Begin
+                            Send AddFolder sFileName (ArchivePathDirectory (sFileName))
                         End
                         Else Begin
-                            Send AddFolder sFileName (ExtractFilePath (sFileName))
+                            Send WriteFileToArchive sFileName pArchive
                         End
                     End
                     Else Begin
@@ -268,7 +266,8 @@ Class cFilesArchiver is a cObject
     { Visibility = Private }
     Procedure WriteFileToArchive String sFileName Pointer pArchive
         UChar[] ucData
-        Integer iRetval iFileSize iSeconds
+        Integer iRetval iFileSize
+        BigInt biSeconds
         String sFileNameWithoutPath
         Void_Type iVoid
         Pointer pArchiveEntry
@@ -276,9 +275,9 @@ Class cFilesArchiver is a cObject
         Get FileContents sFileName (&ucData) to iRetval
         If (iRetval > 0) Begin
             Move (archive_entry_new ()) to pArchiveEntry
-            Get FileFolderCreationUnixDateTime sFileName to iSeconds
-            Move (ExtractFileName (sFileName)) to sFileNameWithoutPath
-            Move (archive_entry_set_mtime (pArchiveEntry, iSeconds, 0)) to iVoid
+            Get FileFolderCreationUnixDateTime sFileName to biSeconds
+            Move (ArchivePathFileName (sFileName)) to sFileNameWithoutPath
+            Move (archive_entry_set_mtime (pArchiveEntry, biSeconds, 0)) to iVoid
             Move (SizeOfArray (ucData)) to iFileSize
             Move (archive_entry_set_pathname (pArchiveEntry, AddressOf (sFileNameWithoutPath))) to iVoid
             Move (archive_entry_set_size (pArchiveEntry, iFileSize)) to iVoid
@@ -295,29 +294,20 @@ Class cFilesArchiver is a cObject
         End
     End_Procedure
 
-    Function FileFolderCreationUnixDateTime String sFolderPath Returns Integer
-        Handle hFileFind
-        Integer iVoid
-        tWin32FindDataW Win32FindData
-        DateTime dtFolderCreated
-        Integer iUnixTime
-
-        Move (winFindFirstFileW (sFolderPath, AddressOf(Win32FindData))) to hFileFind
-        If (hFileFind <> INVALID_HANDLE_VALUE) Begin
-            Get FileTimeToDateTime of oDateTimeHandler Win32FindData.ftCreationTime to dtFolderCreated
-            Get DateTimeToUnixTime of oDateTimeHandler dtFolderCreated to iUnixTime
-            Move (winFindClose (hFileFind)) to iVoid
-        End
-
-        Function_Return iUnixTime
+    // Creation time is not available consistently across supported platforms.
+    // Keep the existing public function name for compatibility, but obtain the
+    // portable modification timestamp from libarchive's filesystem reader.
+    Function FileFolderCreationUnixDateTime String sFolderPath Returns BigInt
+        Function_Return (ArchivePathModificationTime(sFolderPath))
     End_Function
 
     Procedure AddFolder String sFolderPath String sBasePath
         Pointer pDirEntry pArchive
-        Integer iSeconds iPos iVoid eResult
+        Integer iPos iVoid eResult
+        BigInt biSeconds
         String sFolder
 
-        Get FileFolderCreationUnixDateTime sFolderPath to iSeconds
+        Get FileFolderCreationUnixDateTime sFolderPath to biSeconds
 
         Move (archive_entry_new ()) to pDirEntry
         Move (Trim (Replace (sBasePath, sFolderPath, ''))) to sFolder
@@ -327,7 +317,7 @@ Class cFilesArchiver is a cObject
         Move (archive_entry_set_pathname (pDirEntry, AddressOf (sFolder))) to iVoid
         Move (archive_entry_set_perm (pDirEntry, ARCHIVE_FOR_REGULAR_FILES)) to iVoid
         Move (archive_entry_set_filetype (pDirEntry, AE_IFDIR)) to iVoid
-        Move (archive_entry_set_mtime (pDirEntry, iSeconds, 0)) to iVoid
+        Move (archive_entry_set_mtime (pDirEntry, biSeconds, 0)) to iVoid
         Get ppArchive to pArchive
         Move (archive_write_header (pArchive, pDirEntry)) to eResult
         If (eResult < ARCHIVE_OK) Begin
@@ -339,67 +329,86 @@ Class cFilesArchiver is a cObject
     End_Procedure
 
     Function AddFolderRecursive Pointer pArchive String sFolderPath String sBasePath Returns Integer
-        Handle hFileFind
-        tWin32FindDataW Win32FindData
-        String sFileName sFolderPathWithFileMask sFullPath
-        Integer iRetval eResult iFileSize
-        Boolean bOk
+        String[] sDirectoryEntries
+        String sDirectoryEntry sFileName sFolderPathWithFileMask sFullPath sSeparator
+        Integer iChannel iDirectoryIndex iEntryCount iRetval eResult iFileSize
+        Boolean bDirectory bExists
         Void_Type iVoid
         UChar[] ucData
         Pointer pFileEntry
 
-        // Check if the path is already ending on a file mask
-        If (Right (sFolderPath, Length (SysConf (SYSCONF_FILE_MASK))) <> SysConf (SYSCONF_FILE_MASK)) Begin
-            // if the path does not end on a backslash
-            If (Right (sFolderPath, 1) <> SysConf (SYSCONF_DIR_SEPARATOR)) Begin
-                Move (sFolderPath - SysConf (SYSCONF_DIR_SEPARATOR)) to sFolderPath
-            End
-            // Add files mask to find the files in the folder
-            If (Right (sFolderPath, Length (SysConf (SYSCONF_FILE_MASK))) <> SysConf (SYSCONF_FILE_MASK)) Begin
-                Move (sFolderPath - SysConf (SYSCONF_FILE_MASK)) to sFolderPathWithFileMask
-            End
+        Move ARCHIVE_OK to eResult
+        Move (SysConf (SYSCONF_DIR_SEPARATOR)) to sSeparator
+        If (Right (sFolderPath, 1) <> sSeparator) Begin
+            Move (sFolderPath - sSeparator) to sFolderPath
         End
-        Else Begin
-            Move sFolderPath to sFolderPathWithFileMask
+        Move (sFolderPath - SysConf (SYSCONF_FILE_MASK)) to sFolderPathWithFileMask
+
+        // Read the complete directory before recursing. Sequential I/O only has
+        // a small channel pool, so holding one channel per nesting level would
+        // make otherwise valid deep directory trees fail.
+        Move (Seq_Open_Input_Channel ("DIR:" + sFolderPathWithFileMask)) to iChannel
+        If (iChannel = DF_SEQ_CHANNEL_ERROR) Begin
+            Function_Return ARCHIVE_FAILED
         End
 
-        Move (winFindFirstFileW (sFolderPathWithFileMask, AddressOf(Win32FindData))) to hFileFind
-        If (hFileFind <> INVALID_HANDLE_VALUE) Begin
-            Repeat
-                Move (PointerToWString (AddressOf (Win32FindData) + SizeOfType (tWin32FindData) - MAX_PATH - MAX_ALTPATH)) to sFileName
-                If (sFileName <> '.' and sFileName <> '..') Begin
-                    If (IsFlagIn (FILE_ATTRIBUTE_DIRECTORY, Win32FindData.dwFileAttributes)) Begin
-                        Send AddFolder (sFolderPath - sFileName) sBasePath
-                    End
-                    Else Begin
-                        Move (sFolderPath - sFileName) to sFullPath
-                        Get FileContents sFullPath (&ucData) to iRetval
-                        If (iRetval > 0) Begin
-                            Move (archive_entry_new ()) to pFileEntry
-                            Move (SizeOfArray (ucData)) to iFileSize
-                            Move (Replace (sBasePath, sFullPath, '')) to sFileName
-                            If (Left (sFileName, 1) = SysConf (SYSCONF_DIR_SEPARATOR)) Begin
-                                Move (Remove (sFileName, 1, 1)) to sFileName
-                            End
-                            Move (archive_entry_set_pathname (pFileEntry, AddressOf (sFileName))) to iVoid
-                            Move (archive_entry_set_size (pFileEntry, iFileSize)) to iVoid
-                            Move (archive_entry_set_perm (pFileEntry, ARCHIVE_FOR_REGULAR_FILES)) to iVoid
-                            Move (archive_entry_set_filetype (pFileEntry, AE_IFREG)) to iVoid
-                            Move (archive_write_header (pArchive, pFileEntry)) to iRetval
-                            If (iRetval = ARCHIVE_OK) Begin
-                                Move (archive_write_data (pArchive, AddressOf (ucData), iFileSize)) to iRetval
-                            End
-                            Move (archive_entry_free (pFileEntry)) to iVoid
+        While (not (SeqEof))
+            Readln Channel iChannel sDirectoryEntry
+            If (sDirectoryEntry <> "[.]" and sDirectoryEntry <> "[..]" and sDirectoryEntry <> "") Begin
+                Move sDirectoryEntry to sDirectoryEntries[SizeOfArray (sDirectoryEntries)]
+            End
+        Loop
+        Send Seq_Close_Channel iChannel
+
+        Move (SizeOfArray (sDirectoryEntries)) to iEntryCount
+        For iDirectoryIndex from 0 to (iEntryCount - 1)
+            Move sDirectoryEntries[iDirectoryIndex] to sFileName
+
+            // The portable DataFlex DIR: device encloses directory names in
+            // brackets. Confirm the stripped name on disk so a regular file
+            // whose name happens to use brackets is not misclassified.
+            Move False to bDirectory
+            If (Left (sFileName, 1) = "[" and Right (sFileName, 1) = "]") Begin
+                Move (Mid (sFileName, Length (sFileName) - 2, 2)) to sDirectoryEntry
+                Move (sFolderPath - sDirectoryEntry) to sFullPath
+                Move (ArchivePathIsPhysicalDirectory (sFullPath)) to bDirectory
+                If (bDirectory) Begin
+                    Move sDirectoryEntry to sFileName
+                End
+            End
+
+            Move (sFolderPath - sFileName) to sFullPath
+            If (bDirectory or ArchivePathIsPhysicalDirectory (sFullPath)) Begin
+                Send AddFolder sFullPath sBasePath
+            End
+            Else Begin
+                File_Exist sFullPath bExists
+                If (bExists) Begin
+                    Get FileContents sFullPath (&ucData) to iRetval
+                    If (iRetval > 0) Begin
+                        Move (archive_entry_new ()) to pFileEntry
+                        Move (SizeOfArray (ucData)) to iFileSize
+                        Move (Replace (sBasePath, sFullPath, '')) to sFileName
+                        If (Left (sFileName, 1) = sSeparator) Begin
+                            Move (Remove (sFileName, 1, 1)) to sFileName
                         End
+                        Move (archive_entry_set_pathname (pFileEntry, AddressOf (sFileName))) to iVoid
+                        Move (archive_entry_set_size (pFileEntry, iFileSize)) to iVoid
+                        Move (archive_entry_set_perm (pFileEntry, ARCHIVE_FOR_REGULAR_FILES)) to iVoid
+                        Move (archive_entry_set_filetype (pFileEntry, AE_IFREG)) to iVoid
+                        Move (archive_write_header (pArchive, pFileEntry)) to iRetval
+                        If (iRetval = ARCHIVE_OK) Begin
+                            Move (archive_write_data (pArchive, AddressOf (ucData), iFileSize)) to iRetval
+                        End
+                        Else Begin
+                            Move iRetval to eResult
+                            Send HandleArchiveError ('Write Header failed for file' * sFullPath)
+                        End
+                        Move (archive_entry_free (pFileEntry)) to iVoid
                     End
                 End
-                Move (winFindNextFileW (hFileFind, AddressOf (Win32FindData))) to iRetval
-                // If iRetval = false the function call fails but GetLastError fails to tell me if
-                // this was because we do not find any files anymore.
-            Until (not (iRetval))
-
-            Move (winFindClose (hFileFind)) to iVoid
-        End
+            End
+        Loop
 
         Function_Return eResult
     End_Function

@@ -171,9 +171,6 @@ Define ARCHIVE_FATAL    for -30 /* No more operations are possible. */
 Define ARCHIVE_READ_FORMAT_ENCRYPTION_UNSUPPORTED for -2
 Define ARCHIVE_READ_FORMAT_ENCRYPTION_DONT_KNOW   for -1
 
-// Win32 GetFileAttributes returns all bits set when the path cannot be read.
-Define ARCHIVE_INVALID_FILE_ATTRIBUTES for -1
-
 Define ARCHIVE_READ_WRITE_EXECUTE_FOR_ALL           for 511 // 0777    rwxrwxrwx    Read/Write/execute for All
 Define ARCHIVE_COMMON_FOR_EXECUTABLE_FILES_AND_DIRS for 493 // 0755    rwxr-xr-x    Common for executable files/dirs
 Define ARCHIVE_FOR_REGULAR_FILES                    for 420 // 0644    rw-r--r--    Common for regular files
@@ -220,6 +217,10 @@ External_Function archive_entry_atime_nsec "archive_entry_atime_nsec" archive.dl
 External_Function archive_entry_atime_is_set "archive_entry_atime_is_set" archive.dll ;
     Pointer pEntry ;
     Returns Integer
+
+External_Function archive_entry_mtime "archive_entry_mtime" archive.dll ;
+    Pointer pEntry ;
+    Returns BigInt
 
 External_Function archive_entry_birthtime "archive_entry_birthtime" archive.dll ;
     Pointer pEntry ;
@@ -344,7 +345,7 @@ This is a common piece of metadata stored in archive formats and is analogous to
 */
 External_Function archive_entry_set_mtime "archive_entry_set_mtime" archive.dll ;
     Pointer pArchiveentry ;
-    Integer iSeconds ;
+    BigInt biSeconds ;
     Integer iNanoSeconds ;
     Returns Void_Type
 
@@ -735,6 +736,20 @@ After calling this function, if you need to create another archive, you would ne
 External_Function archive_write_free "archive_write_free" archive.dll ;
     Pointer pArchive ;
     Returns Integer
+
+// Creates filesystem objects through libarchive's platform-native disk writer.
+External_Function archive_write_disk_new "archive_write_disk_new" archive.dll ;
+    Returns Pointer
+
+External_Function archive_write_disk_set_options "archive_write_disk_set_options" archive.dll ;
+    Pointer pArchive ;
+    Integer iFlags ;
+    Returns Integer
+
+External_Function archive_write_finish_entry "archive_write_finish_entry" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
 /*
 is a crucial function in the libarchive library, serving as the entry point for creating a new libarchive read handle specifically designed for reading metadata and data directly from the local filesystem (disk).
 */
@@ -773,6 +788,16 @@ is a convenience function in the libarchive library that configures an archive_r
 */
 External_Function archive_read_disk_set_standard_lookup "archive_read_disk_set_standard_lookup" archive.dll ;
     Pointer pDisk ;
+    Returns Integer
+
+// Populates an entry with metadata obtained through libarchive's native
+// filesystem implementation. A negative descriptor and null stat pointer make
+// libarchive use the pathname already stored in the entry.
+External_Function archive_read_disk_entry_from_file "archive_read_disk_entry_from_file" archive.dll ;
+    Pointer pArchive ;
+    Pointer pArchiveEntry ;
+    Integer iFileDescriptor ;
+    Pointer pStat ;
     Returns Integer
 
 /*-

@@ -1,0 +1,176 @@
+Use Archive.h.pkg
+
+// Small path helpers keep the runtime library independent from
+// GlobalFunctionsProcedures.pkg, whose path functions call Win32 directly.
+
+Function ArchiveSplitString Global String sValue String sDelimiter Returns String[]
+    Integer iStart iEnd iDelimiterLength
+    String[] asParts
+
+    If (sValue = "") ;
+        Function_Return asParts
+
+    Move 1 to iStart
+    Move (Length(sDelimiter)) to iDelimiterLength
+    Move (Pos(sDelimiter, sValue, iStart)) to iEnd
+    While (iEnd > 0)
+        Move (Mid(sValue, iEnd - iStart, iStart)) to asParts[-1]
+        Move (iEnd + iDelimiterLength) to iStart
+        Move (Pos(sDelimiter, sValue, iStart)) to iEnd
+    Loop
+    Move (Right(sValue, Length(sValue) - iStart + 1)) to asParts[-1]
+
+    Function_Return asParts
+End_Function
+
+Function ArchivePathDirectory Global String sPath Returns String
+    Integer iPosition
+    String sSeparator
+
+    Move (SysConf(SYSCONF_DIR_SEPARATOR)) to sSeparator
+    Move (Length(sPath)) to iPosition
+    While (iPosition > 0 and Mid(sPath, 1, iPosition) <> sSeparator)
+        Decrement iPosition
+    Loop
+
+    Function_Return (Left(sPath, iPosition))
+End_Function
+
+Function ArchivePathFileName Global String sPath Returns String
+    String sDirectory
+
+    Move (ArchivePathDirectory(sPath)) to sDirectory
+    Function_Return (Right(sPath, Length(sPath) - Length(sDirectory)))
+End_Function
+
+// Reads filesystem metadata through libarchive so directory and symlink
+// classification follows the native implementation on the current platform.
+Function ArchiveReadDiskMetadata Global String sPath UShort ByRef eFileType BigInt ByRef biModificationTime Returns Boolean
+    Integer iResult iIgnored
+    Pointer pDisk pEntry
+
+    Move 0 to eFileType
+    Move 0 to biModificationTime
+    Move (archive_read_disk_new()) to pDisk
+    If (pDisk = 0) ;
+        Function_Return False
+
+    Move (archive_entry_new()) to pEntry
+    If (pEntry = 0) Begin
+        Move (archive_read_free(pDisk)) to iIgnored
+        Function_Return False
+    End
+
+    Move (archive_entry_set_pathname(pEntry, AddressOf(sPath))) to iIgnored
+    // Only type and modification time are needed. Avoid platform-specific ACL,
+    // extended-attribute, and file-flag lookups that could produce warnings.
+    Move (archive_read_disk_set_behavior(pDisk, ;
+        (ARCHIVE_READDISK_NO_ACL ior ARCHIVE_READDISK_NO_XATTR ior ARCHIVE_READDISK_NO_FFLAGS))) to iResult
+    If (iResult = ARCHIVE_OK) ;
+        Move (archive_read_disk_set_symlink_physical(pDisk)) to iResult
+    If (iResult = ARCHIVE_OK) ;
+        Move (archive_read_disk_entry_from_file(pDisk, pEntry, -1, 0)) to iResult
+    If (iResult = ARCHIVE_OK) Begin
+        Move (archive_entry_filetype(pEntry)) to eFileType
+        Move (archive_entry_mtime(pEntry)) to biModificationTime
+    End
+
+    Move (archive_entry_free(pEntry)) to iIgnored
+    Move (archive_read_free(pDisk)) to iIgnored
+    Function_Return (iResult = ARCHIVE_OK)
+End_Function
+
+Function ArchivePathIsPhysicalDirectory Global String sPath Returns Boolean
+    Boolean bMetadataRead
+    UShort eFileType
+    BigInt biModificationTime
+
+    Move (ArchiveReadDiskMetadata(sPath, (&eFileType), (&biModificationTime))) to bMetadataRead
+    Function_Return (bMetadataRead and eFileType = AE_IFDIR)
+End_Function
+
+Function ArchivePathModificationTime Global String sPath Returns BigInt
+    Boolean bMetadataRead
+    UShort eFileType
+    BigInt biModificationTime
+
+    Move (ArchiveReadDiskMetadata(sPath, (&eFileType), (&biModificationTime))) to bMetadataRead
+    Function_Return (If(bMetadataRead, biModificationTime, 0))
+End_Function
+
+// Produces an absolute, lexically normalized native path without relying on an
+// operating-system DLL. Drive-relative Windows paths are deliberately rejected.
+Function ArchiveFullPathName Global String sPath Returns String
+    Integer i iStart iPartCount
+    String sCurrentDirectory sPrefix sRemainder sResult sSeparator sPart
+    String[] asParts asNormalizedParts
+
+    Move (Trim(sPath)) to sPath
+    If (sPath = "") ;
+        Function_Return ""
+
+    Move (SysConf(SYSCONF_DIR_SEPARATOR)) to sSeparator
+    Get_Current_Directory to sCurrentDirectory
+
+    If (sSeparator = "\") Begin
+        // Windows accepts forward slashes as path separators; normalize them
+        // before determining whether the path is absolute.
+        Move (Replaces("/", sPath, sSeparator)) to sPath
+        If (Left(sPath, 2) = sSeparator + sSeparator) Begin
+            Move (ArchiveSplitString(Mid(sPath, Length(sPath) - 2, 3), sSeparator)) to asParts
+            If (SizeOfArray(asParts) < 2) ;
+                Function_Return ""
+            Move (sSeparator + sSeparator + asParts[0] + sSeparator + asParts[1]) to sPrefix
+            Move 2 to iStart
+        End
+        Else Begin
+            If (Length(sPath) >= 2 and Mid(sPath, 1, 2) = ":") Begin
+                If (Length(sPath) < 3 or Mid(sPath, 1, 3) <> sSeparator) ;
+                    Function_Return ""
+            End
+            Else If (Left(sPath, 1) = sSeparator) Begin
+                If (Length(sCurrentDirectory) < 2 or Mid(sCurrentDirectory, 1, 2) <> ":") ;
+                    Function_Return ""
+                Move (Left(sCurrentDirectory, 2) + sPath) to sPath
+            End
+            Else Begin
+                Move (sCurrentDirectory - sSeparator - sPath) to sPath
+            End
+
+            Move (Left(sPath, 3)) to sPrefix
+            Move (Mid(sPath, Length(sPath) - 3, 4)) to sRemainder
+            Move (ArchiveSplitString(sRemainder, sSeparator)) to asParts
+        End
+    End
+    Else Begin
+        If (Left(sPath, 1) <> sSeparator) ;
+            Move (sCurrentDirectory - sSeparator - sPath) to sPath
+        Move sSeparator to sPrefix
+        Move (Mid(sPath, Length(sPath) - 1, 2)) to sRemainder
+        Move (ArchiveSplitString(sRemainder, sSeparator)) to asParts
+    End
+
+    Move (SizeOfArray(asParts)) to iPartCount
+    For i from iStart to (iPartCount - 1)
+        Move asParts[i] to sPart
+        If (sPart <> "" and sPart <> ".") Begin
+            If (sPart = "..") Begin
+                If (SizeOfArray(asNormalizedParts) = 0) ;
+                    Function_Return ""
+                Move (ResizeArray(asNormalizedParts, SizeOfArray(asNormalizedParts) - 1)) to asNormalizedParts
+            End
+            Else Begin
+                Move sPart to asNormalizedParts[-1]
+            End
+        End
+    Loop
+
+    Move sPrefix to sResult
+    For i from 0 to (SizeOfArray(asNormalizedParts) - 1)
+        If (Right(sResult, 1) <> sSeparator) ;
+            Move (sResult + sSeparator) to sResult
+        Move (sResult + asNormalizedParts[i]) to sResult
+    Loop
+
+    Function_Return sResult
+End_Function

@@ -1,6 +1,5 @@
 {
     "dependencies": [
-        "Appsrc/Libraries/DateAndTime/Library/DateTime.sws",
         {
             "source": "https://github.com/DataFlex-dev/DFUnit.git",
             "sws": "DFUnit/DFUnit.sws",

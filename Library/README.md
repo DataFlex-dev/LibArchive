@@ -1,6 +1,6 @@
 # LibArchive library
 
-Add `LibArchive.sws` as a DataFlex library, deploy the required 64-bit DLLs beside the consuming executable, and `Use cArchiveReader.pkg` for untrusted ZIP input.
+Add `LibArchive.sws` as a DataFlex library and `Use cArchiveReader.pkg` for untrusted ZIP input. The included native binaries are Windows x64; other targets must provide their own compatible libarchive build and matching external-library binding.
 
 ## Reader API
 
@@ -32,10 +32,10 @@ The detailed result message is intended for trusted logs. Server endpoints shoul
 - Enforce the compressed upload limit before parsing.
 - Keep the source file immutable until extraction finishes.
 - Supply a destination that does not exist.
-- Use an existing, application-owned, non-reparse destination parent that untrusted processes cannot modify.
+- Use an existing, application-owned physical destination parent, not a symbolic link or junction, that untrusted processes cannot modify.
 - Keep the native libarchive DLL and its dependencies current.
 
-The reader accepts only plain, single-volume, non-ZIP64 seekable ZIP files whose entries use stored or deflate compression. It requires matching local and central compression metadata, rejects encryption markers in either header, and validates the end record, every bounded central-directory record, and each compressed-data extent before libarchive can allocate or rescan seekable data. End-record validation requires physical EOF by default. Callers that control their ZIP producer may set `pbAllowTrailingZeroPadding` to accept only zero-filled writer block padding; arbitrary trailing content remains invalid and still counts toward `piMaxArchiveBytes`. The reader deliberately avoids `archive_read_extract`; application-owned block writes allow actual decompressed bytes to be checked before they reach disk.
+The reader accepts only plain, single-volume, non-ZIP64 seekable ZIP files whose entries use stored or deflate compression. It requires matching local and central compression metadata, rejects encryption markers in either header, and validates the end record, every bounded central-directory record, and each compressed-data extent before libarchive can allocate or rescan seekable data. End-record validation requires physical EOF by default. Callers that control their ZIP producer may set `pbAllowTrailingZeroPadding` to accept only zero-filled writer block padding; arbitrary trailing content remains invalid and still counts toward `piMaxArchiveBytes`. The reader deliberately avoids `archive_read_extract`; application-owned block reads allow actual decompressed bytes to be checked before libarchive's platform-native disk writer receives them.
 
 ## Tests
 
@@ -45,4 +45,10 @@ The reader accepts only plain, single-volume, non-ZIP64 seekable ZIP files whose
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Demo\Tests\RunArchiveReaderTests.ps1
 ```
 
-The script returns a failing process exit code when the build or any DFUnit test fails. Pass `-KeepFixtures` only when the generated archives or JUnit-compatible XML report are needed for debugging.
+The script returns a failing process exit code when the build or any DFUnit test fails. The suite also exercises `cFilesArchiver` directory discovery with a nested portable `DIR:` fixture. Pass `-KeepFixtures` only when the generated archives or JUnit-compatible XML report are needed for debugging.
+
+## Platform boundary
+
+The library source has no direct `Kernel32.dll` dependency. It uses DataFlex filesystem operations for discovery and cleanup and libarchive's disk APIs for metadata and extraction. The former `DateAndTime` submodule was removed because its Windows timestamp conversion was only needed by `cFilesArchiver`.
+
+`Archive.h.pkg` still names the native dependency `archive.dll`, and the checked-in binaries and PowerShell test runner are Windows x64 assets. Porting deployment to another operating system therefore still requires a target-native libarchive binary and the external-library name expected by that DataFlex runtime.
