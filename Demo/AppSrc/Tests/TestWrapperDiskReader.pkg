@@ -1,0 +1,907 @@
+﻿// Tests of cArchiveDiskReader (Library\AppSrc\cArchiveDiskReader.pkg). Included inside the test application object.
+Use cArchiveReader.pkg
+Use cArchiveDiskReader.pkg
+
+// Windows functions the tests use to create and inspect files (names are prefixed to avoid clashes).
+External_Function WrapDiskTestCreateFile "CreateFileW" kernel32.dll ;
+    WString wsFileName ;
+    UInteger iAccess ;
+    UInteger iShareMode ;
+    Pointer pSecurity ;
+    UInteger iDisposition ;
+    UInteger iFlags ;
+    Handle hTemplate ;
+    Returns Handle
+
+External_Function WrapDiskTestWriteFile "WriteFile" kernel32.dll ;
+    Handle hFile ;
+    Pointer pBuffer ;
+    UInteger iBytes ;
+    Pointer pBytesWritten ;
+    Pointer pOverlapped ;
+    Returns Integer
+
+External_Function WrapDiskTestReadFile "ReadFile" kernel32.dll ;
+    Handle hFile ;
+    Pointer pBuffer ;
+    UInteger iBytes ;
+    Pointer pBytesRead ;
+    Pointer pOverlapped ;
+    Returns Integer
+
+External_Function WrapDiskTestGetFileSize "GetFileSizeEx" kernel32.dll ;
+    Handle hFile ;
+    Pointer pSize ;
+    Returns Integer
+
+External_Function WrapDiskTestCloseHandle "CloseHandle" kernel32.dll ;
+    Handle hObject ;
+    Returns Integer
+
+External_Function WrapDiskTestRemoveDirectory "RemoveDirectoryW" kernel32.dll ;
+    WString wsPath ;
+    Returns Integer
+
+External_Function WrapDiskTestCreateSymlink "CreateSymbolicLinkW" kernel32.dll ;
+    WString wsLink ;
+    WString wsTarget ;
+    UInteger iFlags ;
+    Returns Integer
+
+Object oWrapperDiskReaderTests is a cArchiveTestFixture
+    Set psTestFixtureName to "WrapperDiskReader"
+
+    // Stand-in for a cArchiveMatch object: the disk reader only needs ppArchive of it.
+    Object oFakeMatch is a cObject
+        Property Pointer ppArchive 0
+    End_Object
+
+    Function FakeMatch Returns Handle
+        Function_Return (oFakeMatch (Self))
+    End_Function
+
+    // ---- helpers: files and the test tree -------------------------------------------------------------------------
+
+    Function WriteBytes String sFileName UChar[] ByRef ucData Returns Boolean
+        Handle hFile
+        WString wsFileName
+        Integer iWritten iOk iVoid iCount
+        Boolean bOk
+
+        Move sFileName to wsFileName
+        Move (SizeOfArray (ucData)) to iCount
+        Move (WrapDiskTestCreateFile (wsFileName, 1073741824, 1, 0, 2, 128, 0)) to hFile
+        If (hFile = -1) Begin
+            Function_Return False
+        End
+        Move True to bOk
+        If (iCount > 0) Begin
+            Move (WrapDiskTestWriteFile (hFile, AddressOf (ucData), iCount, AddressOf (iWritten), 0)) to iOk
+            Move (iOk <> 0 and iWritten = iCount) to bOk
+        End
+        Move (WrapDiskTestCloseHandle (hFile)) to iVoid
+        Function_Return bOk
+    End_Function
+
+    Function WriteText String sFileName String sText Returns Boolean
+        UChar[] ucData
+        Integer iBytes iVoid
+        Boolean bOk
+
+        Move (SizeOfString (sText)) to iBytes
+        If (iBytes > 0) Begin
+            Move (ResizeArray (ucData, iBytes)) to ucData
+            Move (CopyMemory (AddressOf (ucData), AddressOf (sText), iBytes)) to iVoid
+        End
+        Get WriteBytes sFileName (&ucData) to bOk
+        Function_Return bOk
+    End_Function
+
+    Function ReadFileBytes String sFileName Boolean ByRef bFound Returns UChar[]
+        Handle hFile
+        WString wsFileName
+        BigInt iSize
+        Integer iRead iOk iVoid
+        UChar[] ucData ucEmpty
+
+        Move False to bFound
+        Move sFileName to wsFileName
+        Move (WrapDiskTestCreateFile (wsFileName, 2147483648, 1, 0, 3, 128, 0)) to hFile
+        If (hFile = -1) Begin
+            Function_Return ucEmpty
+        End
+        Move True to bFound
+        Move 0 to iSize
+        Move (WrapDiskTestGetFileSize (hFile, AddressOf (iSize))) to iOk
+        If (iSize > 0) Begin
+            Move (ResizeArray (ucData, iSize)) to ucData
+            Move 0 to iRead
+            Move (WrapDiskTestReadFile (hFile, AddressOf (ucData), iSize, AddressOf (iRead), 0)) to iOk
+            If (iRead <> iSize) Begin
+                Move False to bFound
+            End
+        End
+        Move (WrapDiskTestCloseHandle (hFile)) to iVoid
+        Function_Return ucData
+    End_Function
+
+    Function ReadFileText String sFileName Returns String
+        UChar[] ucData
+        Boolean bFound
+        Integer iBytes iVoid
+        String sText
+
+        Get ReadFileBytes sFileName (&bFound) to ucData
+        Move (SizeOfArray (ucData)) to iBytes
+        If (iBytes = 0) Begin
+            Function_Return ""
+        End
+        Move (Repeat (Character (0), iBytes)) to sText
+        Move (CopyMemory (AddressOf (sText), AddressOf (ucData), iBytes)) to iVoid
+        Function_Return sText
+    End_Function
+
+    Function BytesToString UChar[] ByRef ucBuffer Returns String
+        Integer iBytes iVoid
+        String sText
+
+        Move (SizeOfArray (ucBuffer)) to iBytes
+        If (iBytes = 0) Begin
+            Function_Return ""
+        End
+        Move (Repeat (Character (0), iBytes)) to sText
+        Move (CopyMemory (AddressOf (sText), AddressOf (ucBuffer), iBytes)) to iVoid
+        Function_Return sText
+    End_Function
+
+    Function FileExists String sFileName Returns Boolean
+        Function_Return (GetFileAttributes (sFileName) <> INVALID_FILE_ATTRIBUTES)
+    End_Function
+
+    // Modification time and device/inode of a file as libarchive's disk reader sees them (raw externals).
+    Function FileFacts String sFileName BigInt ByRef iMtime BigInt ByRef iDevice BigInt ByRef iInode Returns Integer
+        Pointer pDisk pEntry
+        Integer iResult
+        Void_Type iVoid
+        WString wsFileName
+
+        Move sFileName to wsFileName
+        Move (archive_read_disk_new ()) to pDisk
+        Move (archive_entry_new ()) to pEntry
+        Move (archive_entry_update_pathname_utf8 (pEntry, AddressOf (sFileName))) to iResult
+        Move (archive_entry_copy_sourcepath_w (pEntry, AddressOf (wsFileName))) to iVoid
+        Move (archive_read_disk_entry_from_file (pDisk, pEntry, -1, 0)) to iResult
+        Move (archive_entry_mtime (pEntry)) to iMtime
+        Move (archive_entry_dev (pEntry)) to iDevice
+        Move (archive_entry_ino64 (pEntry)) to iInode
+        Move (archive_entry_free (pEntry)) to iVoid
+        Move (archive_read_free (pDisk)) to iVoid
+        Function_Return iResult
+    End_Function
+
+    Procedure RemoveFolder String sFolder
+        WString wsFolder
+        Integer iOk
+
+        Move sFolder to wsFolder
+        Move (WrapDiskTestRemoveDirectory (wsFolder)) to iOk
+    End_Procedure
+
+    // Root folder of the test tree (without trailing backslash).
+    Function TreeRoot Returns String
+        String sRoot
+        Get TempFolder to sRoot
+        Function_Return (sRoot + "wdr_tree")
+    End_Function
+
+    // Number of entries of the test tree including the root folder.
+    Function TreeEntryCount Returns Integer
+        Function_Return 9
+    End_Function
+
+    // Creates:  root\a.txt  root\skip.log  root\unicode-ünï-€.txt  root\emptydir\  root\sub\b.txt  root\sub\deep\c.bin
+    Procedure BuildTree
+        String sRoot
+        UChar[] ucBinary
+        Integer iIndex
+        Boolean bOk
+
+        Get TreeRoot to sRoot
+        Move (CreateDirectoryRecursive (sRoot + "\sub\deep\")) to bOk
+        Move (CreateDirectoryRecursive (sRoot + "\emptydir\")) to bOk
+        Get WriteText (sRoot + "\a.txt") "alpha" to bOk
+        Get WriteText (sRoot + "\skip.log") "log data" to bOk
+        Get WriteText (sRoot + "\unicode-ünï-€.txt") "unicode content" to bOk
+        Get WriteText (sRoot + "\sub\b.txt") "bravo bravo" to bOk
+        Move (ResizeArray (ucBinary, 3000)) to ucBinary
+        For iIndex from 0 to 2999
+            Move (Mod (iIndex * 3, 256)) to ucBinary[iIndex]
+        Loop
+        Get WriteBytes (sRoot + "\sub\deep\c.bin") (&ucBinary) to bOk
+    End_Procedure
+
+    Procedure RemoveTree
+        String sRoot
+
+        Get TreeRoot to sRoot
+        EraseFile (sRoot + "\a.txt")
+        EraseFile (sRoot + "\skip.log")
+        EraseFile (sRoot + "\unicode-ünï-€.txt")
+        EraseFile (sRoot + "\link.txt")
+        EraseFile (sRoot + "\sub\b.txt")
+        EraseFile (sRoot + "\sub\deep\c.bin")
+        Send RemoveFolder (sRoot + "\sub\deep")
+        Send RemoveFolder (sRoot + "\sub")
+        Send RemoveFolder (sRoot + "\emptydir")
+        Send RemoveFolder sRoot
+    End_Procedure
+
+    // Path relative to the tree root with "/" separators; the root itself gives ".".
+    Function RelativeName String sPath Returns String
+        String sRoot sName
+        Integer iLength
+
+        Get TreeRoot to sRoot
+        Move (Replaces ("\", sPath, "/")) to sName
+        Move (Replaces ("\", sRoot, "/")) to sRoot
+        Move (Length (sRoot)) to iLength
+        If (sName = sRoot) Begin
+            Function_Return "."
+        End
+        If (Left (sName, iLength + 1) = sRoot + "/") Begin
+            Function_Return (Right (sName, Length (sName) - iLength - 1))
+        End
+        Function_Return sName
+    End_Function
+
+    // Index of a relative name in the entry list, -1 when missing.
+    Function IndexOfName tArchiveEntryInfo[] ByRef aEntries String sRelative Returns Integer
+        Integer iIndex iCount
+        String sName
+
+        Move (SizeOfArray (aEntries)) to iCount
+        For iIndex from 0 to (iCount - 1)
+            Get RelativeName aEntries[iIndex].sPathname to sName
+            If (sName = sRelative) Begin
+                Function_Return iIndex
+            End
+        Loop
+        Function_Return -1
+    End_Function
+
+    // Number of entries a reader returns until ARCHIVE_EOF (no Descend: folders are not entered).
+    Function CountEntries Handle hoReader Returns Integer
+        Integer iResult iCount
+
+        Move 0 to iCount
+        Get NextHeader of hoReader to iResult
+        While (iResult = ARCHIVE_OK or iResult = ARCHIVE_WARN)
+            Increment iCount
+            Get NextHeader of hoReader to iResult
+        Loop
+        Function_Return iCount
+    End_Function
+
+    Function ContainsName String[] ByRef asNames String sName Returns Boolean
+        Integer iIndex iCount
+
+        Move (SizeOfArray (asNames)) to iCount
+        For iIndex from 0 to (iCount - 1)
+            If (asNames[iIndex] = sName) Begin
+                Function_Return True
+            End
+        Loop
+        Function_Return False
+    End_Function
+
+    // Opens a disk reader (with a handle) for the test tree.
+    Function NewDiskReader Returns Handle
+        Handle hoReader
+        Get Create U_cArchiveDiskReader to hoReader
+        Send CreateDiskReader of hoReader
+        Function_Return hoReader
+    End_Function
+
+    Procedure DropReader Handle hoReader
+        Send Destroy_Object of hoReader
+    End_Procedure
+
+    // Checks all entries of a ListFolder result against the test tree.
+    Procedure VerifyTreeEntries tArchiveEntryInfo[] ByRef aEntries String sLabel Boolean bWithLog
+        Integer iIndex iCount
+
+        Move (TreeEntryCount (Self)) to iCount
+        If (not (bWithLog)) Begin
+            Decrement iCount
+        End
+        Send AssertIAreEqual iCount (SizeOfArray (aEntries)) (sLabel * "entry count")
+        Get IndexOfName (&aEntries) "." to iIndex
+        Send Assert (iIndex >= 0) (sLabel * "root folder is listed")
+        If (iIndex >= 0) Begin
+            Send AssertIAreEqual AE_IFDIR aEntries[iIndex].eFileType (sLabel * "root is a folder")
+            Send AssertFalse aEntries[iIndex].bEncrypted (sLabel * "root is not encrypted")
+        End
+        Get IndexOfName (&aEntries) "a.txt" to iIndex
+        Send Assert (iIndex >= 0) (sLabel * "a.txt is listed")
+        If (iIndex >= 0) Begin
+            Send AssertIAreEqual AE_IFREG aEntries[iIndex].eFileType (sLabel * "a.txt type")
+            Send AssertBIAreEqual 5 aEntries[iIndex].iSize (sLabel * "a.txt size")
+            Send Assert (aEntries[iIndex].iMtime > 1700000000) (sLabel * "a.txt mtime")
+            Send Assert (aEntries[iIndex].iPerm > 0) (sLabel * "a.txt permissions")
+        End
+        Get IndexOfName (&aEntries) "skip.log" to iIndex
+        If (bWithLog) Begin
+            Send Assert (iIndex >= 0) (sLabel * "skip.log is listed")
+        End
+        Else Begin
+            Send Assert (iIndex < 0) (sLabel * "skip.log is excluded")
+        End
+        Get IndexOfName (&aEntries) "unicode-ünï-€.txt" to iIndex
+        Send Assert (iIndex >= 0) (sLabel * "unicode file is listed")
+        If (iIndex >= 0) Begin
+            Send AssertBIAreEqual 15 aEntries[iIndex].iSize (sLabel * "unicode file size")
+        End
+        Get IndexOfName (&aEntries) "emptydir" to iIndex
+        Send Assert (iIndex >= 0) (sLabel * "emptydir is listed")
+        If (iIndex >= 0) Begin
+            Send AssertIAreEqual AE_IFDIR aEntries[iIndex].eFileType (sLabel * "emptydir type")
+        End
+        Get IndexOfName (&aEntries) "sub" to iIndex
+        Send Assert (iIndex >= 0) (sLabel * "sub is listed")
+        If (iIndex >= 0) Begin
+            Send AssertIAreEqual AE_IFDIR aEntries[iIndex].eFileType (sLabel * "sub type")
+        End
+        Get IndexOfName (&aEntries) "sub/b.txt" to iIndex
+        Send Assert (iIndex >= 0) (sLabel * "sub/b.txt is listed")
+        If (iIndex >= 0) Begin
+            Send AssertBIAreEqual 11 aEntries[iIndex].iSize (sLabel * "sub/b.txt size")
+        End
+        Get IndexOfName (&aEntries) "sub/deep" to iIndex
+        Send Assert (iIndex >= 0) (sLabel * "sub/deep is listed")
+        Get IndexOfName (&aEntries) "sub/deep/c.bin" to iIndex
+        Send Assert (iIndex >= 0) (sLabel * "sub/deep/c.bin is listed")
+        If (iIndex >= 0) Begin
+            Send AssertBIAreEqual 3000 aEntries[iIndex].iSize (sLabel * "sub/deep/c.bin size")
+            Send AssertIAreEqual AE_IFREG aEntries[iIndex].eFileType (sLabel * "sub/deep/c.bin type")
+        End
+    End_Procedure
+
+    // ---- handle lifecycle and guards ----------------------------------------------------------------------------------
+
+    Object oLifecycleTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult
+
+            Get Create U_cArchiveDiskReader to hoReader
+            Send AssertFalse (HasHandle (hoReader)) "no handle before CreateDiskReader"
+            Send CreateDiskReader of hoReader
+            Send Assert (HasHandle (hoReader)) "CreateDiskReader creates a handle"
+            Send CreateDiskReader of hoReader
+            Send Assert (HasHandle (hoReader)) "CreateDiskReader again"
+            Send CloseDiskReader of hoReader
+            Send Assert (HasHandle (hoReader)) "CloseDiskReader keeps the handle"
+            Send FreeHandle of hoReader
+            Send AssertFalse (HasHandle (hoReader)) "FreeHandle frees the handle"
+            Send FreeHandle of hoReader
+
+            // without a handle the methods report ARCHIVE_FATAL
+            Set pbRaiseErrors of hoReader to False
+            Get OpenDisk of hoReader "C:\" to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "OpenDisk without handle"
+            Get NextHeader of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "NextHeader without handle"
+            Get Descend of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "Descend without handle"
+            Get SetMatching of hoReader 0 to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "SetMatching without handle"
+            Get SetStandardLookup of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "SetStandardLookup without handle"
+            Send AssertFalse (CanDescend (hoReader)) "CanDescend without handle"
+            Send AssertSAreEqual "" (UserName (hoReader, 0)) "UserName without handle"
+            Send AssertSAreEqual "" (GroupName (hoReader, 0)) "GroupName without handle"
+            Send AssertIAreEqual (-1) (piCurrentFilesystemId (hoReader)) "filesystem id without handle"
+            Send AssertFalse (pbCurrentFilesystemIsSynthetic (hoReader)) "synthetic without handle"
+            Send AssertFalse (pbCurrentFilesystemIsRemote (hoReader)) "remote without handle"
+            Set pbRaiseErrors of hoReader to True
+            Send ExpectError DFERR_PROGRAM
+            Get NextHeader of hoReader to iResult
+            Send UnExpectError DFERR_PROGRAM
+            Delegate Send DropReader hoReader
+        End_Procedure
+    End_Object
+
+    // ---- traversal ----------------------------------------------------------------------------------------------------
+
+    // Manual traversal: Descend enters every folder.
+    Object oTraversalTest is a cTest
+        Procedure Test
+            Handle hoReader hoEntry
+            Integer iResult iCount iFolders iFiles
+            String sRoot sName
+            Pointer pEntry
+            String[] asNames
+            Boolean bFolder bFound
+
+            Delegate Send BuildTree
+            Delegate Get TreeRoot to sRoot
+            Delegate Get NewDiskReader to hoReader
+            Get OpenDisk of hoReader sRoot to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "OpenDisk"
+            Get phoEntry of hoReader to hoEntry
+            Move 0 to iCount
+            Move 0 to iFolders
+            Move 0 to iFiles
+            Get NextHeader of hoReader to iResult
+            While (iResult = ARCHIVE_OK)
+                Get ppEntry of hoEntry to pEntry
+                Delegate Get RelativeName (psPathname (hoEntry)) to sName
+                Move sName to asNames[iCount]
+                Increment iCount
+                Move (archive_entry_filetype (pEntry) = AE_IFDIR) to bFolder
+                Send Assert (bFolder = CanDescend (hoReader)) ("CanDescend equals is-folder:" * sName)
+                If (bFolder) Begin
+                    Increment iFolders
+                    Get Descend of hoReader to iResult
+                    Send AssertIAreEqual ARCHIVE_OK iResult "Descend"
+                End
+                Else Begin
+                    Increment iFiles
+                End
+                Get NextHeader of hoReader to iResult
+            Loop
+            Send AssertIAreEqual ARCHIVE_EOF iResult "end of the traversal"
+            Send AssertIAreEqual 9 iCount "entries"
+            Send AssertIAreEqual 4 iFolders "folders: root, emptydir, sub, sub/deep"
+            Send AssertIAreEqual 5 iFiles "files"
+            Send AssertSAreEqual "." asNames[0] "the root comes first"
+            Delegate Get ContainsName (&asNames) "sub/deep/c.bin" to bFound
+            Send Assert bFound "deepest file"
+            Delegate Get ContainsName (&asNames) "unicode-ünï-€.txt" to bFound
+            Send Assert bFound "unicode file name"
+            Delegate Send DropReader hoReader
+            Delegate Send RemoveTree
+        End_Procedure
+    End_Object
+
+    // Without Descend the traversal stops after the root; descending the root only lists its children.
+    Object oDescendControlTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult iCount
+            String sRoot
+
+            Delegate Send BuildTree
+            Delegate Get TreeRoot to sRoot
+
+            Delegate Get NewDiskReader to hoReader
+            Get OpenDisk of hoReader sRoot to iResult
+            Delegate Get CountEntries hoReader to iCount
+            Send AssertIAreEqual 1 iCount "no Descend: only the root"
+            Delegate Send DropReader hoReader
+
+            Delegate Get NewDiskReader to hoReader
+            Get OpenDisk of hoReader sRoot to iResult
+            Get NextHeader of hoReader to iResult
+            Get Descend of hoReader to iResult
+            Delegate Get CountEntries hoReader to iCount
+            Send AssertIAreEqual 5 iCount "root descended only: its 5 children"
+            Delegate Send DropReader hoReader
+
+            // a file can be traversed on its own; Descend on a file is ignored
+            Delegate Get NewDiskReader to hoReader
+            Get OpenDisk of hoReader (sRoot + "\a.txt") to iResult
+            Get NextHeader of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "single file"
+            Send AssertFalse (CanDescend (hoReader)) "a file cannot be descended"
+            Get Descend of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "Descend on a file is ignored"
+            Delegate Get CountEntries hoReader to iCount
+            Send AssertIAreEqual 0 iCount "nothing after the file"
+            Delegate Send DropReader hoReader
+            Delegate Send RemoveTree
+        End_Procedure
+    End_Object
+
+    Object oListFolderTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult
+            String sRoot
+            tArchiveEntryInfo[] aEntries
+
+            Delegate Send BuildTree
+            Delegate Get TreeRoot to sRoot
+            Get Create U_cArchiveDiskReader to hoReader
+            Get ListFolder of hoReader sRoot to aEntries
+            Delegate Send VerifyTreeEntries (&aEntries) "ListFolder" True
+            Send Assert (HasHandle (hoReader)) "ListFolder creates and keeps the handle"
+            // the handle can be reused
+            Get ListFolder of hoReader sRoot to aEntries
+            Delegate Send VerifyTreeEntries (&aEntries) "ListFolder again" True
+            Get ListFolder of hoReader (sRoot + "\sub") to aEntries
+            Send AssertIAreEqual 4 (SizeOfArray (aEntries)) "sub: folder itself, b.txt, deep, c.bin"
+            // a trailing backslash is accepted
+            Get ListFolder of hoReader (sRoot + "\") to aEntries
+            Send AssertIAreEqual 9 (SizeOfArray (aEntries)) "trailing backslash"
+            // missing folder
+            Set pbRaiseErrors of hoReader to False
+            Get ListFolder of hoReader (sRoot + "\no-such-folder") to aEntries
+            Send AssertIAreEqual 0 (SizeOfArray (aEntries)) "missing folder gives an empty list"
+            Delegate Send DropReader hoReader
+            Delegate Send RemoveTree
+        End_Procedure
+    End_Object
+
+    // ---- reading file data ----------------------------------------------------------------------------------------------
+
+    Object oReadDataTest is a cTest
+        Procedure Test
+            Handle hoReader hoEntry
+            Integer iResult iIndex iBad
+            BigInt iOffset
+            String sRoot sName sData
+            UChar[] ucData ucBlock ucChunk
+            Pointer pEntry
+
+            Delegate Send BuildTree
+            Delegate Get TreeRoot to sRoot
+            Delegate Get NewDiskReader to hoReader
+            Get OpenDisk of hoReader sRoot to iResult
+            Get phoEntry of hoReader to hoEntry
+            Get NextHeader of hoReader to iResult
+            While (iResult = ARCHIVE_OK)
+                Get ppEntry of hoEntry to pEntry
+                Delegate Get RelativeName (psPathname (hoEntry)) to sName
+                If (CanDescend (hoReader)) Begin
+                    Get Descend of hoReader to iResult
+                End
+                Else Begin
+                    If (sName = "a.txt") Begin
+                        Get ReadDataToString of hoReader to sData
+                        Send AssertSAreEqual "alpha" sData "ReadDataToString"
+                    End
+                    If (sName = "sub/b.txt") Begin
+                        Get ReadData of hoReader 5 to ucChunk
+                        Delegate Get BytesToString (&ucChunk) to sData
+                        Send AssertSAreEqual "bravo" sData "ReadData chunk"
+                        Get ReadAllData of hoReader (&ucData) to iResult
+                        Send AssertIAreEqual ARCHIVE_OK iResult "ReadAllData"
+                        Delegate Get BytesToString (&ucData) to sData
+                        Send AssertSAreEqual " bravo" sData "rest of the file"
+                    End
+                    If (sName = "unicode-ünï-€.txt") Begin
+                        Get ReadDataToString of hoReader to sData
+                        Send AssertSAreEqual "unicode content" sData "unicode file name data"
+                    End
+                    If (sName = "sub/deep/c.bin") Begin
+                        Get ReadDataBlock of hoReader (&iOffset) (&ucBlock) to iResult
+                        Send AssertIAreEqual ARCHIVE_OK iResult "ReadDataBlock"
+                        Send AssertBIAreEqual 0 iOffset "block offset"
+                        Send Assert (SizeOfArray (ucBlock) > 0) "block size"
+                        Move 0 to iBad
+                        For iIndex from 0 to (SizeOfArray (ucBlock) - 1)
+                            If (ucBlock[iIndex] <> (Mod (iIndex * 3, 256))) Begin
+                                Increment iBad
+                            End
+                        Loop
+                        Send AssertIAreEqual 0 iBad "wrong bytes in the first block"
+                        Get ReadDataBlock of hoReader (&iOffset) (&ucBlock) to iResult
+                        Send AssertIAreEqual ARCHIVE_EOF iResult "end of the entry"
+                    End
+                End
+                Get NextHeader of hoReader to iResult
+            Loop
+            Send AssertIAreEqual ARCHIVE_EOF iResult "end"
+            Delegate Send DropReader hoReader
+            Delegate Send RemoveTree
+        End_Procedure
+    End_Object
+
+    // The whole content of a file through ReadAllData and DataToFile.
+    Object oReadWholeFileTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult iIndex iBad
+            String sRoot sOut
+            UChar[] ucData ucCopy
+            Boolean bFound
+            tArchiveEntryInfo tInfo
+
+            Delegate Send BuildTree
+            Delegate Get TreeRoot to sRoot
+            Delegate Get TempFile "wdr_whole.bin" to sOut
+            Delegate Get NewDiskReader to hoReader
+            Get OpenDisk of hoReader (sRoot + "\sub\deep\c.bin") to iResult
+            Get NextHeader of hoReader to iResult
+            Get EntryInfo of hoReader to tInfo
+            Send AssertBIAreEqual 3000 tInfo.iSize "EntryInfo size"
+            Send AssertIAreEqual AE_IFREG tInfo.eFileType "EntryInfo type"
+            Get ReadAllData of hoReader (&ucData) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "ReadAllData"
+            Send AssertIAreEqual 3000 (SizeOfArray (ucData)) "size"
+            Move 0 to iBad
+            For iIndex from 0 to (SizeOfArray (ucData) - 1)
+                If (ucData[iIndex] <> (Mod (iIndex * 3, 256))) Begin
+                    Increment iBad
+                End
+            Loop
+            Send AssertIAreEqual 0 iBad "wrong bytes"
+            Delegate Send DropReader hoReader
+
+            Delegate Get NewDiskReader to hoReader
+            Get OpenDisk of hoReader (sRoot + "\sub\deep\c.bin") to iResult
+            Get NextHeader of hoReader to iResult
+            Get DataToFile of hoReader sOut to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "DataToFile"
+            Delegate Get ReadFileBytes sOut (&bFound) to ucCopy
+            Send AssertIAreEqual 3000 (SizeOfArray (ucCopy)) "copy size"
+            Move 0 to iBad
+            For iIndex from 0 to (SizeOfArray (ucCopy) - 1)
+                If (ucCopy[iIndex] <> (Mod (iIndex * 3, 256))) Begin
+                    Increment iBad
+                End
+            Loop
+            Send AssertIAreEqual 0 iBad "wrong bytes in the copy"
+            Delegate Send DropReader hoReader
+            EraseFile sOut
+            Delegate Send RemoveTree
+        End_Procedure
+    End_Object
+
+    // ---- EntryFromFile ------------------------------------------------------------------------------------------------
+
+    Object oEntryFromFileTest is a cTest
+        Procedure Test
+            Handle hoReader hoEntry
+            Integer iResult
+            Pointer pEntry
+            String sRoot sFile
+            BigInt iMtime iDevice iInode
+
+            Delegate Send BuildTree
+            Delegate Get TreeRoot to sRoot
+            Delegate Get NewDiskReader to hoReader
+            Get Create U_cArchiveEntry to hoEntry
+            Send AssertFalse (HasEntry (hoEntry)) "entry starts empty"
+
+            Move (sRoot + "\a.txt") to sFile
+            Get EntryFromFile of hoReader hoEntry sFile to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "EntryFromFile"
+            Send Assert (HasEntry (hoEntry)) "an entry was created"
+            Send Assert (pbOwnsEntry (hoEntry)) "the new entry is owned"
+            Get ppEntry of hoEntry to pEntry
+            Send AssertSAreEqual sFile (psPathname (hoEntry)) "path name"
+            Send AssertBIAreEqual 5 (archive_entry_size (pEntry)) "size"
+            Send AssertIAreEqual AE_IFREG (archive_entry_filetype (pEntry)) "type"
+            Delegate Get FileFacts sFile (&iMtime) (&iDevice) (&iInode) to iResult
+            Send AssertBIAreEqual iMtime (archive_entry_mtime (pEntry)) "mtime"
+            Send AssertBIAreEqual iInode (archive_entry_ino64 (pEntry)) "inode"
+            Send Assert (archive_entry_mtime (pEntry) > 1700000000) "mtime is recent"
+
+            // the same entry object is reused for a folder
+            Get EntryFromFile of hoReader hoEntry (sRoot + "\sub") to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "EntryFromFile folder"
+            Get ppEntry of hoEntry to pEntry
+            Send AssertIAreEqual AE_IFDIR (archive_entry_filetype (pEntry)) "folder type"
+            Send AssertSAreEqual (sRoot + "\sub") (psPathname (hoEntry)) "folder path name"
+
+            // a Unicode file name
+            Move (sRoot + "\unicode-ünï-€.txt") to sFile
+            Get EntryFromFile of hoReader hoEntry sFile to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "EntryFromFile unicode"
+            Get ppEntry of hoEntry to pEntry
+            Send AssertBIAreEqual 15 (archive_entry_size (pEntry)) "unicode file size"
+            Send AssertSAreEqual sFile (psPathname (hoEntry)) "unicode path name"
+
+            // a missing file
+            Set pbRaiseErrors of hoReader to False
+            Get EntryFromFile of hoReader hoEntry (sRoot + "\missing.txt") to iResult
+            Send Assert (iResult <= ARCHIVE_FAILED) "missing file"
+            Send Assert (psLastError (hoReader) <> "") "error text"
+            Send Destroy_Object of hoEntry
+            Delegate Send DropReader hoReader
+            Delegate Send RemoveTree
+        End_Procedure
+    End_Object
+
+    // ---- behavior and symlink settings ------------------------------------------------------------------------------
+
+    Object oBehaviorFlagsTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult iFlags
+            tArchiveEntryInfo[] aEntries
+            String sRoot
+
+            Delegate Send BuildTree
+            Delegate Get TreeRoot to sRoot
+            Get Create U_cArchiveDiskReader to hoReader
+            Send AssertIAreEqual 0 (piBehaviorFlags (hoReader)) "default flags"
+            Send AssertFalse (pbAtimeRestored (hoReader)) "atime not restored by default"
+
+            // set before the handle exists: applied by CreateDiskReader
+            Move (ARCHIVE_READDISK_NO_XATTR ior ARCHIVE_READDISK_NO_ACL ior ARCHIVE_READDISK_NO_FFLAGS ior ARCHIVE_READDISK_NO_SPARSE) to iFlags
+            Set piBehaviorFlags of hoReader to iFlags
+            Send AssertIAreEqual iFlags (piBehaviorFlags (hoReader)) "flags are stored"
+            Send CreateDiskReader of hoReader
+            Send AssertIAreEqual iFlags (piBehaviorFlags (hoReader)) "flags survive CreateDiskReader"
+            Get ListFolder of hoReader sRoot to aEntries
+            Delegate Send VerifyTreeEntries (&aEntries) "flags" True
+
+            // atime restore: through archive_read_disk_set_atime_restored and through the flag
+            Set pbAtimeRestored of hoReader to True
+            Send Assert (pbAtimeRestored (hoReader)) "atime restored"
+            Send AssertIAreEqual (iFlags ior ARCHIVE_READDISK_RESTORE_ATIME) (piBehaviorFlags (hoReader)) "flag is set"
+            Get ListFolder of hoReader sRoot to aEntries
+            Delegate Send VerifyTreeEntries (&aEntries) "atime restored" True
+            Set pbAtimeRestored of hoReader to False
+            Send AssertFalse (pbAtimeRestored (hoReader)) "atime restore cleared"
+            Send AssertIAreEqual iFlags (piBehaviorFlags (hoReader)) "other flags are kept"
+            Set piBehaviorFlags of hoReader to ARCHIVE_READDISK_RESTORE_ATIME
+            Send Assert (pbAtimeRestored (hoReader)) "flag through piBehaviorFlags"
+            Set piBehaviorFlags of hoReader to 0
+            Send AssertFalse (pbAtimeRestored (hoReader)) "flags cleared"
+
+            // another traversal option on an existing handle
+            Set piBehaviorFlags of hoReader to ARCHIVE_READDISK_NO_TRAVERSE_MOUNTS
+            Get ListFolder of hoReader sRoot to aEntries
+            Delegate Send VerifyTreeEntries (&aEntries) "no traverse mounts" True
+            Delegate Send DropReader hoReader
+            Delegate Send RemoveTree
+        End_Procedure
+    End_Object
+
+    Object oSymlinkModeTest is a cTest
+        Procedure Test
+            Handle hoReader hoEntry
+            Integer iResult iIndex
+            Pointer pEntry
+            String sRoot
+            WString wsLink wsTarget
+            tArchiveEntryInfo[] aEntries
+            Boolean bLinked
+
+            Delegate Send BuildTree
+            Delegate Get TreeRoot to sRoot
+            Get Create U_cArchiveDiskReader to hoReader
+            Send AssertIAreEqual ARCHIVE_SYMLINK_PHYSICAL (peSymlinkMode (hoReader)) "default is physical"
+            Set peSymlinkMode of hoReader to ARCHIVE_SYMLINK_HYBRID
+            Send AssertIAreEqual ARCHIVE_SYMLINK_HYBRID (peSymlinkMode (hoReader)) "mode stored without a handle"
+            Send CreateDiskReader of hoReader
+            Send AssertIAreEqual ARCHIVE_SYMLINK_HYBRID (peSymlinkMode (hoReader)) "mode survives CreateDiskReader"
+            Get ListFolder of hoReader sRoot to aEntries
+            Delegate Send VerifyTreeEntries (&aEntries) "hybrid" True
+            Set peSymlinkMode of hoReader to ARCHIVE_SYMLINK_LOGICAL
+            Send AssertIAreEqual ARCHIVE_SYMLINK_LOGICAL (peSymlinkMode (hoReader)) "logical"
+            Get ListFolder of hoReader sRoot to aEntries
+            Delegate Send VerifyTreeEntries (&aEntries) "logical" True
+            Set peSymlinkMode of hoReader to ARCHIVE_SYMLINK_PHYSICAL
+            Send AssertIAreEqual ARCHIVE_SYMLINK_PHYSICAL (peSymlinkMode (hoReader)) "physical"
+            Get ListFolder of hoReader sRoot to aEntries
+            Delegate Send VerifyTreeEntries (&aEntries) "physical" True
+
+            // a real symbolic link (needs the privilege or developer mode; skipped without)
+            Move (sRoot + "\link.txt") to wsLink
+            Move (sRoot + "\a.txt") to wsTarget
+            Move (WrapDiskTestCreateSymlink (wsLink, wsTarget, 2)) to iResult
+            Delegate Get FileExists (sRoot + "\link.txt") to bLinked
+            If (bLinked) Begin
+                Get Create U_cArchiveEntry to hoEntry
+                Set peSymlinkMode of hoReader to ARCHIVE_SYMLINK_PHYSICAL
+                Get EntryFromFile of hoReader hoEntry (sRoot + "\link.txt") to iResult
+                Get ppEntry of hoEntry to pEntry
+                Send AssertIAreEqual AE_IFLNK (archive_entry_filetype (pEntry)) "physical: the link itself"
+                Set peSymlinkMode of hoReader to ARCHIVE_SYMLINK_LOGICAL
+                Get EntryFromFile of hoReader hoEntry (sRoot + "\link.txt") to iResult
+                Get ppEntry of hoEntry to pEntry
+                Send AssertIAreEqual AE_IFREG (archive_entry_filetype (pEntry)) "logical: the file behind the link"
+                Send AssertBIAreEqual 5 (archive_entry_size (pEntry)) "logical: size of the target"
+                Get ListFolder of hoReader sRoot to aEntries
+                Send AssertIAreEqual 10 (SizeOfArray (aEntries)) "logical: the link is listed too"
+                Send Destroy_Object of hoEntry
+            End
+            Delegate Send DropReader hoReader
+            Delegate Send RemoveTree
+        End_Procedure
+    End_Object
+
+    // ---- lookups and file system information ------------------------------------------------------------------------
+
+    Object oLookupTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult
+
+            Delegate Get NewDiskReader to hoReader
+            Set pbRaiseErrors of hoReader to False
+            Get SetStandardLookup of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "SetStandardLookup is not available on Windows"
+            Send Assert (psLastError (hoReader) <> "") "error text"
+            // Windows has no numeric user and group ids, the lookups find no names
+            Send AssertSAreEqual "" (UserName (hoReader, 0)) "UserName"
+            Send AssertSAreEqual "" (GroupName (hoReader, 0)) "GroupName"
+            Delegate Send DropReader hoReader
+        End_Procedure
+    End_Object
+
+    Object oFilesystemInfoTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult
+            String sRoot
+
+            Delegate Send BuildTree
+            Delegate Get TreeRoot to sRoot
+            Delegate Get NewDiskReader to hoReader
+            Get OpenDisk of hoReader sRoot to iResult
+            Get NextHeader of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "header"
+            Send Assert (piCurrentFilesystemId (hoReader) >= 0) "file system id"
+            Send AssertFalse (pbCurrentFilesystemIsSynthetic (hoReader)) "not synthetic"
+            Send AssertFalse (pbCurrentFilesystemIsRemote (hoReader)) "not remote"
+            Get Descend of hoReader to iResult
+            Get NextHeader of hoReader to iResult
+            Send AssertIAreEqual (piCurrentFilesystemId (hoReader)) (piCurrentFilesystemId (hoReader)) "stable id"
+            Delegate Send DropReader hoReader
+            Delegate Send RemoveTree
+        End_Procedure
+    End_Object
+
+    // ---- matching -----------------------------------------------------------------------------------------------------
+
+    Object oMatchingTest is a cTest
+        Procedure Test
+            Handle hoReader hoMatch
+            Integer iResult
+            Pointer pMatch
+            String sRoot sPattern
+            tArchiveEntryInfo[] aEntries
+
+            Delegate Send BuildTree
+            Delegate Get TreeRoot to sRoot
+            Delegate Get FakeMatch to hoMatch
+            Move (archive_match_new ()) to pMatch
+            Set ppArchive of hoMatch to pMatch
+            Move "*.log" to sPattern
+            Move (archive_match_exclude_pattern (pMatch, AddressOf (sPattern))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "exclude pattern"
+
+            Delegate Get NewDiskReader to hoReader
+            Get SetMatching of hoReader hoMatch to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "SetMatching"
+            Get ListFolder of hoReader sRoot to aEntries
+            Delegate Send VerifyTreeEntries (&aEntries) "matching" False
+
+            // removing the matching lists everything again
+            Get SetMatching of hoReader 0 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "SetMatching 0"
+            Get ListFolder of hoReader sRoot to aEntries
+            Delegate Send VerifyTreeEntries (&aEntries) "matching removed" True
+            Delegate Send DropReader hoReader
+            Move (archive_match_free (pMatch)) to iResult
+            Set ppArchive of hoMatch to 0
+            Delegate Send RemoveTree
+        End_Procedure
+    End_Object
+
+    // ---- errors -------------------------------------------------------------------------------------------------------
+
+    Object oMissingPathTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult
+            String sRoot
+
+            Delegate Get TreeRoot to sRoot
+            Delegate Get NewDiskReader to hoReader
+            Set pbRaiseErrors of hoReader to False
+            Get OpenDisk of hoReader (sRoot + "\does-not-exist") to iResult
+            Get NextHeader of hoReader to iResult
+            Send Assert (iResult <= ARCHIVE_FAILED) "a missing path fails at the first header"
+            Send Assert (psLastError (hoReader) <> "") "error text"
+            Send Assert (piErrorNumber (hoReader) <> 0) "errno"
+            Delegate Send DropReader hoReader
+        End_Procedure
+    End_Object
+End_Object

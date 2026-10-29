@@ -1,0 +1,201 @@
+﻿Use DFUnit.pkg
+Use Archive.h.pkg
+
+// Base class for all LibArchive test fixtures. It offers a temp folder, a sample archive builder that uses the raw
+// external functions only and small assertion helpers. Fixtures derive from this class and define their tests as
+// child objects of class cTest (see TestSmoke.pkg). Tests call the helpers with Delegate Get / Delegate Send.
+Class cArchiveTestFixture is a cTestFixture
+    Procedure Construct_Object
+        Forward Send Construct_Object
+    End_Procedure
+
+    // Folder (with trailing backslash) for files created by the tests: <Programs folder>\TestTemp\
+    Function TempFolder Returns String
+        String sFolder
+        Boolean bOk
+
+        Get psProgramPath of (phoWorkspace (ghoApplication)) to sFolder
+        If (Right (sFolder, 1) <> "\") Begin
+            Move (sFolder + "\") to sFolder
+        End
+        Move (sFolder + "TestTemp\") to sFolder
+        If (not (IsDirectory (sFolder))) Begin
+            Move (CreateDirectoryRecursive (sFolder)) to bOk
+        End
+        Function_Return sFolder
+    End_Function
+
+    // Full path of a file in the temp folder. The file is deleted when it exists so that a test starts clean.
+    Function TempFile String sName Returns String
+        String sFile
+        Get TempFolder to sFile
+        Move (sFile + sName) to sFile
+        If (GetFileAttributes (sFile) <> INVALID_FILE_ATTRIBUTES) Begin
+            EraseFile sFile
+        End
+        Function_Return sFile
+    End_Function
+
+    // Text of the last libarchive error of an archive (or entry matcher) handle, empty when there is none.
+    Function ErrorText Pointer pArchive Returns String
+        Pointer pError
+        Move (archive_error_string (pArchive)) to pError
+        If (pError = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerToString (pError))
+    End_Function
+
+    // True when libarchive can start an external program (archive_read_append_filter_program starts it at once). That
+    // depends on the process environment (for example a program that runs under a debugger or without usable
+    // standard handles), so tests that need a running external program check this first.
+    Function CanLaunchPrograms Returns Boolean
+        Pointer pArchive
+        Integer iResult iFreeResult
+        String sCommand
+
+        Move "findstr x" to sCommand
+        Move (archive_read_new ()) to pArchive
+        Move (archive_read_append_filter_program (pArchive, AddressOf (sCommand))) to iResult
+        Move (archive_read_free (pArchive)) to iFreeResult
+        Function_Return (iResult = ARCHIVE_OK)
+    End_Function
+
+    // Asserts that a libarchive result equals ARCHIVE_OK, the message contains the libarchive error text.
+    Procedure AssertArchiveOk Integer iResult Pointer pArchive String sWhat
+        If (iResult <> ARCHIVE_OK) Begin
+            Send AssertIAreEqual ARCHIVE_OK iResult (sWhat * "failed:" * ErrorText (Self, pArchive))
+        End
+        Else Begin
+            Send AssertIAreEqual ARCHIVE_OK iResult sWhat
+        End
+    End_Procedure
+
+    // ---- sample archive ------------------------------------------------------------------------------------------
+    // 4 entries: 0 hello.txt (13 bytes), 1 docs/ (directory), 2 docs/nested.txt (14 bytes), 3 a file with a unicode
+    // name (12 bytes). All files have mtime 1700000000 and permission 0644, the directory 0755.
+
+    Function SampleEntryCount Returns Integer
+        Function_Return 4
+    End_Function
+
+    Function SampleEntryName Integer iIndex Returns String
+        Case Begin
+            Case (iIndex = 0) Function_Return "hello.txt"
+            Case (iIndex = 1) Function_Return "docs/"
+            Case (iIndex = 2) Function_Return "docs/nested.txt"
+            Case (iIndex = 3) Function_Return "héllo-ünï.txt"
+        Case End
+        Function_Return ""
+    End_Function
+
+    Function SampleEntryContent Integer iIndex Returns String
+        Case Begin
+            Case (iIndex = 0) Function_Return "Hello Archive"
+            Case (iIndex = 2) Function_Return "Nested content"
+            Case (iIndex = 3) Function_Return "Unicode name"
+        Case End
+        Function_Return ""
+    End_Function
+
+    Function SampleEntryIsDirectory Integer iIndex Returns Boolean
+        Function_Return (iIndex = 1)
+    End_Function
+
+    Function SampleMTime Returns BigInt
+        Function_Return 1700000000
+    End_Function
+
+    // Writes the sample entries to an open archive writer handle. Returns ARCHIVE_OK or the first failing result.
+    Function WriteSampleEntries Pointer pArchive Returns Integer
+        Integer iIndex iResult iCount
+        BigInt iWritten
+        Pointer pEntry
+        String sName sContent
+        Void_Type iVoid
+
+        Get SampleEntryCount to iCount
+        For iIndex from 0 to (iCount - 1)
+            Get SampleEntryName iIndex to sName
+            Get SampleEntryContent iIndex to sContent
+            Move (archive_entry_new ()) to pEntry
+            Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sName))) to iVoid
+            Move (archive_entry_set_mtime (pEntry, SampleMTime (Self), 0)) to iVoid
+            If (SampleEntryIsDirectory (Self, iIndex)) Begin
+                Move (archive_entry_set_filetype (pEntry, AE_IFDIR)) to iVoid
+                Move (archive_entry_set_perm (pEntry, 493)) to iVoid
+                Move (archive_entry_set_size (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move (archive_entry_set_filetype (pEntry, AE_IFREG)) to iVoid
+                Move (archive_entry_set_perm (pEntry, 420)) to iVoid
+                Move (archive_entry_set_size (pEntry, SizeOfString (sContent))) to iVoid
+            End
+            Move (archive_write_header (pArchive, pEntry)) to iResult
+            If (iResult = ARCHIVE_OK and not (SampleEntryIsDirectory (Self, iIndex))) Begin
+                Move (archive_write_data (pArchive, AddressOf (sContent), SizeOfString (sContent))) to iWritten
+                If (iWritten <> SizeOfString (sContent)) Begin
+                    Move ARCHIVE_FATAL to iResult
+                End
+            End
+            Move (archive_entry_free (pEntry)) to iVoid
+            If (iResult <> ARCHIVE_OK) Begin
+                Function_Return iResult
+            End
+        Loop
+        Function_Return ARCHIVE_OK
+    End_Function
+
+    // Creates a sample archive file. eFormat is an ARCHIVE_FORMAT_* base code (ARCHIVE_FORMAT_ZIP, ARCHIVE_FORMAT_TAR,
+    // ARCHIVE_FORMAT_7ZIP, ...), eFilter an ARCHIVE_FILTER_* code (ARCHIVE_FILTER_NONE for no compression filter).
+    // Returns ARCHIVE_OK or the first failing result.
+    Function BuildSampleArchiveFile String sFileName Integer eFormat Integer eFilter Returns Integer
+        Pointer pArchive
+        Integer iResult
+        WString wsFileName
+
+        Move sFileName to wsFileName
+        Move (archive_write_new ()) to pArchive
+        Move (archive_write_set_format (pArchive, eFormat)) to iResult
+        If (iResult = ARCHIVE_OK and eFilter <> ARCHIVE_FILTER_NONE) Begin
+            Move (archive_write_add_filter (pArchive, eFilter)) to iResult
+        End
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_write_open_filename_w (pArchive, AddressOf (wsFileName))) to iResult
+        End
+        If (iResult = ARCHIVE_OK) Begin
+            Move (WriteSampleEntries (Self, pArchive)) to iResult
+        End
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_write_close (pArchive)) to iResult
+        End
+        Move (archive_write_free (pArchive)) to iResult
+        Function_Return iResult
+    End_Function
+
+    // Creates a sample archive in memory. ucBuffer receives the archive bytes (array is resized to the archive size).
+    // Returns ARCHIVE_OK or the first failing result.
+    Function BuildSampleArchiveMemory Integer eFormat UChar[] ByRef ucBuffer Returns Integer
+        Pointer pArchive
+        Integer iResult
+        BigInt iUsed
+        UChar[] ucWork
+        UChar[] ucEmpty
+
+        Move (ResizeArray (ucWork, 1048576)) to ucWork
+        Move (archive_write_new ()) to pArchive
+        Move (archive_write_set_format (pArchive, eFormat)) to iResult
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_write_open_memory (pArchive, AddressOf (ucWork), 1048576, AddressOf (iUsed))) to iResult
+        End
+        If (iResult = ARCHIVE_OK) Begin
+            Move (WriteSampleEntries (Self, pArchive)) to iResult
+        End
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_write_close (pArchive)) to iResult
+        End
+        Move (archive_write_free (pArchive)) to iResult
+        Move (ResizeArray (ucWork, iUsed)) to ucBuffer
+        Function_Return iResult
+    End_Function
+End_Class

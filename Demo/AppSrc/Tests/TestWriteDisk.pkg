@@ -1,0 +1,595 @@
+﻿// Tests for the archive_write_disk_* functions of ArchiveWrite.h.pkg: files, directories and links are created on disk
+// from entries and the result is verified on the file system.
+
+External_Function twd_crt_wstat64 "_wstat64" ucrtbase.dll ;
+    Pointer pFileName ;
+    Pointer pStat ;
+    Returns Integer
+
+External_Function twd_copymem "RtlMoveMemory" kernel32.dll ;
+    Pointer pDest ;
+    Pointer pSource ;
+    Longptr iLength ;
+    Returns Void_Type
+
+External_Function twd_RemoveDirectoryW "RemoveDirectoryW" kernel32.dll ;
+    Pointer pPathName ;
+    Returns Integer
+
+Object oWriteDiskTests is a cArchiveTestFixture
+    Set psTestFixtureName to "WriteDisk"
+
+    // Paths created by a test (in creation order); CleanUp removes them in reverse order.
+    Property String[] pasCreated
+
+    Procedure Track String sPath
+        String[] asCreated
+        Get pasCreated to asCreated
+        Move (Replaces ("/", sPath, "\")) to sPath
+        Move sPath to asCreated[SizeOfArray (asCreated)]
+        Set pasCreated to asCreated
+    End_Procedure
+
+    Procedure CleanUp
+        String[] asCreated asEmpty
+        Integer iIndex iResult
+        String sPath
+        WString wsPath
+
+        Get pasCreated to asCreated
+        Move (SizeOfArray (asCreated)) to iIndex
+        While (iIndex > 0)
+            Decrement iIndex
+            Move asCreated[iIndex] to sPath
+            If (GetFileAttributes (sPath) <> INVALID_FILE_ATTRIBUTES) Begin
+                If (IsDirectory (sPath)) Begin
+                    Move sPath to wsPath
+                    Move (twd_RemoveDirectoryW (AddressOf (wsPath))) to iResult
+                End
+                Else Begin
+                    EraseFile sPath
+                End
+            End
+        Loop
+        Set pasCreated to asEmpty
+    End_Procedure
+
+    // Folder (with trailing backslash) used by a test; the folder and the given sub folders are tracked for CleanUp.
+    Function DiskFolder String sName Returns String
+        String sFolder
+        Get TempFolder to sFolder
+        Move (sFolder + sName + "\") to sFolder
+        Send Track (Left (sFolder, Length (sFolder) - 1))
+        Function_Return sFolder
+    End_Function
+
+    Function FileExists String sFile Returns Boolean
+        Function_Return (GetFileAttributes (sFile) <> INVALID_FILE_ATTRIBUTES)
+    End_Function
+
+    Function FileText String sFile Returns String
+        Integer iCh
+        String sData
+
+        Move "" to sData
+        Get Seq_New_Channel to iCh
+        Direct_Input channel iCh ("binary:" + sFile)
+        Read_Block channel iCh sData 10000000
+        Close_Input channel iCh
+        Send Seq_Release_Channel iCh
+        Function_Return sData
+    End_Function
+
+    // struct _stat64 as raw bytes (st_size at offset 24, st_mtime at offset 40). Returns 0 when the file exists.
+    Function StatFile String sFile UChar[] ByRef ucStat Returns Integer
+        WString wsFile
+        Move sFile to wsFile
+        Move (ResizeArray (ucStat, 0)) to ucStat
+        Move (ResizeArray (ucStat, 64)) to ucStat
+        Function_Return (twd_crt_wstat64 (AddressOf (wsFile), AddressOf (ucStat)))
+    End_Function
+
+    Function FileSize String sFile Returns BigInt
+        UChar[] ucStat
+        BigInt iSize
+        Integer iResult
+        Void_Type iVoid
+
+        Get StatFile sFile (&ucStat) to iResult
+        If (iResult <> 0) Begin
+            Function_Return -1
+        End
+        Move (twd_copymem (AddressOf (iSize), AddressOf (ucStat) + 24, 8)) to iVoid
+        Function_Return iSize
+    End_Function
+
+    Function FileMTime String sFile Returns BigInt
+        UChar[] ucStat
+        BigInt iTime
+        Integer iResult
+        Void_Type iVoid
+
+        Get StatFile sFile (&ucStat) to iResult
+        If (iResult <> 0) Begin
+            Function_Return -1
+        End
+        Move (twd_copymem (AddressOf (iTime), AddressOf (ucStat) + 40, 8)) to iVoid
+        Function_Return iTime
+    End_Function
+
+    // Creates an entry: iType is AE_IFREG or AE_IFDIR. The permission is 0644 / 0755 and mtime 1700000000.
+    Function MakeEntry String sPath Integer iType BigInt iSize Returns Pointer
+        Pointer pEntry
+        Void_Type iVoid
+
+        Move (archive_entry_new ()) to pEntry
+        Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sPath))) to iVoid
+        Move (archive_entry_set_filetype (pEntry, iType)) to iVoid
+        If (iType = AE_IFDIR) Begin
+            Move (archive_entry_set_perm (pEntry, 493)) to iVoid
+        End
+        Else Begin
+            Move (archive_entry_set_perm (pEntry, 420)) to iVoid
+        End
+        Move (archive_entry_set_mtime (pEntry, 1700000000, 0)) to iVoid
+        Move (archive_entry_set_size (pEntry, iSize)) to iVoid
+        Function_Return pEntry
+    End_Function
+
+    // Writes a regular file through a write_disk handle: header, data, finish_entry. Returns the first failing result.
+    Function DiskWriteFile Pointer pDisk String sPath String sContent Returns Integer
+        Pointer pEntry
+        Integer iResult
+        BigInt iWritten
+        Void_Type iVoid
+
+        Get MakeEntry sPath AE_IFREG (SizeOfString (sContent)) to pEntry
+        Move (archive_write_header (pDisk, pEntry)) to iResult
+        If (iResult = ARCHIVE_OK and SizeOfString (sContent) > 0) Begin
+            Move (archive_write_data (pDisk, AddressOf (sContent), SizeOfString (sContent))) to iWritten
+            If (iWritten <> SizeOfString (sContent)) Begin
+                Move ARCHIVE_FATAL to iResult
+            End
+        End
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_write_finish_entry (pDisk)) to iResult
+        End
+        Move (archive_entry_free (pEntry)) to iVoid
+        Function_Return iResult
+    End_Function
+
+    // ---- tests ---------------------------------------------------------------------------------------------------
+
+    Object oDiskNewAndOptionsTest is a cTest
+        Procedure Test
+            Pointer pDisk
+            Integer iResult iFlag iIndex
+
+            Move (archive_write_disk_new ()) to pDisk
+            Send Assert (pDisk <> 0) "archive_write_disk_new returns a handle"
+
+            // every single flag and the combination are accepted
+            Move 1 to iFlag
+            For iIndex from 0 to 18
+                Move (archive_write_disk_set_options (pDisk, iFlag)) to iResult
+                Send AssertIAreEqual ARCHIVE_OK iResult ("set_options flag" * String (iFlag))
+                Move (iFlag * 2) to iFlag
+            Loop
+            Move (archive_write_disk_set_options (pDisk, (ARCHIVE_EXTRACT_OWNER ior ARCHIVE_EXTRACT_PERM ior ARCHIVE_EXTRACT_TIME ior ARCHIVE_EXTRACT_ACL ior ARCHIVE_EXTRACT_FFLAGS ior ARCHIVE_EXTRACT_XATTR))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "set_options combination"
+            Move (archive_write_disk_set_options (pDisk, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "set_options none"
+
+            Move (archive_write_free (pDisk)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "free"
+        End_Procedure
+    End_Object
+
+    Object oDiskCreateFilesTest is a cTest
+        Procedure Test
+            Pointer pDisk pEntry
+            Integer iResult
+            String sBase sFile sDir sLink sUnicode sText
+            BigInt iValue
+            Void_Type iVoid
+
+            Delegate Get DiskFolder "wd_create" to sBase
+            Move (archive_write_disk_new ()) to pDisk
+            Move (archive_write_disk_set_options (pDisk, (ARCHIVE_EXTRACT_TIME ior ARCHIVE_EXTRACT_PERM))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "set_options"
+
+            // a file in folders that do not exist yet
+            Move (sBase + "sub\dir\file.txt") to sFile
+            Delegate Send Track (sBase + "sub")
+            Delegate Send Track (sBase + "sub\dir")
+            Delegate Send Track sFile
+            Delegate Get DiskWriteFile pDisk sFile "Disk content" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "write file"
+            Delegate Get FileSize sFile to iValue
+            Send AssertBIAreEqual 12 iValue "file size on disk"
+            Delegate Get FileText sFile to sText
+            Send AssertSAreEqual "Disk content" sText "file content on disk"
+            Delegate Get FileMTime sFile to iValue
+            Send AssertBIAreEqual 1700000000 iValue "mtime restored with ARCHIVE_EXTRACT_TIME"
+
+            // an empty directory
+            Move (sBase + "sub\emptydir") to sDir
+            Delegate Send Track sDir
+            Delegate Get MakeEntry sDir AE_IFDIR 0 to pEntry
+            Move (archive_write_header (pDisk, pEntry)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "directory header"
+            Move (archive_write_finish_entry (pDisk)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "directory finish_entry"
+            Move (archive_entry_free (pEntry)) to iVoid
+            Send Assert (IsDirectory (sDir)) "directory exists"
+
+            // a hard link to the first file
+            Move (sBase + "link.txt") to sLink
+            Delegate Send Track sLink
+            Delegate Get MakeEntry sLink AE_IFREG 0 to pEntry
+            Move (archive_entry_set_hardlink_utf8 (pEntry, AddressOf (sFile))) to iVoid
+            Move (archive_write_header (pDisk, pEntry)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "hard link header"
+            Move (archive_entry_free (pEntry)) to iVoid
+            Delegate Get FileText sLink to sText
+            Send AssertSAreEqual "Disk content" sText "hard link shows the content of its target"
+
+            // a file with a unicode name
+            Move (sBase + "héllo-ünï.txt") to sUnicode
+            Delegate Send Track sUnicode
+            Delegate Get DiskWriteFile pDisk sUnicode "Unicode name" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "write unicode file"
+            Delegate Get FileSize sUnicode to iValue
+            Send AssertBIAreEqual 12 iValue "unicode file size on disk"
+
+            Move (archive_write_close (pDisk)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "close"
+            Move (archive_write_free (pDisk)) to iResult
+            Delegate Send CleanUp
+        End_Procedure
+    End_Object
+
+    Object oDiskTimeFlagTest is a cTest
+        Procedure Test
+            Pointer pDisk
+            Integer iResult
+            String sBase sFile
+            BigInt iValue
+
+            Delegate Get DiskFolder "wd_time" to sBase
+            Move (sBase + "t.txt") to sFile
+            Delegate Send Track sFile
+            Move (archive_write_disk_new ()) to pDisk
+            Delegate Get DiskWriteFile pDisk sFile "time" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "write file without flags"
+            Move (archive_write_free (pDisk)) to iResult
+            Delegate Get FileMTime sFile to iValue
+            Send Assert (iValue > 1700000000 + 86400) "without ARCHIVE_EXTRACT_TIME the mtime is the creation time"
+            Delegate Send CleanUp
+        End_Procedure
+    End_Object
+
+    Object oDiskOverwriteTest is a cTest
+        Procedure Test
+            Pointer pDisk
+            Integer iResult iIndex iFlags
+            String sBase sFile sText sLabel
+            BigInt iValue
+
+            Delegate Get DiskFolder "wd_overwrite" to sBase
+            Move (sBase + "o.txt") to sFile
+            Delegate Send Track sFile
+
+            // default: replace the existing file
+            Move (archive_write_disk_new ()) to pDisk
+            Delegate Get DiskWriteFile pDisk sFile "old" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "create"
+            Delegate Get DiskWriteFile pDisk sFile "replaced" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "replace by default"
+            Delegate Get FileText sFile to sText
+            Send AssertSAreEqual "replaced" sText "content after replace"
+            Move (archive_write_free (pDisk)) to iResult
+
+            // NO_OVERWRITE keeps the existing file
+            Move (archive_write_disk_new ()) to pDisk
+            Move (archive_write_disk_set_options (pDisk, ARCHIVE_EXTRACT_NO_OVERWRITE)) to iResult
+            Delegate Get DiskWriteFile pDisk sFile "new content" to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "NO_OVERWRITE refuses an existing file"
+            Delegate Get FileText sFile to sText
+            Send AssertSAreEqual "replaced" sText "content with NO_OVERWRITE"
+            Move (archive_write_free (pDisk)) to iResult
+
+            // NO_OVERWRITE_NEWER keeps a file that is newer than the entry (entry mtime 1700000000, file is new)
+            Move (archive_write_disk_new ()) to pDisk
+            Move (archive_write_disk_set_options (pDisk, ARCHIVE_EXTRACT_NO_OVERWRITE_NEWER)) to iResult
+            Delegate Get DiskWriteFile pDisk sFile "from the past" to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "NO_OVERWRITE_NEWER refuses to replace a newer file"
+            Delegate Get FileText sFile to sText
+            Send AssertSAreEqual "replaced" sText "content with NO_OVERWRITE_NEWER"
+            Move (archive_write_free (pDisk)) to iResult
+
+            // UNLINK replaces the file by removing it first
+            Move (archive_write_disk_new ()) to pDisk
+            Move (archive_write_disk_set_options (pDisk, ARCHIVE_EXTRACT_UNLINK)) to iResult
+            Delegate Get DiskWriteFile pDisk sFile "unlinked" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "UNLINK replaces"
+            Delegate Get FileText sFile to sText
+            Send AssertSAreEqual "unlinked" sText "content with UNLINK"
+            Move (archive_write_free (pDisk)) to iResult
+            Delegate Send CleanUp
+        End_Procedure
+    End_Object
+
+    Object oDiskSecureFlagsTest is a cTest
+        Procedure Test
+            Pointer pDisk
+            Integer iResult
+            String sBase sFile sText
+
+            Delegate Get DiskFolder "wd_secure" to sBase
+            Delegate Send Track (sBase + "inner")
+            Delegate Send Track (sBase + "inner\ok.txt")
+            Delegate Send Track (sBase + "outside.txt")
+
+            // parent directories are created automatically, NO_AUTODIR refuses it
+            Move (archive_write_disk_new ()) to pDisk
+            Move (archive_write_disk_set_options (pDisk, ARCHIVE_EXTRACT_NO_AUTODIR)) to iResult
+            Move (sBase + "missing\file.txt") to sFile
+            Delegate Send Track (sBase + "missing")
+            Delegate Send Track sFile
+            Delegate Get DiskWriteFile pDisk sFile "x" to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "NO_AUTODIR refuses a missing parent folder"
+            Send Assert (not (FileExists (Self, sFile))) "no file was created"
+            Move (archive_write_free (pDisk)) to iResult
+
+            // paths with .. are refused with SECURE_NODOTDOT
+            Move (archive_write_disk_new ()) to pDisk
+            Move (archive_write_disk_set_options (pDisk, ARCHIVE_EXTRACT_SECURE_NODOTDOT)) to iResult
+            Move (sBase + "inner\..\outside.txt") to sFile
+            Delegate Get DiskWriteFile pDisk sFile "x" to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "SECURE_NODOTDOT refuses .."
+            Delegate Get FileExists (sBase + "outside.txt") to iResult
+            Send Assert (iResult = 0) "the file outside was not created"
+            Move (sBase + "inner\ok.txt") to sFile
+            Delegate Get DiskWriteFile pDisk sFile "fine" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "a normal path is accepted"
+            Move (archive_write_free (pDisk)) to iResult
+
+            // absolute paths are refused with SECURE_NOABSOLUTEPATHS
+            Move (archive_write_disk_new ()) to pDisk
+            Move (archive_write_disk_set_options (pDisk, ARCHIVE_EXTRACT_SECURE_NOABSOLUTEPATHS)) to iResult
+            Delegate Get DiskWriteFile pDisk (sBase + "outside.txt") "x" to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "SECURE_NOABSOLUTEPATHS refuses an absolute path"
+            Delegate Get FileExists (sBase + "outside.txt") to iResult
+            Send Assert (iResult = 0) "no file was created for the absolute path"
+            Move (archive_write_free (pDisk)) to iResult
+            Delegate Send CleanUp
+        End_Procedure
+    End_Object
+
+    // The skip file protects a file on disk (the archive that is being extracted) from being overwritten. Its device and
+    // inode are those of the file on disk, obtained here with archive_read_disk_entry_from_file.
+    Object oDiskSkipFileTest is a cTest
+        Procedure Test
+            Pointer pDisk pEntry pReader
+            Integer iResult
+            UInteger iDevice
+            BigInt iInode
+            String sBase sFile sOther sText
+            Void_Type iVoid
+
+            Delegate Get DiskFolder "wd_skip" to sBase
+            Move (sBase + "protected.txt") to sFile
+            Move (sBase + "other.txt") to sOther
+            Delegate Send Track sFile
+            Delegate Send Track sOther
+
+            // create the file that must be protected and read its identity from the disk
+            Move (archive_write_disk_new ()) to pDisk
+            Delegate Get DiskWriteFile pDisk sFile "original" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "create the protected file"
+            Move (archive_read_disk_new ()) to pReader
+            Delegate Get MakeEntry sFile AE_IFREG 0 to pEntry
+            Move (archive_read_disk_entry_from_file (pReader, pEntry, -1, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "read the file identity"
+            Move (archive_entry_dev (pEntry)) to iDevice
+            Move (archive_entry_ino64 (pEntry)) to iInode
+            Send Assert (iInode <> 0) "the file has an inode (file index)"
+            Move (archive_entry_free (pEntry)) to iVoid
+            Move (archive_read_free (pReader)) to iResult
+
+            Move (archive_write_disk_set_skip_file (pDisk, iDevice, iInode)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "archive_write_disk_set_skip_file"
+            Delegate Get DiskWriteFile pDisk sFile "overwritten" to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "the skip file is refused"
+            Delegate Get FileText sFile to sText
+            Send AssertSAreEqual "original" sText "the skip file keeps its content"
+            Delegate Get DiskWriteFile pDisk sOther "other file" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "another file is written"
+            Delegate Get FileText sOther to sText
+            Send AssertSAreEqual "other file" sText "content of the other file"
+            Move (archive_write_free (pDisk)) to iResult
+            Delegate Send CleanUp
+        End_Procedure
+    End_Object
+
+    Object oDiskLookupTest is a cTest
+        Procedure Test
+            Pointer pDisk
+            Integer iResult
+            BigInt iId
+            String sName
+
+            Move (archive_write_disk_new ()) to pDisk
+            Move "no_such_user_xyz" to sName
+            Move (archive_write_disk_uid (pDisk, AddressOf (sName), 1234)) to iId
+            Send AssertBIAreEqual 1234 iId "before set_standard_lookup the default id is returned (uid)"
+            Move (archive_write_disk_gid (pDisk, AddressOf (sName), 4321)) to iId
+            Send AssertBIAreEqual 4321 iId "before set_standard_lookup the default id is returned (gid)"
+
+            Move (archive_write_disk_set_standard_lookup (pDisk)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "set_standard_lookup"
+            Move (archive_write_disk_uid (pDisk, AddressOf (sName), 1234)) to iId
+            Send AssertBIAreEqual 1234 iId "unknown user gives the default id"
+            Move (archive_write_disk_gid (pDisk, AddressOf (sName), 4321)) to iId
+            Send AssertBIAreEqual 4321 iId "unknown group gives the default id"
+            Move (archive_write_disk_uid (pDisk, 0, 77)) to iId
+            Send AssertBIAreEqual 77 iId "a NULL name gives the default id"
+
+            // custom lookups cannot be created without native callbacks; NULL removes them
+            Move (archive_write_disk_set_user_lookup (pDisk, 0, 0, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "set_user_lookup with NULL"
+            Move (archive_write_disk_set_group_lookup (pDisk, 0, 0, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "set_group_lookup with NULL"
+            Move (archive_write_disk_uid (pDisk, AddressOf (sName), 55)) to iId
+            Send AssertBIAreEqual 55 iId "without lookup the default id is returned (uid)"
+            Move (archive_write_disk_gid (pDisk, AddressOf (sName), 66)) to iId
+            Send AssertBIAreEqual 66 iId "without lookup the default id is returned (gid)"
+            Move (archive_write_free (pDisk)) to iResult
+        End_Procedure
+    End_Object
+
+    // archive_write_data_block writes at an offset: the gap becomes zero bytes (or a hole).
+    Object oDiskDataBlockTest is a cTest
+        Procedure Test
+            Pointer pDisk pEntry
+            Integer iResult iIndex
+            BigInt iWritten iValue
+            String sBase sFile sText sData
+            UChar[] ucBlock
+            Void_Type iVoid
+
+            Delegate Get DiskFolder "wd_block" to sBase
+            Move (sBase + "blocks.bin") to sFile
+            Delegate Send Track sFile
+            Move (archive_write_disk_new ()) to pDisk
+            Delegate Get MakeEntry sFile AE_IFREG 15 to pEntry
+            Move (archive_write_header (pDisk, pEntry)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "header"
+            Move "AAAAA" to sData
+            Move (archive_write_data_block (pDisk, AddressOf (sData), 5, 0)) to iWritten
+            Send AssertBIAreEqual ARCHIVE_OK iWritten "first block (returns ARCHIVE_OK, not the byte count)"
+            Move "BBBBB" to sData
+            Move (archive_write_data_block (pDisk, AddressOf (sData), 5, 10)) to iWritten
+            Send AssertBIAreEqual ARCHIVE_OK iWritten "second block after a gap"
+            Move (archive_write_finish_entry (pDisk)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "finish_entry"
+            Move (archive_entry_free (pEntry)) to iVoid
+            Delegate Get FileSize sFile to iValue
+            Send AssertBIAreEqual 15 iValue "file size"
+            Delegate Get FileText sFile to sText
+            Send AssertIAreEqual 15 (Length (sText)) "text length"
+            Send AssertSAreEqual "AAAAA" (Left (sText, 5)) "first block content"
+            Send AssertSAreEqual "BBBBB" (Right (sText, 5)) "second block content"
+            Send Assert (Mid (sText, 5, 6) = (Repeat (Character (0), 5))) "the gap is zero filled"
+
+            // with the sparse option a block of zeros becomes a hole, the file keeps its size
+            Move (archive_write_disk_set_options (pDisk, ARCHIVE_EXTRACT_SPARSE)) to iResult
+            Move (sBase + "sparse.bin") to sFile
+            Delegate Send Track sFile
+            Delegate Get MakeEntry sFile AE_IFREG 8193 to pEntry
+            Move (archive_write_header (pDisk, pEntry)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "sparse header"
+            Move (ResizeArray (ucBlock, 8192)) to ucBlock
+            Move (archive_write_data_block (pDisk, AddressOf (ucBlock), 8192, 0)) to iWritten
+            Send AssertBIAreEqual ARCHIVE_OK iWritten "zero block"
+            Move "X" to sData
+            Move (archive_write_data_block (pDisk, AddressOf (sData), 1, 8192)) to iWritten
+            Send AssertBIAreEqual ARCHIVE_OK iWritten "last byte"
+            Move (archive_write_finish_entry (pDisk)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "sparse finish_entry"
+            Move (archive_entry_free (pEntry)) to iVoid
+            Delegate Get FileSize sFile to iValue
+            Send AssertBIAreEqual 8193 iValue "sparse file size"
+            Delegate Get FileText sFile to sText
+            Send AssertSAreEqual "X" (Right (sText, 1)) "sparse file last byte"
+            Move (archive_write_free (pDisk)) to iResult
+
+            // block writing only exists for write_disk handles
+            Move (ResizeArray (ucBlock, 4096)) to ucBlock
+            Move (archive_write_new ()) to pDisk
+            Move (archive_write_set_format_ustar (pDisk)) to iResult
+            Move (archive_write_open_memory (pDisk, AddressOf (ucBlock), 4096, AddressOf (iValue))) to iResult
+            Delegate Get MakeEntry "x.txt" AE_IFREG 5 to pEntry
+            Move (archive_write_header (pDisk, pEntry)) to iResult
+            Move (archive_write_data_block (pDisk, AddressOf (sData), 1, 0)) to iWritten
+            Send AssertBIAreEqual ARCHIVE_FATAL iWritten "write_data_block is refused by a tar writer"
+            Move (archive_entry_free (pEntry)) to iVoid
+            Move (archive_write_free (pDisk)) to iResult
+            Delegate Send CleanUp
+        End_Procedure
+    End_Object
+
+    // Extracts the sample archive (read with the libarchive read API) into a folder with a write_disk handle.
+    Object oDiskExtractSampleTest is a cTest
+        Procedure Test
+            Pointer pDisk pReader pEntry
+            Integer iResult iIndex iCount iRead
+            BigInt iWritten iValue iSize
+            String sBase sName sPath sText sExpected
+            UChar[] ucArchive ucBuffer ucEmpty
+            Void_Type iVoid
+
+            Delegate Get BuildSampleArchiveMemory ARCHIVE_FORMAT_TAR_PAX_RESTRICTED (&ucArchive) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "build sample"
+            Delegate Get DiskFolder "wd_extract" to sBase
+            Delegate Send Track (sBase + "docs")
+
+            Move (archive_read_new ()) to pReader
+            Move (archive_read_support_format_all (pReader)) to iResult
+            Move (archive_read_support_filter_all (pReader)) to iResult
+            Move (archive_read_open_memory (pReader, AddressOf (ucArchive), SizeOfArray (ucArchive))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open sample"
+            Move (archive_write_disk_new ()) to pDisk
+            Move (archive_write_disk_set_options (pDisk, (ARCHIVE_EXTRACT_TIME ior ARCHIVE_EXTRACT_PERM))) to iResult
+            Move (archive_write_disk_set_standard_lookup (pDisk)) to iResult
+
+            Move 0 to iCount
+            Move (archive_read_next_header (pReader, AddressOf (pEntry))) to iResult
+            While (iResult = ARCHIVE_OK)
+                Move (PointerToString (archive_entry_pathname_utf8 (pEntry))) to sName
+                Move (sBase + sName) to sPath
+                Delegate Send Track (Left (sPath, Length (sPath) - (If (Right (sPath, 1) = "/", 1, 0))))
+                Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sPath))) to iVoid
+                Move (archive_write_header (pDisk, pEntry)) to iResult
+                Send AssertIAreEqual ARCHIVE_OK iResult ("write header" * sName)
+                Move (archive_entry_size (pEntry)) to iSize
+                If (iSize > 0) Begin
+                    Move (ResizeArray (ucEmpty, 4096)) to ucBuffer
+                    Move (archive_read_data (pReader, AddressOf (ucBuffer), 4096)) to iRead
+                    Move (archive_write_data (pDisk, AddressOf (ucBuffer), iRead)) to iWritten
+                    Send AssertBIAreEqual iSize iWritten ("data written" * sName)
+                End
+                Move (archive_write_finish_entry (pDisk)) to iResult
+                Send AssertIAreEqual ARCHIVE_OK iResult ("finish_entry" * sName)
+                Increment iCount
+                Move (archive_read_next_header (pReader, AddressOf (pEntry))) to iResult
+            Loop
+            Send AssertIAreEqual ARCHIVE_EOF iResult "end of the sample archive"
+            Move (archive_write_close (pDisk)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "close"
+            Move (archive_write_free (pDisk)) to iResult
+            Move (archive_read_free (pReader)) to iResult
+
+            Delegate Get SampleEntryCount to iIndex
+            Send AssertIAreEqual iIndex iCount "extracted entry count"
+            For iIndex from 0 to (iCount - 1)
+                Delegate Get SampleEntryName iIndex to sName
+                Move (sBase + sName) to sPath
+                Delegate Get SampleEntryContent iIndex to sExpected
+                Delegate Get SampleEntryIsDirectory iIndex to iResult
+                If (iResult) Begin
+                    Send Assert (IsDirectory (Left (sPath, Length (sPath) - 1))) ("directory exists" * sName)
+                End
+                Else Begin
+                    Delegate Get FileText sPath to sText
+                    Send AssertSAreEqual sExpected sText ("file content" * sName)
+                    Delegate Get FileMTime sPath to iValue
+                    Delegate Get SampleMTime to iSize
+                    Send AssertBIAreEqual iSize iValue ("file mtime" * sName)
+                End
+            Loop
+            Delegate Send CleanUp
+        End_Procedure
+    End_Object
+End_Object

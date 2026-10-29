@@ -1,0 +1,1185 @@
+﻿// Functions to create and query archive entries (archive_entry_*): metadata, ACLs, xattrs, sparse maps and the hard link resolver.
+
+// ====================================================================================================
+// Life cycle
+// ====================================================================================================
+
+/*
+A function that allocates and returns a new, empty archive entry object.
+
+An archive_entry object represents a single file or directory within an archive. It holds metadata about the entry, such as its pathname, permissions, ownership, timestamps, and size.
+
+Allocation: It allocates memory for a new struct archive_entry.
+Initialization: It initializes the fields of this new entry object to default or empty values.
+After obtaining a new archive entry using archive_entry_new(), you would typically use other archive_entry_ functions to populate its metadata. For example:
+
+archive_entry_set_pathname(): Sets the name of the entry.
+archive_entry_set_mode(): Sets the file type and permissions.
+archive_entry_set_size(): Sets the size of the file data.
+archive_entry_set_mtime(): Sets the last modification time.
+and many others.
+When you are finished with an archive_entry object, you should free its associated memory using archive_entry_free().
+*/
+External_Function archive_entry_new "archive_entry_new" archive.dll ;
+    Returns Pointer
+
+/* Allocates a new archive_entry that takes its character set conversion settings from the given archive handle. */
+External_Function archive_entry_new2 "archive_entry_new2" archive.dll ;
+    Pointer pArchive ;
+    Returns Pointer
+
+/* Resets all fields of the entry to their defaults and returns the same pointer. */
+External_Function archive_entry_clear "archive_entry_clear" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+/* Creates a deep copy of the entry (all strings are copied). Free the clone with archive_entry_free. */
+External_Function archive_entry_clone "archive_entry_clone" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+/*
+The function archive_entry_free() in libarchive is a void function — it does not return any value.
+Always free entries you allocate with archive_entry_new() to avoid memory leaks, especially when writing many files in a loop.
+What is does:
+- Frees the memory associated with an archive_entry Object.
+- Safe to call on a NULL Pointer (no-op).
+- No return value; there's no success/failure result to check.
+*/
+External_Function archive_entry_free "archive_entry_free" archive.dll ;
+    Pointer pEntry ;
+    Returns Void_Type
+
+// ====================================================================================================
+// Timestamps (time_t = 64 bit, nanoseconds = C long = 32 bit on Windows)
+// ====================================================================================================
+
+/*
+Provides functions for manipulating archive entries (like tar or cpio files). This specific function retrieves the last access time of a file entry in the archive.
+Represents absolute time in seconds since the epoch.
+*/
+External_Function archive_entry_atime "archive_entry_atime" archive.dll ;
+    Pointer pEntry ;
+    Returns BigInt
+
+/*
+Provides functions for manipulating archive entries (like tar or cpio files). This specific function retrieves the last access time of a file entry in the archive in nanoseconds.
+Represents absolute time in nanoseconds since the epoch.
+*/
+External_Function archive_entry_atime_nsec "archive_entry_atime_nsec" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* 1 when the access time is set, otherwise 0. */
+/* Note: The result is a non-zero flag value, not necessarily 1. */
+External_Function archive_entry_atime_is_set "archive_entry_atime_is_set" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* Creation time in seconds since 1970-01-01 UTC. */
+External_Function archive_entry_birthtime "archive_entry_birthtime" archive.dll ;
+    Pointer pEntry ;
+    Returns BigInt
+
+/* Nanosecond part of the creation time. */
+External_Function archive_entry_birthtime_nsec "archive_entry_birthtime_nsec" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* 1 when the creation time is set, otherwise 0. */
+/* Note: The result is a non-zero flag value, not necessarily 1. */
+External_Function archive_entry_birthtime_is_set "archive_entry_birthtime_is_set" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* Inode change time in seconds since 1970-01-01 UTC. */
+External_Function archive_entry_ctime "archive_entry_ctime" archive.dll ;
+    Pointer pEntry ;
+    Returns BigInt
+
+/* Nanosecond part of the inode change time. */
+External_Function archive_entry_ctime_nsec "archive_entry_ctime_nsec" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* 1 when the inode change time is set, otherwise 0. */
+/* Note: The result is a non-zero flag value, not necessarily 1. */
+External_Function archive_entry_ctime_is_set "archive_entry_ctime_is_set" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* Last modification time in seconds since 1970-01-01 UTC. */
+External_Function archive_entry_mtime "archive_entry_mtime" archive.dll ;
+    Pointer pEntry ;
+    Returns BigInt
+
+/* Nanosecond part of the last modification time. */
+External_Function archive_entry_mtime_nsec "archive_entry_mtime_nsec" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* 1 when the modification time is set, otherwise 0. */
+/* Note: The result is a non-zero flag value, not necessarily 1. */
+External_Function archive_entry_mtime_is_set "archive_entry_mtime_is_set" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* Sets the last access time. */
+External_Function archive_entry_set_atime "archive_entry_set_atime" archive.dll ;
+    Pointer pEntry ;
+    BigInt iSeconds ;
+    Integer iNanoSeconds ;
+    Returns Void_Type
+
+/* Sets the creation time. */
+External_Function archive_entry_set_birthtime "archive_entry_set_birthtime" archive.dll ;
+    Pointer pEntry ;
+    BigInt iSeconds ;
+    Integer iNanoSeconds ;
+    Returns Void_Type
+
+/* Sets the inode change time. */
+External_Function archive_entry_set_ctime "archive_entry_set_ctime" archive.dll ;
+    Pointer pEntry ;
+    BigInt iSeconds ;
+    Integer iNanoSeconds ;
+    Returns Void_Type
+
+/* Marks the access time as not set. */
+External_Function archive_entry_unset_atime "archive_entry_unset_atime" archive.dll ;
+    Pointer pEntry ;
+    Returns Void_Type
+
+/* Marks the creation time as not set. */
+External_Function archive_entry_unset_birthtime "archive_entry_unset_birthtime" archive.dll ;
+    Pointer pEntry ;
+    Returns Void_Type
+
+/* Marks the inode change time as not set. */
+External_Function archive_entry_unset_ctime "archive_entry_unset_ctime" archive.dll ;
+    Pointer pEntry ;
+    Returns Void_Type
+
+/* Marks the modification time as not set. */
+External_Function archive_entry_unset_mtime "archive_entry_unset_mtime" archive.dll ;
+    Pointer pEntry ;
+    Returns Void_Type
+
+// ====================================================================================================
+// Device and inode
+// ====================================================================================================
+
+/* Device number of the file. */
+External_Function archive_entry_dev "archive_entry_dev" archive.dll ;
+    Pointer pEntry ;
+    Returns UInteger
+
+/* 1 when the device number is set, otherwise 0. */
+External_Function archive_entry_dev_is_set "archive_entry_dev_is_set" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* Major part of the device number. */
+External_Function archive_entry_devmajor "archive_entry_devmajor" archive.dll ;
+    Pointer pEntry ;
+    Returns UInteger
+
+/* Minor part of the device number. */
+External_Function archive_entry_devminor "archive_entry_devminor" archive.dll ;
+    Pointer pEntry ;
+    Returns UInteger
+
+/* Inode number (truncated to 32 bit on some platforms; prefer archive_entry_ino64). */
+External_Function archive_entry_ino "archive_entry_ino" archive.dll ;
+    Pointer pEntry ;
+    Returns BigInt
+
+/* Inode number as a 64 bit value. */
+External_Function archive_entry_ino64 "archive_entry_ino64" archive.dll ;
+    Pointer pEntry ;
+    Returns BigInt
+
+/* 1 when the inode number is set, otherwise 0. */
+External_Function archive_entry_ino_is_set "archive_entry_ino_is_set" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* Number of hard links to the file. */
+External_Function archive_entry_nlink "archive_entry_nlink" archive.dll ;
+    Pointer pEntry ;
+    Returns UInteger
+
+/* Device number of a character or block device entry. */
+External_Function archive_entry_rdev "archive_entry_rdev" archive.dll ;
+    Pointer pEntry ;
+    Returns UInteger
+
+/* Major part of the rdev number. */
+External_Function archive_entry_rdevmajor "archive_entry_rdevmajor" archive.dll ;
+    Pointer pEntry ;
+    Returns UInteger
+
+/* Minor part of the rdev number. */
+External_Function archive_entry_rdevminor "archive_entry_rdevminor" archive.dll ;
+    Pointer pEntry ;
+    Returns UInteger
+
+/* Sets the device number. */
+External_Function archive_entry_set_dev "archive_entry_set_dev" archive.dll ;
+    Pointer pEntry ;
+    UInteger iDevice ;
+    Returns Void_Type
+
+/* Sets the major part of the device number. */
+External_Function archive_entry_set_devmajor "archive_entry_set_devmajor" archive.dll ;
+    Pointer pEntry ;
+    UInteger iDeviceMajor ;
+    Returns Void_Type
+
+/* Sets the minor part of the device number. */
+External_Function archive_entry_set_devminor "archive_entry_set_devminor" archive.dll ;
+    Pointer pEntry ;
+    UInteger iDeviceMinor ;
+    Returns Void_Type
+
+/* Sets the inode number. */
+External_Function archive_entry_set_ino "archive_entry_set_ino" archive.dll ;
+    Pointer pEntry ;
+    BigInt iInode ;
+    Returns Void_Type
+
+/* Sets the inode number as a 64 bit value. */
+External_Function archive_entry_set_ino64 "archive_entry_set_ino64" archive.dll ;
+    Pointer pEntry ;
+    BigInt iInode ;
+    Returns Void_Type
+
+/* Sets the number of hard links. */
+External_Function archive_entry_set_nlink "archive_entry_set_nlink" archive.dll ;
+    Pointer pEntry ;
+    UInteger iLinkCount ;
+    Returns Void_Type
+
+/* Sets the rdev number of a character or block device entry. */
+External_Function archive_entry_set_rdev "archive_entry_set_rdev" archive.dll ;
+    Pointer pEntry ;
+    UInteger iDevice ;
+    Returns Void_Type
+
+/* Sets the major part of the rdev number. */
+External_Function archive_entry_set_rdevmajor "archive_entry_set_rdevmajor" archive.dll ;
+    Pointer pEntry ;
+    UInteger iDeviceMajor ;
+    Returns Void_Type
+
+/* Sets the minor part of the rdev number. */
+External_Function archive_entry_set_rdevminor "archive_entry_set_rdevminor" archive.dll ;
+    Pointer pEntry ;
+    UInteger iDeviceMinor ;
+    Returns Void_Type
+
+// ====================================================================================================
+// Mode, type and size
+// ====================================================================================================
+
+/* File type bits of the mode (AE_IFREG, AE_IFDIR, AE_IFLNK, ...). */
+External_Function archive_entry_filetype "archive_entry_filetype" archive.dll ;
+    Pointer pEntry ;
+    Returns UShort
+
+/* Complete mode: file type bits and permission bits. */
+External_Function archive_entry_mode "archive_entry_mode" archive.dll ;
+    Pointer pEntry ;
+    Returns UShort
+
+/* Permission bits of the mode (for example 420 = octal 0644). */
+External_Function archive_entry_perm "archive_entry_perm" archive.dll ;
+    Pointer pEntry ;
+    Returns UShort
+
+/* Pointer to a 10 character string like "-rw-r--r-- " describing type and permissions. Owned by the entry. */
+External_Function archive_entry_strmode "archive_entry_strmode" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+/* Size of the entry data in bytes. */
+External_Function archive_entry_size "archive_entry_size" archive.dll ;
+    Pointer pEntry ;
+    Returns BigInt
+
+/* 1 when the size is set, otherwise 0. */
+/* Note: The result is a non-zero flag value, not necessarily 1. */
+External_Function archive_entry_size_is_set "archive_entry_size_is_set" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* Marks the size as not set. */
+External_Function archive_entry_unset_size "archive_entry_unset_size" archive.dll ;
+    Pointer pEntry ;
+    Returns Void_Type
+
+/* 1 when the data of the entry is encrypted. */
+External_Function archive_entry_is_data_encrypted "archive_entry_is_data_encrypted" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* 1 when the metadata (name, times, ...) of the entry is encrypted. */
+External_Function archive_entry_is_metadata_encrypted "archive_entry_is_metadata_encrypted" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* 1 when the data or the metadata of the entry is encrypted. */
+External_Function archive_entry_is_encrypted "archive_entry_is_encrypted" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+/*
+It sets the mode for an entry within an archive. The mode is a combination of the file type (e.g., regular file, directory, symbolic link) and its permissions (read, write, execute for owner, group, and others).
+*/
+External_Function archive_entry_set_mode "archive_entry_set_mode" archive.dll ;
+    Pointer pEntry ;
+    Integer iMode ;
+    Returns Void_Type
+
+/*
+This Function sets the file permissions (the permission bits within the mode_t argument) for the archive entry. It's generally assumed to succeed in setting these permissions. If there were internal issues (like memory allocation problems), they would likely manifest in other ways, but the function itself doesn't return an Error indicator.
+Sets the permission bits: archive_entry_set_perm() specifically looks at the permission bits within the provided mode_t value and sets the corresponding permissions for the archive entry. It does not affect the file type bits; for that, you would use functions like archive_entry_set_filetype().
+
+The permission bits in a mode_t value are typically structured as follows (in octal representation):
+
+The last three digits represent permissions for the owner, group, and others, respectively.
+Each digit is a sum of bits for read (4), write (2), and execute (1).
+
+For example:
+
+0644 means read/write for owner, read for group, and read for others.
+0755 means read/write/execute for owner, read/execute for group, and read/execute for others.
+*/
+External_Function archive_entry_set_perm "archive_entry_set_perm" archive.dll ;
+    Pointer pEntry ;
+    Integer iPermission ;
+    Returns Void_Type
+
+/*
+A function in the libarchive library that sets the file type of an archive entry using a mode_t value.
+
+The mode_t type is typically defined in <sys/types.h> and is used to represent file modes, including the file type and permissions. This function specifically looks at the file type bits within the provided mode_t value.
+
+Here are the common file types that can be set using the bits in the mode_t argument:
+
+AR_IFREG: Regular file
+AR_IFDIR: Directory
+AR_IFLNK: Symbolic link
+AR_IFCHR: Character device
+AR_IFBLK: Block device
+AR_IFFIFO: FIFO (named pipe)
+AR_IFSOCK: Socket
+
+When you call archive_entry_set_filetype(), you pass the archive_entry you want to modify and a mode_t value where the file type bits are set accordingly.
+
+This function sets the file type of the archive entry based on the bits in the provided mode_t value. It's generally assumed to succeed in setting the file type. Internal issues might lead to other problems, but the function itself doesn't return an error code.
+*/
+External_Function archive_entry_set_filetype "archive_entry_set_filetype" archive.dll ;
+    Pointer pEntry ;
+    UInteger iFileType ;
+    Returns Void_Type
+
+/*
+A function in the libarchive library that sets the size (in bytes) of the data associated with an archive entry.
+This function takes two arguments:
+- A pointer to the struct archive_entry object you want to modify.
+- A int64 value representing the size of the data. Using int64 allows you to specify large file sizes.
+The size set by this function is typically used when writing an archive to indicate how much data will follow for that entry. When reading an archive, this function is usually called internally by libarchive based on the information in the archive header, making the size available through archive_entry_size().
+According to the libarchive documentation, this function sets the size of the data associated with the archive entry. It's generally assumed to succeed. Internal memory allocation issues might lead to problems elsewhere, but the function itself doesn't return an error code.
+*/
+External_Function archive_entry_set_size "archive_entry_set_size" archive.dll ;
+    Pointer pEntry ;
+    BigInt iSize ;
+    Returns Void_Type
+
+/* Marks the entry data as encrypted (0 or 1). */
+External_Function archive_entry_set_is_data_encrypted "archive_entry_set_is_data_encrypted" archive.dll ;
+    Pointer pEntry ;
+    Integer iEncrypted ;
+    Returns Void_Type
+
+/* Marks the entry metadata as encrypted (0 or 1). */
+External_Function archive_entry_set_is_metadata_encrypted "archive_entry_set_is_metadata_encrypted" archive.dll ;
+    Pointer pEntry ;
+    Integer iEncrypted ;
+    Returns Void_Type
+
+// ====================================================================================================
+// Owner
+// ====================================================================================================
+
+/* User id of the owner. */
+External_Function archive_entry_uid "archive_entry_uid" archive.dll ;
+    Pointer pEntry ;
+    Returns BigInt
+
+/* Group id of the owner. */
+External_Function archive_entry_gid "archive_entry_gid" archive.dll ;
+    Pointer pEntry ;
+    Returns BigInt
+
+/* Pointer to the user name in the current locale (ANSI code page), or 0. */
+External_Function archive_entry_uname "archive_entry_uname" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+/* Pointer to the user name as UTF-8, or 0. */
+External_Function archive_entry_uname_utf8 "archive_entry_uname_utf8" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+/* Pointer to the user name as wide (UTF-16) string, or 0. */
+External_Function archive_entry_uname_w "archive_entry_uname_w" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+/* Pointer to the group name in the current locale (ANSI code page), or 0. */
+External_Function archive_entry_gname "archive_entry_gname" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+/* Pointer to the group name as UTF-8, or 0. */
+External_Function archive_entry_gname_utf8 "archive_entry_gname_utf8" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+/* Pointer to the group name as wide (UTF-16) string, or 0. */
+External_Function archive_entry_gname_w "archive_entry_gname_w" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+/* Sets the user id of the owner. */
+External_Function archive_entry_set_uid "archive_entry_set_uid" archive.dll ;
+    Pointer pEntry ;
+    BigInt iUserId ;
+    Returns Void_Type
+
+/* Sets the group id of the owner. */
+External_Function archive_entry_set_gid "archive_entry_set_gid" archive.dll ;
+    Pointer pEntry ;
+    BigInt iGroupId ;
+    Returns Void_Type
+
+/* Sets the user name (locale string). */
+External_Function archive_entry_set_uname "archive_entry_set_uname" archive.dll ;
+    Pointer pEntry ;
+    Pointer pName ;
+    Returns Void_Type
+
+/* Sets the user name (UTF-8 string). */
+External_Function archive_entry_set_uname_utf8 "archive_entry_set_uname_utf8" archive.dll ;
+    Pointer pEntry ;
+    Pointer pName ;
+    Returns Void_Type
+
+/* Copies the user name (locale string). Same as archive_entry_set_uname. */
+External_Function archive_entry_copy_uname "archive_entry_copy_uname" archive.dll ;
+    Pointer pEntry ;
+    Pointer pName ;
+    Returns Void_Type
+
+/* Copies the user name (wide string). */
+External_Function archive_entry_copy_uname_w "archive_entry_copy_uname_w" archive.dll ;
+    Pointer pEntry ;
+    Pointer pName ;
+    Returns Void_Type
+
+/* Sets the user name (UTF-8 string); returns 1 on success, 0 when the conversion failed. */
+/*
+Note: A result of 0 means the text could not be converted to the locale without loss; libarchive keeps the
+text anyway.
+*/
+External_Function archive_entry_update_uname_utf8 "archive_entry_update_uname_utf8" archive.dll ;
+    Pointer pEntry ;
+    Pointer pName ;
+    Returns Integer
+
+/* Sets the group name (locale string). */
+External_Function archive_entry_set_gname "archive_entry_set_gname" archive.dll ;
+    Pointer pEntry ;
+    Pointer pName ;
+    Returns Void_Type
+
+/* Sets the group name (UTF-8 string). */
+External_Function archive_entry_set_gname_utf8 "archive_entry_set_gname_utf8" archive.dll ;
+    Pointer pEntry ;
+    Pointer pName ;
+    Returns Void_Type
+
+/* Copies the group name (locale string). Same as archive_entry_set_gname. */
+External_Function archive_entry_copy_gname "archive_entry_copy_gname" archive.dll ;
+    Pointer pEntry ;
+    Pointer pName ;
+    Returns Void_Type
+
+/* Copies the group name (wide string). */
+External_Function archive_entry_copy_gname_w "archive_entry_copy_gname_w" archive.dll ;
+    Pointer pEntry ;
+    Pointer pName ;
+    Returns Void_Type
+
+/* Sets the group name (UTF-8 string); returns 1 on success, 0 when the conversion failed. */
+/*
+Note: A result of 0 means the text could not be converted to the locale without loss; libarchive keeps the
+text anyway.
+*/
+External_Function archive_entry_update_gname_utf8 "archive_entry_update_gname_utf8" archive.dll ;
+    Pointer pEntry ;
+    Pointer pName ;
+    Returns Integer
+
+// ====================================================================================================
+// Path names
+// ====================================================================================================
+
+/* Pointer to the path name in the current locale (ANSI code page), or 0. */
+External_Function archive_entry_pathname "archive_entry_pathname" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+/* Pointer to the path name as UTF-8, or 0. */
+External_Function archive_entry_pathname_utf8 "archive_entry_pathname_utf8" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+/* Pointer to the path name as wide (UTF-16) string, or 0. */
+External_Function archive_entry_pathname_w "archive_entry_pathname_w" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+/* Pointer to the path of the file on disk the entry was created from (read disk), or 0. */
+External_Function archive_entry_sourcepath "archive_entry_sourcepath" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+/* Wide string variant of archive_entry_sourcepath. */
+External_Function archive_entry_sourcepath_w "archive_entry_sourcepath_w" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+/*
+A function used to set the pathname of an archive entry, explicitly interpreting the provided string as being encoded in UTF-8.
+
+Setting the Pathname: Like archive_entry_set_pathname(), this function sets the name (path) of the file or directory that the archive_entry object represents within the archive.
+Explicit UTF-8 Interpretation: The key difference is that archive_entry_set_pathname_utf8() explicitly tells libarchive that the input const char * string is encoded using UTF-8. This is important for handling filenames that contain characters outside of the basic ASCII range in a consistent and portable way.
+When you use archive_entry_set_pathname_utf8(), libarchive will store the pathname internally, ensuring that it's treated as UTF-8. This can affect how the pathname is encoded when the archive is written and how it's interpreted when the archive is read by applications that understand UTF-8 pathnames.
+
+Return Value: archive_entry_set_pathname() does not return a value that you would typically use for error checking.
+Success/Failure: It's assumed to succeed in setting the pathname. Failures would likely manifest as more severe issues like crashes due to memory problems.
+*/
+External_Function archive_entry_set_pathname "archive_entry_set_pathname" archive.dll ;
+    Pointer pEntry ;
+    Pointer pPathName ;
+    Returns Void_Type
+
+/*
+A function used to set the pathname of an archive entry, explicitly interpreting the provided string as being encoded in UTF-8.
+
+Setting the Pathname: Like archive_entry_set_pathname(), this function sets the name (path) of the file or directory that the archive_entry object represents within the archive.
+Explicit UTF-8 Interpretation: The key difference is that archive_entry_set_pathname_utf8() explicitly tells libarchive that the input const char * string is encoded using UTF-8. This is important for handling filenames that contain characters outside of the basic ASCII range in a consistent and portable way.
+When you use archive_entry_set_pathname_utf8(), libarchive will store the pathname internally, ensuring that it's treated as UTF-8. This can affect how the pathname is encoded when the archive is written and how it's interpreted when the archive is read by applications that understand UTF-8 pathnames.
+
+Return Value: archive_entry_set_pathname() does not return a value that you would typically use for error checking.
+Success/Failure: It's assumed to succeed in setting the pathname. Failures would likely manifest as more severe issues like crashes due to memory problems.
+*/
+/*
+Note: Non-ASCII names outside the ANSI code page crash the zip writer unless the writer option
+hdrcharset=UTF-8 is set; 7zip garbles non-ASCII names set this way (use archive_entry_update_pathname_utf8).
+The string MUST be valid UTF-8 (program source files need a BOM), a NULL pathname crashes
+archive_write_header.
+*/
+External_Function archive_entry_set_pathname_utf8 "archive_entry_set_pathname_utf8" archive.dll ;
+    Pointer pEntry ;
+    Pointer pPathName ;
+    Returns Void_Type
+
+/* Copies the path name (locale string). Same as archive_entry_set_pathname. */
+External_Function archive_entry_copy_pathname "archive_entry_copy_pathname" archive.dll ;
+    Pointer pEntry ;
+    Pointer pPathName ;
+    Returns Void_Type
+
+/* Copies the path name (wide string). */
+External_Function archive_entry_copy_pathname_w "archive_entry_copy_pathname_w" archive.dll ;
+    Pointer pEntry ;
+    Pointer pPathName ;
+    Returns Void_Type
+
+/* Sets the path name (UTF-8 string); returns 1 on success, 0 when the conversion failed. */
+/*
+Note: A result of 0 means the text could not be converted to the locale without loss; libarchive keeps the
+text anyway. Prefer this function over archive_entry_set_pathname_utf8: the 7zip writer garbles non-ASCII
+names set with the set_ variant.
+*/
+External_Function archive_entry_update_pathname_utf8 "archive_entry_update_pathname_utf8" archive.dll ;
+    Pointer pEntry ;
+    Pointer pPathName ;
+    Returns Integer
+
+/* Sets the path of the file on disk (locale string) that archive_read_disk_entry_from_file reads from. */
+External_Function archive_entry_copy_sourcepath "archive_entry_copy_sourcepath" archive.dll ;
+    Pointer pEntry ;
+    Pointer pPathName ;
+    Returns Void_Type
+
+/* Wide string variant of archive_entry_copy_sourcepath. */
+External_Function archive_entry_copy_sourcepath_w "archive_entry_copy_sourcepath_w" archive.dll ;
+    Pointer pEntry ;
+    Pointer pPathName ;
+    Returns Void_Type
+
+// ====================================================================================================
+// Hard links and symbolic links
+// ====================================================================================================
+
+/* Pointer to the hard link target in the current locale (ANSI code page), or 0. */
+External_Function archive_entry_hardlink "archive_entry_hardlink" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+/* Pointer to the hard link target as UTF-8, or 0. */
+External_Function archive_entry_hardlink_utf8 "archive_entry_hardlink_utf8" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+/* Pointer to the hard link target as wide (UTF-16) string, or 0. */
+External_Function archive_entry_hardlink_w "archive_entry_hardlink_w" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+/* 1 when the entry has a hard link target, otherwise 0. */
+External_Function archive_entry_hardlink_is_set "archive_entry_hardlink_is_set" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* Pointer to the symbolic link target in the current locale (ANSI code page), or 0. */
+External_Function archive_entry_symlink "archive_entry_symlink" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+/* Pointer to the symbolic link target as UTF-8, or 0. */
+External_Function archive_entry_symlink_utf8 "archive_entry_symlink_utf8" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+/* Pointer to the symbolic link target as wide (UTF-16) string, or 0. */
+External_Function archive_entry_symlink_w "archive_entry_symlink_w" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+/* Type of the symbolic link target: AE_SYMLINK_TYPE_UNDEFINED, _FILE or _DIRECTORY. */
+External_Function archive_entry_symlink_type "archive_entry_symlink_type" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* Sets the hard link target (locale string). */
+/* Note: A hard link and a symbolic link share one storage in libarchive: an entry has one or the other. */
+External_Function archive_entry_set_hardlink "archive_entry_set_hardlink" archive.dll ;
+    Pointer pEntry ;
+    Pointer pTarget ;
+    Returns Void_Type
+
+/* Sets the hard link target (UTF-8 string). */
+External_Function archive_entry_set_hardlink_utf8 "archive_entry_set_hardlink_utf8" archive.dll ;
+    Pointer pEntry ;
+    Pointer pTarget ;
+    Returns Void_Type
+
+/* Copies the hard link target (locale string). Same as archive_entry_set_hardlink. */
+External_Function archive_entry_copy_hardlink "archive_entry_copy_hardlink" archive.dll ;
+    Pointer pEntry ;
+    Pointer pTarget ;
+    Returns Void_Type
+
+/* Copies the hard link target (wide string). */
+External_Function archive_entry_copy_hardlink_w "archive_entry_copy_hardlink_w" archive.dll ;
+    Pointer pEntry ;
+    Pointer pTarget ;
+    Returns Void_Type
+
+/* Sets the hard link target (UTF-8 string); returns 1 on success, 0 when the conversion failed. */
+/*
+Note: A result of 0 means the text could not be converted to the locale without loss; libarchive keeps the
+text anyway.
+*/
+External_Function archive_entry_update_hardlink_utf8 "archive_entry_update_hardlink_utf8" archive.dll ;
+    Pointer pEntry ;
+    Pointer pTarget ;
+    Returns Integer
+
+/* Sets the symbolic link target (locale string). */
+/* Note: A hard link and a symbolic link share one storage in libarchive: an entry has one or the other. */
+External_Function archive_entry_set_symlink "archive_entry_set_symlink" archive.dll ;
+    Pointer pEntry ;
+    Pointer pTarget ;
+    Returns Void_Type
+
+/* Sets the symbolic link target (UTF-8 string). */
+External_Function archive_entry_set_symlink_utf8 "archive_entry_set_symlink_utf8" archive.dll ;
+    Pointer pEntry ;
+    Pointer pTarget ;
+    Returns Void_Type
+
+/* Sets the symbolic link type (AE_SYMLINK_TYPE_*). */
+External_Function archive_entry_set_symlink_type "archive_entry_set_symlink_type" archive.dll ;
+    Pointer pEntry ;
+    Integer iSymlinkType ;
+    Returns Void_Type
+
+/* Copies the symbolic link target (locale string). Same as archive_entry_set_symlink. */
+External_Function archive_entry_copy_symlink "archive_entry_copy_symlink" archive.dll ;
+    Pointer pEntry ;
+    Pointer pTarget ;
+    Returns Void_Type
+
+/* Copies the symbolic link target (wide string). */
+External_Function archive_entry_copy_symlink_w "archive_entry_copy_symlink_w" archive.dll ;
+    Pointer pEntry ;
+    Pointer pTarget ;
+    Returns Void_Type
+
+/* Sets the symbolic link target (UTF-8 string); returns 1 on success, 0 when the conversion failed. */
+/*
+Note: A result of 0 means the text could not be converted to the locale without loss; libarchive keeps the
+text anyway.
+*/
+External_Function archive_entry_update_symlink_utf8 "archive_entry_update_symlink_utf8" archive.dll ;
+    Pointer pEntry ;
+    Pointer pTarget ;
+    Returns Integer
+
+/* Sets the link target of the kind that is currently set (hard link or symbolic link), locale string. */
+External_Function archive_entry_set_link "archive_entry_set_link" archive.dll ;
+    Pointer pEntry ;
+    Pointer pTarget ;
+    Returns Void_Type
+
+/* Sets the link target of the kind that is currently set (hard link or symbolic link), UTF-8 string. */
+External_Function archive_entry_set_link_utf8 "archive_entry_set_link_utf8" archive.dll ;
+    Pointer pEntry ;
+    Pointer pTarget ;
+    Returns Void_Type
+
+/* Copies the link target (locale string); same as archive_entry_set_link. */
+External_Function archive_entry_copy_link "archive_entry_copy_link" archive.dll ;
+    Pointer pEntry ;
+    Pointer pTarget ;
+    Returns Void_Type
+
+/* Copies the link target (wide string). */
+External_Function archive_entry_copy_link_w "archive_entry_copy_link_w" archive.dll ;
+    Pointer pEntry ;
+    Pointer pTarget ;
+    Returns Void_Type
+
+/* Sets the link target (UTF-8 string); returns 1 on success, 0 when the conversion failed. */
+/*
+Note: A result of 0 means the text could not be converted to the locale without loss; libarchive keeps the
+text anyway.
+*/
+External_Function archive_entry_update_link_utf8 "archive_entry_update_link_utf8" archive.dll ;
+    Pointer pEntry ;
+    Pointer pTarget ;
+    Returns Integer
+
+/* Declares that the link target set with archive_entry_set_link is a hard link. */
+External_Function archive_entry_set_link_to_hardlink "archive_entry_set_link_to_hardlink" archive.dll ;
+    Pointer pEntry ;
+    Returns Void_Type
+
+/* Declares that the link target set with archive_entry_set_link is a symbolic link. */
+External_Function archive_entry_set_link_to_symlink "archive_entry_set_link_to_symlink" archive.dll ;
+    Pointer pEntry ;
+    Returns Void_Type
+
+// ====================================================================================================
+// File flags
+// ====================================================================================================
+
+/* Stores the file flags to set and to clear in the unsigned 32 bit variables pointed to. */
+External_Function archive_entry_fflags "archive_entry_fflags" archive.dll ;
+    Pointer pEntry ;
+    Pointer pSet ;
+    Pointer pClear ;
+    Returns Void_Type
+
+/* Pointer to the file flags as text, or 0 when not set. */
+External_Function archive_entry_fflags_text "archive_entry_fflags_text" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+/* Sets the file flags to set and to clear. */
+External_Function archive_entry_set_fflags "archive_entry_set_fflags" archive.dll ;
+    Pointer pEntry ;
+    UInteger iSet ;
+    UInteger iClear ;
+    Returns Void_Type
+
+/* Sets the file flags from text. Returns a pointer to the first invalid token, or 0 when all were valid. */
+External_Function archive_entry_copy_fflags_text "archive_entry_copy_fflags_text" archive.dll ;
+    Pointer pEntry ;
+    Pointer pFlags ;
+    Returns Pointer
+
+/*
+Like archive_entry_copy_fflags_text with an explicit text length in bytes. Not in the shipped 3.6.1 header;
+declared according to the libarchive source.
+*/
+External_Function archive_entry_copy_fflags_text_len "archive_entry_copy_fflags_text_len" archive.dll ;
+    Pointer pEntry ;
+    Pointer pFlags ;
+    Longptr iLength ;
+    Returns Pointer
+
+/* Wide string variant of archive_entry_copy_fflags_text. */
+External_Function archive_entry_copy_fflags_text_w "archive_entry_copy_fflags_text_w" archive.dll ;
+    Pointer pEntry ;
+    Pointer pFlags ;
+    Returns Pointer
+
+// ====================================================================================================
+// stat and platform data
+// ====================================================================================================
+
+/* Pointer to a C runtime struct stat filled from the entry. Owned by the entry. */
+/* Note: The structure is a C runtime struct _stat64i32 (size is a 32 bit value at offset 20). */
+External_Function archive_entry_stat "archive_entry_stat" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+/* Copies the fields from a C runtime struct stat into the entry. */
+External_Function archive_entry_copy_stat "archive_entry_copy_stat" archive.dll ;
+    Pointer pEntry ;
+    Pointer pStat ;
+    Returns Void_Type
+
+/* Windows only: copies the fields from a BY_HANDLE_FILE_INFORMATION structure into the entry. */
+/* Note: Copies times, size, inode and link count; it does not set the file type or the permissions. */
+External_Function archive_entry_copy_bhfi "archive_entry_copy_bhfi" archive.dll ;
+    Pointer pEntry ;
+    Pointer pFileInfo ;
+    Returns Void_Type
+
+/* Pointer to the Mac OS AppleDouble metadata blob; the size_t variable pointed to by pSize receives its size. */
+External_Function archive_entry_mac_metadata "archive_entry_mac_metadata" archive.dll ;
+    Pointer pEntry ;
+    Pointer pSize ;
+    Returns Pointer
+
+/* Stores a Mac OS AppleDouble metadata blob in the entry. */
+External_Function archive_entry_copy_mac_metadata "archive_entry_copy_mac_metadata" archive.dll ;
+    Pointer pEntry ;
+    Pointer pData ;
+    Longptr iSize ;
+    Returns Void_Type
+
+/*
+Pointer to the raw digest bytes (ARCHIVE_ENTRY_DIGEST_*) when the format provides one, otherwise 0. The length
+depends on the type (MD5 16, SHA1 20, SHA256 32, ...).
+*/
+/*
+Note: For a known type the function never returns 0: when the entry has no digest it returns a pointer to
+zero-filled bytes. Only an unknown type returns 0.
+*/
+External_Function archive_entry_digest "archive_entry_digest" archive.dll ;
+    Pointer pEntry ;
+    Integer iDigestType ;
+    Returns Pointer
+
+// ====================================================================================================
+// ACL
+// ====================================================================================================
+
+/* Pointer to the opaque ACL object of the entry. There is nothing a client can do with it. */
+External_Function archive_entry_acl "archive_entry_acl" archive.dll ;
+    Pointer pEntry ;
+    Returns Pointer
+
+/* Removes all ACL entries. */
+External_Function archive_entry_acl_clear "archive_entry_acl_clear" archive.dll ;
+    Pointer pEntry ;
+    Returns Void_Type
+
+/* Adds an ACL entry. Type is ARCHIVE_ENTRY_ACL_TYPE_*, tag ARCHIVE_ENTRY_ACL_USER etc. */
+External_Function archive_entry_acl_add_entry "archive_entry_acl_add_entry" archive.dll ;
+    Pointer pEntry ;
+    Integer iType ;
+    Integer iPermset ;
+    Integer iTag ;
+    Integer iQualifier ;
+    Pointer pName ;
+    Returns Integer
+
+/* Wide string variant of archive_entry_acl_add_entry. */
+/*
+Note: pName must not be NULL (an empty WString passes NULL with AddressOf): libarchive crashes in wcslen. Pass
+any non-empty text for entries without a name.
+*/
+External_Function archive_entry_acl_add_entry_w "archive_entry_acl_add_entry_w" archive.dll ;
+    Pointer pEntry ;
+    Integer iType ;
+    Integer iPermset ;
+    Integer iTag ;
+    Integer iQualifier ;
+    Pointer pName ;
+    Returns Integer
+
+/* Starts an enumeration of the ACL entries of the wanted types (returns the number of entries). */
+External_Function archive_entry_acl_reset "archive_entry_acl_reset" archive.dll ;
+    Pointer pEntry ;
+    Integer iWantType ;
+    Returns Integer
+
+/*
+Returns the next ACL entry in the Integer variables pointed to (name as char pointer). Returns ARCHIVE_EOF at
+the end.
+*/
+/* Note: The returned user/group name is in the ANSI code page. */
+External_Function archive_entry_acl_next "archive_entry_acl_next" archive.dll ;
+    Pointer pEntry ;
+    Integer iWantType ;
+    Pointer pType ;
+    Pointer pPermset ;
+    Pointer pTag ;
+    Pointer pQualifier ;
+    Pointer ppName ;
+    Returns Integer
+
+/* Number of ACL entries of the wanted types. */
+External_Function archive_entry_acl_count "archive_entry_acl_count" archive.dll ;
+    Pointer pEntry ;
+    Integer iWantType ;
+    Returns Integer
+
+/* Bit mask of the ARCHIVE_ENTRY_ACL_TYPE_* values present in the entry. */
+External_Function archive_entry_acl_types "archive_entry_acl_types" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+/*
+Pointer to a newly allocated text form of the ACL (ARCHIVE_ENTRY_ACL_STYLE_* flags). The length (la_ssize_t)
+is stored when pLength is not 0. The memory is owned by the entry.
+*/
+/*
+Note: The returned text is allocated with malloc and must be freed by the caller (free from ucrtbase.dll); it
+is not owned by the entry.
+*/
+External_Function archive_entry_acl_to_text "archive_entry_acl_to_text" archive.dll ;
+    Pointer pEntry ;
+    Pointer pLength ;
+    Integer iFlags ;
+    Returns Pointer
+
+/* Wide string variant of archive_entry_acl_to_text. */
+/*
+Note: The returned text is allocated with malloc and must be freed by the caller (free from ucrtbase.dll); it
+is not owned by the entry.
+*/
+External_Function archive_entry_acl_to_text_w "archive_entry_acl_to_text_w" archive.dll ;
+    Pointer pEntry ;
+    Pointer pLength ;
+    Integer iFlags ;
+    Returns Pointer
+
+/* Sets the ACL from text, replacing entries of that type. */
+/*
+Note: The parsed entries are added to the existing ACL; they do not replace it (call archive_entry_acl_clear
+first to replace).
+*/
+External_Function archive_entry_acl_from_text "archive_entry_acl_from_text" archive.dll ;
+    Pointer pEntry ;
+    Pointer pText ;
+    Integer iType ;
+    Returns Integer
+
+/* Wide string variant of archive_entry_acl_from_text. */
+/*
+Note: The parsed entries are added to the existing ACL; they do not replace it (call archive_entry_acl_clear
+first to replace).
+*/
+External_Function archive_entry_acl_from_text_w "archive_entry_acl_from_text_w" archive.dll ;
+    Pointer pEntry ;
+    Pointer pText ;
+    Integer iType ;
+    Returns Integer
+
+/* Deprecated; use archive_entry_acl_to_text. */
+External_Function archive_entry_acl_text "archive_entry_acl_text" archive.dll ;
+    Pointer pEntry ;
+    Integer iFlags ;
+    Returns Pointer
+
+/* Deprecated; use archive_entry_acl_to_text_w. */
+External_Function archive_entry_acl_text_w "archive_entry_acl_text_w" archive.dll ;
+    Pointer pEntry ;
+    Integer iFlags ;
+    Returns Pointer
+
+// ====================================================================================================
+// Extended attributes
+// ====================================================================================================
+
+/* Removes all extended attributes. */
+External_Function archive_entry_xattr_clear "archive_entry_xattr_clear" archive.dll ;
+    Pointer pEntry ;
+    Returns Void_Type
+
+/* Adds an extended attribute (name string, value bytes and size). */
+External_Function archive_entry_xattr_add_entry "archive_entry_xattr_add_entry" archive.dll ;
+    Pointer pEntry ;
+    Pointer pName ;
+    Pointer pValue ;
+    Longptr iSize ;
+    Returns Void_Type
+
+/* Number of extended attributes. */
+External_Function archive_entry_xattr_count "archive_entry_xattr_count" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* Starts an enumeration of the extended attributes (returns the count). */
+External_Function archive_entry_xattr_reset "archive_entry_xattr_reset" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+/*
+Returns the next extended attribute: name pointer, value pointer and size (size_t) are stored in the variables
+pointed to. Returns ARCHIVE_WARN at the end.
+*/
+/* Note: The attributes are enumerated in the reverse order of adding. */
+External_Function archive_entry_xattr_next "archive_entry_xattr_next" archive.dll ;
+    Pointer pEntry ;
+    Pointer ppName ;
+    Pointer ppValue ;
+    Pointer pSize ;
+    Returns Integer
+
+// ====================================================================================================
+// Sparse regions
+// ====================================================================================================
+
+/* Removes all sparse regions. */
+External_Function archive_entry_sparse_clear "archive_entry_sparse_clear" archive.dll ;
+    Pointer pEntry ;
+    Returns Void_Type
+
+/* Adds a sparse region (data block) with offset and length. */
+/* Note: Regions that reach beyond the entry size are silently ignored: set the size first. */
+External_Function archive_entry_sparse_add_entry "archive_entry_sparse_add_entry" archive.dll ;
+    Pointer pEntry ;
+    BigInt iOffset ;
+    BigInt iLength ;
+    Returns Void_Type
+
+/* Number of sparse regions. */
+External_Function archive_entry_sparse_count "archive_entry_sparse_count" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* Starts an enumeration of the sparse regions (returns the count). */
+External_Function archive_entry_sparse_reset "archive_entry_sparse_reset" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* Returns the next sparse region in the Int64 variables pointed to. Returns ARCHIVE_WARN at the end. */
+External_Function archive_entry_sparse_next "archive_entry_sparse_next" archive.dll ;
+    Pointer pEntry ;
+    Pointer pOffset ;
+    Pointer pLength ;
+    Returns Integer
+
+// ====================================================================================================
+// Hard link resolver
+// ====================================================================================================
+
+/* Allocates a hard link resolver. Free it with archive_entry_linkresolver_free. */
+External_Function archive_entry_linkresolver_new "archive_entry_linkresolver_new" archive.dll ;
+    Returns Pointer
+
+/* Selects the hard link strategy that matches the archive format (ARCHIVE_FORMAT_*). */
+External_Function archive_entry_linkresolver_set_strategy "archive_entry_linkresolver_set_strategy" archive.dll ;
+    Pointer pResolver ;
+    Integer iFormatCode ;
+    Returns Void_Type
+
+/* Frees the hard link resolver. */
+/*
+Note: libarchive 3.7.7 frees entries that are still deferred (SVR4 cpio strategy) twice: call
+archive_entry_linkify with a zero entry until no more entries are returned before freeing the resolver.
+*/
+External_Function archive_entry_linkresolver_free "archive_entry_linkresolver_free" archive.dll ;
+    Pointer pResolver ;
+    Returns Void_Type
+
+/*
+Filters an entry through the resolver; ppEntry and ppSparseEntry point to entry pointer variables that receive
+the entries to write (0, 1 or 2). Call with a zero entry to flush.
+*/
+External_Function archive_entry_linkify "archive_entry_linkify" archive.dll ;
+    Pointer pResolver ;
+    Pointer ppEntry ;
+    Pointer ppSparseEntry ;
+    Returns Void_Type
+
+/*
+Returns the entries of files whose links were not all seen; the link count (unsigned 32 bit) is stored in the
+variable pointed to. Returns 0 when done.
+*/
+External_Function archive_entry_partial_links "archive_entry_partial_links" archive.dll ;
+    Pointer pResolver ;
+    Pointer pLinks ;
+    Returns Pointer
+
+// ====================================================================================================
+// Is-set queries added after the shipped 3.6.1 header (libarchive 3.7.x)
+// ====================================================================================================
+
+/* 1 when the file type is set, otherwise 0. Not in the shipped 3.6.1 header. */
+/* Note: The result is a non-zero flag value, not necessarily 1. */
+External_Function archive_entry_filetype_is_set "archive_entry_filetype_is_set" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* 1 when the permission bits are set, otherwise 0. Not in the shipped 3.6.1 header. */
+/* Note: The result is a non-zero flag value, not necessarily 1. */
+External_Function archive_entry_perm_is_set "archive_entry_perm_is_set" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* 1 when the user id is set, otherwise 0. Not in the shipped 3.6.1 header. */
+/* Note: The result is a non-zero flag value, not necessarily 1. */
+External_Function archive_entry_uid_is_set "archive_entry_uid_is_set" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* 1 when the group id is set, otherwise 0. Not in the shipped 3.6.1 header. */
+/* Note: The result is a non-zero flag value, not necessarily 1. */
+External_Function archive_entry_gid_is_set "archive_entry_gid_is_set" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* 1 when the rdev number is set, otherwise 0. Not in the shipped 3.6.1 header. */
+/* Note: The result is a non-zero flag value, not necessarily 1. */
+External_Function archive_entry_rdev_is_set "archive_entry_rdev_is_set" archive.dll ;
+    Pointer pEntry ;
+    Returns Integer
+
+// ====================================================================================================
+// Time setter documented in the original declarations
+// ====================================================================================================
+
+/*
+It sets the modification time (mtime) for an entry within an archive.
+The modification time indicates the last time the content of a file was modified.
+This is a common piece of metadata stored in archive formats and is analogous to the st_mtime field in a Unix-like stat structure.
+*/
+External_Function archive_entry_set_mtime "archive_entry_set_mtime" archive.dll ;
+    Pointer pEntry ;
+    BigInt iSeconds ;
+    Integer iNanoSeconds ;
+    Returns Void_Type

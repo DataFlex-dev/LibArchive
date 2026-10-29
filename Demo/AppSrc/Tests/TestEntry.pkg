@@ -1,0 +1,835 @@
+﻿// Tests for the archive_entry_* functions of ArchiveEntry.h.pkg that describe a single entry: life cycle, times,
+// device and inode numbers, mode, size, owner, names and links.
+
+Object oEntryTests is a cArchiveTestFixture
+    Set psTestFixtureName to "Entry"
+
+    // Text of a char pointer returned by libarchive, "<NULL>" for a NULL pointer.
+    Function PStr Pointer pText Returns String
+        If (pText = 0) Begin
+            Function_Return "<NULL>"
+        End
+        Function_Return (PointerToString (pText))
+    End_Function
+
+    // Text of a wchar_t pointer returned by libarchive, "<NULL>" for a NULL pointer.
+    Function PWStr Pointer pText Returns String
+        If (pText = 0) Begin
+            Function_Return "<NULL>"
+        End
+        Function_Return (PointerToWString (pText))
+    End_Function
+
+    // ---- time dispatch: 1 atime, 2 birthtime, 3 ctime, 4 mtime ---------------------------------------------------
+
+    Function TimeLabel Integer iWhich Returns String
+        Case Begin
+            Case (iWhich = 1) Function_Return "atime"
+            Case (iWhich = 2) Function_Return "birthtime"
+            Case (iWhich = 3) Function_Return "ctime"
+            Case (iWhich = 4) Function_Return "mtime"
+        Case End
+        Function_Return ""
+    End_Function
+
+    Function GetTime Pointer pEntry Integer iWhich Returns BigInt
+        Case Begin
+            Case (iWhich = 1) Function_Return (archive_entry_atime (pEntry))
+            Case (iWhich = 2) Function_Return (archive_entry_birthtime (pEntry))
+            Case (iWhich = 3) Function_Return (archive_entry_ctime (pEntry))
+            Case (iWhich = 4) Function_Return (archive_entry_mtime (pEntry))
+        Case End
+        Function_Return -1
+    End_Function
+
+    Function GetTimeNsec Pointer pEntry Integer iWhich Returns Integer
+        Case Begin
+            Case (iWhich = 1) Function_Return (archive_entry_atime_nsec (pEntry))
+            Case (iWhich = 2) Function_Return (archive_entry_birthtime_nsec (pEntry))
+            Case (iWhich = 3) Function_Return (archive_entry_ctime_nsec (pEntry))
+            Case (iWhich = 4) Function_Return (archive_entry_mtime_nsec (pEntry))
+        Case End
+        Function_Return -1
+    End_Function
+
+    Function TimeIsSet Pointer pEntry Integer iWhich Returns Integer
+        Case Begin
+            Case (iWhich = 1) Function_Return (archive_entry_atime_is_set (pEntry))
+            Case (iWhich = 2) Function_Return (archive_entry_birthtime_is_set (pEntry))
+            Case (iWhich = 3) Function_Return (archive_entry_ctime_is_set (pEntry))
+            Case (iWhich = 4) Function_Return (archive_entry_mtime_is_set (pEntry))
+        Case End
+        Function_Return -1
+    End_Function
+
+    Procedure SetTime Pointer pEntry Integer iWhich BigInt iSeconds Integer iNanoSeconds
+        Void_Type iVoid
+        Case Begin
+            Case (iWhich = 1) Move (archive_entry_set_atime (pEntry, iSeconds, iNanoSeconds)) to iVoid
+            Case Break
+            Case (iWhich = 2) Move (archive_entry_set_birthtime (pEntry, iSeconds, iNanoSeconds)) to iVoid
+            Case Break
+            Case (iWhich = 3) Move (archive_entry_set_ctime (pEntry, iSeconds, iNanoSeconds)) to iVoid
+            Case Break
+            Case (iWhich = 4) Move (archive_entry_set_mtime (pEntry, iSeconds, iNanoSeconds)) to iVoid
+        Case End
+    End_Procedure
+
+    Procedure UnsetTime Pointer pEntry Integer iWhich
+        Void_Type iVoid
+        Case Begin
+            Case (iWhich = 1) Move (archive_entry_unset_atime (pEntry)) to iVoid
+            Case Break
+            Case (iWhich = 2) Move (archive_entry_unset_birthtime (pEntry)) to iVoid
+            Case Break
+            Case (iWhich = 3) Move (archive_entry_unset_ctime (pEntry)) to iVoid
+            Case Break
+            Case (iWhich = 4) Move (archive_entry_unset_mtime (pEntry)) to iVoid
+        Case End
+    End_Procedure
+
+    // ---- tests ---------------------------------------------------------------------------------------------------
+
+    Object oLifeCycleTest is a cTest
+        Procedure Test
+            Pointer pEntry pEntry2 pClone pArchive pReturned
+            Void_Type iVoid
+            Integer iResult
+            String sName sText
+
+            Move (archive_entry_new ()) to pEntry
+            Send Assert (pEntry <> 0) "archive_entry_new returns an entry"
+            Delegate Get PStr (archive_entry_pathname (pEntry)) to sText
+            Send AssertSAreEqual "<NULL>" sText "a new entry has no pathname"
+            Send AssertIAreEqual 0 (archive_entry_mtime_is_set (pEntry)) "a new entry has no mtime"
+            Send AssertIAreEqual 0 (archive_entry_size_is_set (pEntry)) "a new entry has no size"
+
+            // new2 takes the character set settings of an archive handle
+            Move (archive_write_new ()) to pArchive
+            Move (archive_entry_new2 (pArchive)) to pEntry2
+            Send Assert (pEntry2 <> 0) "archive_entry_new2 returns an entry"
+            Move "x.txt" to sName
+            Move (archive_entry_set_pathname_utf8 (pEntry2, AddressOf (sName))) to iVoid
+            Delegate Get PStr (archive_entry_pathname_utf8 (pEntry2)) to sText
+            Send AssertSAreEqual "x.txt" sText "pathname of a new2 entry"
+            Move (archive_entry_free (pEntry2)) to iVoid
+            Move (archive_write_free (pArchive)) to iResult
+
+            // clone is a deep copy
+            Move "original.txt" to sName
+            Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sName))) to iVoid
+            Move (archive_entry_set_size (pEntry, 99)) to iVoid
+            Move (archive_entry_set_mtime (pEntry, 1700000000, 5)) to iVoid
+            Move (archive_entry_set_perm (pEntry, 420)) to iVoid
+            Move (archive_entry_set_filetype (pEntry, AE_IFREG)) to iVoid
+            Move (archive_entry_clone (pEntry)) to pClone
+            Send Assert (pClone <> 0 and pClone <> pEntry) "clone is a different entry"
+            Move "changed.txt" to sName
+            Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sName))) to iVoid
+            Move (archive_entry_set_size (pEntry, 1)) to iVoid
+            Delegate Get PStr (archive_entry_pathname_utf8 (pClone)) to sText
+            Send AssertSAreEqual "original.txt" sText "clone keeps the pathname"
+            Send AssertBIAreEqual 99 (archive_entry_size (pClone)) "clone keeps the size"
+            Send AssertBIAreEqual 1700000000 (archive_entry_mtime (pClone)) "clone keeps the mtime"
+            Send AssertIAreEqual 5 (archive_entry_mtime_nsec (pClone)) "clone keeps the mtime nsec"
+            Send AssertIAreEqual 420 (archive_entry_perm (pClone)) "clone keeps the permission"
+            Send AssertIAreEqual AE_IFREG (archive_entry_filetype (pClone)) "clone keeps the file type"
+            Move (archive_entry_free (pClone)) to iVoid
+
+            // clear resets everything and returns the same entry
+            Move (archive_entry_clear (pEntry)) to pReturned
+            Send AssertPAreEqual pEntry pReturned "archive_entry_clear returns the entry"
+            Delegate Get PStr (archive_entry_pathname (pEntry)) to sText
+            Send AssertSAreEqual "<NULL>" sText "cleared entry has no pathname"
+            Send AssertIAreEqual 0 (archive_entry_mtime_is_set (pEntry)) "cleared entry has no mtime"
+            Send AssertIAreEqual 0 (archive_entry_size_is_set (pEntry)) "cleared entry has no size"
+            Send AssertIAreEqual 0 (archive_entry_filetype_is_set (pEntry)) "cleared entry has no file type"
+
+            Move (archive_entry_free (pEntry)) to iVoid
+            // freeing NULL is allowed
+            Move (archive_entry_free (0)) to iVoid
+        End_Procedure
+    End_Object
+
+    Object oTimesTest is a cTest
+        Procedure Test
+            Pointer pEntry
+            Integer iWhich iNsec
+            BigInt iSeconds
+            String sLabel
+
+            Move (archive_entry_new ()) to pEntry
+            For iWhich from 1 to 4
+                Delegate Get TimeLabel iWhich to sLabel
+                Delegate Get TimeIsSet pEntry iWhich to iNsec
+                Send AssertIAreEqual 0 iNsec (sLabel * "is not set in a new entry")
+
+                Delegate Send SetTime pEntry iWhich (1700000000 + iWhich) (123456780 + iWhich)
+                Delegate Get TimeIsSet pEntry iWhich to iNsec
+                Send Assert (iNsec <> 0) (sLabel * "is set")
+                Delegate Get GetTime pEntry iWhich to iSeconds
+                Send AssertBIAreEqual (1700000000 + iWhich) iSeconds (sLabel * "seconds")
+                Delegate Get GetTimeNsec pEntry iWhich to iNsec
+                Send AssertIAreEqual (123456780 + iWhich) iNsec (sLabel * "nanoseconds")
+
+                // nanoseconds above one second carry over into the seconds
+                Delegate Send SetTime pEntry iWhich 1700000000 1500000000
+                Delegate Get GetTime pEntry iWhich to iSeconds
+                Send AssertBIAreEqual 1700000001 iSeconds (sLabel * "carry seconds")
+                Delegate Get GetTimeNsec pEntry iWhich to iNsec
+                Send AssertIAreEqual 500000000 iNsec (sLabel * "carry nanoseconds")
+
+                // times after 2038 need the 64 bit seconds
+                Delegate Send SetTime pEntry iWhich 4102444800 0
+                Delegate Get GetTime pEntry iWhich to iSeconds
+                Send AssertBIAreEqual 4102444800 iSeconds (sLabel * "year 2100")
+
+                Delegate Send UnsetTime pEntry iWhich
+                Delegate Get TimeIsSet pEntry iWhich to iNsec
+                Send AssertIAreEqual 0 iNsec (sLabel * "is not set after unset")
+                Delegate Get GetTime pEntry iWhich to iSeconds
+                Send AssertBIAreEqual 0 iSeconds (sLabel * "seconds after unset")
+            Loop
+            Delegate Send FreeEntry pEntry
+        End_Procedure
+    End_Object
+
+    Procedure FreeEntry Pointer pEntry
+        Void_Type iVoid
+        Move (archive_entry_free (pEntry)) to iVoid
+    End_Procedure
+
+    Object oDeviceAndInodeTest is a cTest
+        Procedure Test
+            Pointer pEntry
+            Void_Type iVoid
+
+            Move (archive_entry_new ()) to pEntry
+            Send AssertIAreEqual 0 (archive_entry_dev_is_set (pEntry)) "dev is not set in a new entry"
+            Send AssertIAreEqual 0 (archive_entry_ino_is_set (pEntry)) "ino is not set in a new entry"
+            Send AssertIAreEqual 0 (archive_entry_rdev_is_set (pEntry)) "rdev is not set in a new entry"
+            Send AssertUIAreEqual 0 (archive_entry_nlink (pEntry)) "nlink 0 in a new entry"
+
+            // dev as a whole number: the major part is bits 8..15, the minor part the rest
+            Move (archive_entry_set_dev (pEntry, 2049)) to iVoid
+            Send Assert (archive_entry_dev_is_set (pEntry) <> 0) "dev is set"
+            Send AssertUIAreEqual 2049 (archive_entry_dev (pEntry)) "dev"
+            Send AssertUIAreEqual 8 (archive_entry_devmajor (pEntry)) "devmajor of 2049"
+            Send AssertUIAreEqual 1 (archive_entry_devminor (pEntry)) "devminor of 2049"
+
+            // major and minor separately
+            Move (archive_entry_set_devmajor (pEntry, 9)) to iVoid
+            Move (archive_entry_set_devminor (pEntry, 3)) to iVoid
+            Send AssertUIAreEqual 9 (archive_entry_devmajor (pEntry)) "set_devmajor"
+            Send AssertUIAreEqual 3 (archive_entry_devminor (pEntry)) "set_devminor"
+            Send AssertUIAreEqual 2307 (archive_entry_dev (pEntry)) "dev composed of major 9 and minor 3"
+
+            // the same for the rdev of device nodes
+            Move (archive_entry_set_rdev (pEntry, 1282)) to iVoid
+            Send Assert (archive_entry_rdev_is_set (pEntry) <> 0) "rdev is set"
+            Send AssertUIAreEqual 1282 (archive_entry_rdev (pEntry)) "rdev"
+            Send AssertUIAreEqual 5 (archive_entry_rdevmajor (pEntry)) "rdevmajor of 1282"
+            Send AssertUIAreEqual 2 (archive_entry_rdevminor (pEntry)) "rdevminor of 1282"
+            Move (archive_entry_set_rdevmajor (pEntry, 7)) to iVoid
+            Move (archive_entry_set_rdevminor (pEntry, 4)) to iVoid
+            Send AssertUIAreEqual 7 (archive_entry_rdevmajor (pEntry)) "set_rdevmajor"
+            Send AssertUIAreEqual 4 (archive_entry_rdevminor (pEntry)) "set_rdevminor"
+            Send AssertUIAreEqual 1796 (archive_entry_rdev (pEntry)) "rdev composed of major 7 and minor 4"
+
+            // inode numbers are 64 bit
+            Move (archive_entry_set_ino (pEntry, 123456789012)) to iVoid
+            Send Assert (archive_entry_ino_is_set (pEntry) <> 0) "ino is set"
+            Send AssertBIAreEqual 123456789012 (archive_entry_ino (pEntry)) "ino"
+            Send AssertBIAreEqual 123456789012 (archive_entry_ino64 (pEntry)) "ino64 after set_ino"
+            Move (archive_entry_set_ino64 (pEntry, 9876543210987)) to iVoid
+            Send AssertBIAreEqual 9876543210987 (archive_entry_ino64 (pEntry)) "set_ino64"
+            Send AssertBIAreEqual 9876543210987 (archive_entry_ino (pEntry)) "ino after set_ino64"
+
+            Move (archive_entry_set_nlink (pEntry, 3)) to iVoid
+            Send AssertUIAreEqual 3 (archive_entry_nlink (pEntry)) "nlink"
+            Delegate Send FreeEntry pEntry
+        End_Procedure
+    End_Object
+
+    Object oModeAndSizeTest is a cTest
+        Procedure Test
+            Pointer pEntry
+            Void_Type iVoid
+            String sText
+
+            Move (archive_entry_new ()) to pEntry
+            Send AssertIAreEqual 0 (archive_entry_filetype_is_set (pEntry)) "file type is not set in a new entry"
+            Send AssertIAreEqual 0 (archive_entry_perm_is_set (pEntry)) "perm is not set in a new entry"
+
+            // mode = file type bits + permission bits
+            Move (archive_entry_set_mode (pEntry, (AE_IFREG ior 420))) to iVoid
+            Send AssertIAreEqual (AE_IFREG ior 420) (archive_entry_mode (pEntry)) "mode"
+            Send AssertIAreEqual AE_IFREG (archive_entry_filetype (pEntry)) "filetype of the mode"
+            Send AssertIAreEqual 420 (archive_entry_perm (pEntry)) "perm of the mode"
+            Send Assert (archive_entry_filetype_is_set (pEntry) <> 0) "file type is set"
+            Send Assert (archive_entry_perm_is_set (pEntry) <> 0) "perm is set"
+            Delegate Get PStr (archive_entry_strmode (pEntry)) to sText
+            Send AssertSAreEqual "-rw-r--r-- " sText "strmode of a regular file 0644"
+
+            // permissions do not touch the file type
+            Move (archive_entry_set_perm (pEntry, 493)) to iVoid
+            Send AssertIAreEqual 493 (archive_entry_perm (pEntry)) "set_perm"
+            Send AssertIAreEqual AE_IFREG (archive_entry_filetype (pEntry)) "set_perm keeps the file type"
+            Send AssertIAreEqual (AE_IFREG ior 493) (archive_entry_mode (pEntry)) "mode after set_perm"
+            Delegate Get PStr (archive_entry_strmode (pEntry)) to sText
+            Send AssertSAreEqual "-rwxr-xr-x " sText "strmode of 0755"
+
+            // the file type does not touch the permissions
+            Move (archive_entry_set_filetype (pEntry, AE_IFDIR)) to iVoid
+            Send AssertIAreEqual AE_IFDIR (archive_entry_filetype (pEntry)) "set_filetype directory"
+            Send AssertIAreEqual 493 (archive_entry_perm (pEntry)) "set_filetype keeps the permissions"
+            Delegate Get PStr (archive_entry_strmode (pEntry)) to sText
+            Send AssertSAreEqual "drwxr-xr-x " sText "strmode of a directory"
+
+            Move (archive_entry_set_filetype (pEntry, AE_IFLNK)) to iVoid
+            Move (archive_entry_set_perm (pEntry, 511)) to iVoid
+            Send AssertIAreEqual AE_IFLNK (archive_entry_filetype (pEntry)) "set_filetype symbolic link"
+            Delegate Get PStr (archive_entry_strmode (pEntry)) to sText
+            Send AssertSAreEqual "lrwxrwxrwx " sText "strmode of a symbolic link"
+
+            Move (archive_entry_set_filetype (pEntry, AE_IFCHR)) to iVoid
+            Delegate Get PStr (archive_entry_strmode (pEntry)) to sText
+            Send AssertSAreEqual "crwxrwxrwx " sText "strmode of a character device"
+            Move (archive_entry_set_filetype (pEntry, AE_IFBLK)) to iVoid
+            Delegate Get PStr (archive_entry_strmode (pEntry)) to sText
+            Send AssertSAreEqual "brwxrwxrwx " sText "strmode of a block device"
+            Move (archive_entry_set_filetype (pEntry, AE_IFIFO)) to iVoid
+            Delegate Get PStr (archive_entry_strmode (pEntry)) to sText
+            Send AssertSAreEqual "prwxrwxrwx " sText "strmode of a fifo"
+            Move (archive_entry_set_filetype (pEntry, AE_IFSOCK)) to iVoid
+            Delegate Get PStr (archive_entry_strmode (pEntry)) to sText
+            Send AssertSAreEqual "srwxrwxrwx " sText "strmode of a socket"
+
+            // special permission bits show in strmode
+            Move (archive_entry_set_filetype (pEntry, AE_IFREG)) to iVoid
+            Move (archive_entry_set_perm (pEntry, 2541)) to iVoid
+            Send AssertIAreEqual 2541 (archive_entry_perm (pEntry)) "perm with setuid"
+            Delegate Get PStr (archive_entry_strmode (pEntry)) to sText
+            Send AssertSAreEqual "-rwsr-xr-x " sText "strmode with setuid"
+
+            // size
+            Send AssertIAreEqual 0 (archive_entry_size_is_set (pEntry)) "size is not set"
+            Move (archive_entry_set_size (pEntry, 5000000000)) to iVoid
+            Send Assert (archive_entry_size_is_set (pEntry) <> 0) "size is set"
+            Send AssertBIAreEqual 5000000000 (archive_entry_size (pEntry)) "size above 4 GB"
+            Move (archive_entry_unset_size (pEntry)) to iVoid
+            Send AssertIAreEqual 0 (archive_entry_size_is_set (pEntry)) "size is not set after unset"
+            Send AssertBIAreEqual 0 (archive_entry_size (pEntry)) "size after unset"
+            Delegate Send FreeEntry pEntry
+        End_Procedure
+    End_Object
+
+    Object oEncryptionFlagsTest is a cTest
+        Procedure Test
+            Pointer pEntry
+            Void_Type iVoid
+
+            Move (archive_entry_new ()) to pEntry
+            Send AssertIAreEqual 0 (archive_entry_is_data_encrypted (pEntry)) "data is not encrypted"
+            Send AssertIAreEqual 0 (archive_entry_is_metadata_encrypted (pEntry)) "metadata is not encrypted"
+            Send AssertIAreEqual 0 (archive_entry_is_encrypted (pEntry)) "entry is not encrypted"
+            Move (archive_entry_set_is_data_encrypted (pEntry, 1)) to iVoid
+            Send AssertIAreEqual 1 (archive_entry_is_data_encrypted (pEntry)) "data is encrypted"
+            Send AssertIAreEqual 0 (archive_entry_is_metadata_encrypted (pEntry)) "metadata is still plain"
+            Send Assert (archive_entry_is_encrypted (pEntry) <> 0) "entry with encrypted data is encrypted"
+            Move (archive_entry_set_is_data_encrypted (pEntry, 0)) to iVoid
+            Send AssertIAreEqual 0 (archive_entry_is_encrypted (pEntry)) "entry is plain again"
+            Move (archive_entry_set_is_metadata_encrypted (pEntry, 1)) to iVoid
+            Send Assert (archive_entry_is_metadata_encrypted (pEntry) <> 0) "metadata is encrypted"
+            Send AssertIAreEqual 0 (archive_entry_is_data_encrypted (pEntry)) "data is still plain"
+            Send Assert (archive_entry_is_encrypted (pEntry) <> 0) "entry with encrypted metadata is encrypted"
+            Delegate Send FreeEntry pEntry
+        End_Procedure
+    End_Object
+
+    Object oOwnerTest is a cTest
+        Procedure Test
+            Pointer pEntry
+            Void_Type iVoid
+            Integer iResult
+            String sName sText
+            WString wsName
+
+            Move (archive_entry_new ()) to pEntry
+            Send AssertIAreEqual 0 (archive_entry_uid_is_set (pEntry)) "uid is not set in a new entry"
+            Send AssertIAreEqual 0 (archive_entry_gid_is_set (pEntry)) "gid is not set in a new entry"
+            Move (archive_entry_set_uid (pEntry, 1000)) to iVoid
+            Move (archive_entry_set_gid (pEntry, 4294967300)) to iVoid
+            Send Assert (archive_entry_uid_is_set (pEntry) <> 0) "uid is set"
+            Send Assert (archive_entry_gid_is_set (pEntry) <> 0) "gid is set"
+            Send AssertBIAreEqual 1000 (archive_entry_uid (pEntry)) "uid"
+            Send AssertBIAreEqual 4294967300 (archive_entry_gid (pEntry)) "gid above 32 bit"
+            Delegate Get PStr (archive_entry_uname (pEntry)) to sText
+            Send AssertSAreEqual "<NULL>" sText "no user name in a new entry"
+            Delegate Get PStr (archive_entry_gname (pEntry)) to sText
+            Send AssertSAreEqual "<NULL>" sText "no group name in a new entry"
+
+            // user name: locale (ANSI) variants with plain ASCII
+            Move "alice" to sName
+            Move (archive_entry_set_uname (pEntry, AddressOf (sName))) to iVoid
+            Delegate Get PStr (archive_entry_uname (pEntry)) to sText
+            Send AssertSAreEqual "alice" sText "set_uname / uname"
+            Delegate Get PStr (archive_entry_uname_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "alice" sText "uname_utf8 of a locale name"
+            Delegate Get PWStr (archive_entry_uname_w (pEntry)) to sText
+            Send AssertSAreEqual "alice" sText "uname_w of a locale name"
+            Move "bob" to sName
+            Move (archive_entry_copy_uname (pEntry, AddressOf (sName))) to iVoid
+            Delegate Get PStr (archive_entry_uname (pEntry)) to sText
+            Send AssertSAreEqual "bob" sText "copy_uname"
+            // utf-8 variants with non ASCII characters
+            Move "Jürgen" to sName
+            Move (archive_entry_set_uname_utf8 (pEntry, AddressOf (sName))) to iVoid
+            Delegate Get PStr (archive_entry_uname_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "Jürgen" sText "set_uname_utf8 / uname_utf8"
+            Delegate Get PWStr (archive_entry_uname_w (pEntry)) to sText
+            Send AssertSAreEqual "Jürgen" sText "uname_w of an utf-8 name"
+            Move "Zoë" to wsName
+            Move (archive_entry_copy_uname_w (pEntry, AddressOf (wsName))) to iVoid
+            Delegate Get PStr (archive_entry_uname_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "Zoë" sText "copy_uname_w / uname_utf8"
+            Move "Åsa" to sName
+            Move (archive_entry_update_uname_utf8 (pEntry, AddressOf (sName))) to iResult
+            Send AssertIAreEqual 1 iResult "update_uname_utf8 succeeds"
+            Delegate Get PWStr (archive_entry_uname_w (pEntry)) to sText
+            Send AssertSAreEqual "Åsa" sText "update_uname_utf8"
+
+            // group name
+            Move "staff" to sName
+            Move (archive_entry_set_gname (pEntry, AddressOf (sName))) to iVoid
+            Delegate Get PStr (archive_entry_gname (pEntry)) to sText
+            Send AssertSAreEqual "staff" sText "set_gname / gname"
+            Delegate Get PStr (archive_entry_gname_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "staff" sText "gname_utf8 of a locale name"
+            Delegate Get PWStr (archive_entry_gname_w (pEntry)) to sText
+            Send AssertSAreEqual "staff" sText "gname_w of a locale name"
+            Move "wheel" to sName
+            Move (archive_entry_copy_gname (pEntry, AddressOf (sName))) to iVoid
+            Delegate Get PStr (archive_entry_gname (pEntry)) to sText
+            Send AssertSAreEqual "wheel" sText "copy_gname"
+            Move "Gründer" to sName
+            Move (archive_entry_set_gname_utf8 (pEntry, AddressOf (sName))) to iVoid
+            Delegate Get PStr (archive_entry_gname_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "Gründer" sText "set_gname_utf8 / gname_utf8"
+            Delegate Get PWStr (archive_entry_gname_w (pEntry)) to sText
+            Send AssertSAreEqual "Gründer" sText "gname_w of an utf-8 name"
+            Move "Büro" to wsName
+            Move (archive_entry_copy_gname_w (pEntry, AddressOf (wsName))) to iVoid
+            Delegate Get PStr (archive_entry_gname_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "Büro" sText "copy_gname_w / gname_utf8"
+            Move "Ünï" to sName
+            Move (archive_entry_update_gname_utf8 (pEntry, AddressOf (sName))) to iResult
+            Send AssertIAreEqual 1 iResult "update_gname_utf8 succeeds"
+            Delegate Get PWStr (archive_entry_gname_w (pEntry)) to sText
+            Send AssertSAreEqual "Ünï" sText "update_gname_utf8"
+            Delegate Send FreeEntry pEntry
+        End_Procedure
+    End_Object
+
+    Object oPathnameTest is a cTest
+        Procedure Test
+            Pointer pEntry
+            Void_Type iVoid
+            Integer iResult
+            String sName sText
+            WString wsName
+
+            Move (archive_entry_new ()) to pEntry
+            Delegate Get PStr (archive_entry_pathname (pEntry)) to sText
+            Send AssertSAreEqual "<NULL>" sText "no pathname in a new entry"
+            Delegate Get PStr (archive_entry_pathname_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "<NULL>" sText "no utf-8 pathname in a new entry"
+            Delegate Get PWStr (archive_entry_pathname_w (pEntry)) to sText
+            Send AssertSAreEqual "<NULL>" sText "no wide pathname in a new entry"
+
+            // deprecated locale variants with ASCII
+            Move "dir/plain.txt" to sName
+            Move (archive_entry_set_pathname (pEntry, AddressOf (sName))) to iVoid
+            Delegate Get PStr (archive_entry_pathname (pEntry)) to sText
+            Send AssertSAreEqual "dir/plain.txt" sText "set_pathname / pathname"
+            Delegate Get PStr (archive_entry_pathname_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "dir/plain.txt" sText "pathname_utf8 of a locale pathname"
+            Move "dir/copied.txt" to sName
+            Move (archive_entry_copy_pathname (pEntry, AddressOf (sName))) to iVoid
+            Delegate Get PStr (archive_entry_pathname (pEntry)) to sText
+            Send AssertSAreEqual "dir/copied.txt" sText "copy_pathname"
+
+            // utf-8 and wide
+            Move "dir/héllo-ünï.txt" to sName
+            Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sName))) to iVoid
+            Delegate Get PStr (archive_entry_pathname_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "dir/héllo-ünï.txt" sText "set_pathname_utf8 / pathname_utf8"
+            Delegate Get PWStr (archive_entry_pathname_w (pEntry)) to sText
+            Send AssertSAreEqual "dir/héllo-ünï.txt" sText "pathname_w of an utf-8 pathname"
+            Move "dir/wide-€-ß.txt" to wsName
+            Move (archive_entry_copy_pathname_w (pEntry, AddressOf (wsName))) to iVoid
+            Delegate Get PStr (archive_entry_pathname_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "dir/wide-€-ß.txt" sText "copy_pathname_w / pathname_utf8"
+            Delegate Get PWStr (archive_entry_pathname_w (pEntry)) to sText
+            Send AssertSAreEqual "dir/wide-€-ß.txt" sText "copy_pathname_w / pathname_w"
+            Move "dir/updated-ä.txt" to sName
+            Move (archive_entry_update_pathname_utf8 (pEntry, AddressOf (sName))) to iResult
+            Send AssertIAreEqual 1 iResult "update_pathname_utf8 succeeds"
+            Delegate Get PWStr (archive_entry_pathname_w (pEntry)) to sText
+            Send AssertSAreEqual "dir/updated-ä.txt" sText "update_pathname_utf8"
+
+            // source path: where the file came from on disk
+            Delegate Get PStr (archive_entry_sourcepath (pEntry)) to sText
+            Send AssertSAreEqual "<NULL>" sText "no sourcepath in a new entry"
+            Delegate Get PWStr (archive_entry_sourcepath_w (pEntry)) to sText
+            Send AssertSAreEqual "<NULL>" sText "no wide sourcepath in a new entry"
+            Move "C:\data\source.txt" to sName
+            Move (archive_entry_copy_sourcepath (pEntry, AddressOf (sName))) to iVoid
+            Delegate Get PStr (archive_entry_sourcepath (pEntry)) to sText
+            Send AssertSAreEqual "C:\data\source.txt" sText "copy_sourcepath / sourcepath"
+            Delegate Get PWStr (archive_entry_sourcepath_w (pEntry)) to sText
+            Send AssertSAreEqual "C:\data\source.txt" sText "sourcepath_w of a locale sourcepath"
+            Move "C:\data\sourcé-€.txt" to wsName
+            Move (archive_entry_copy_sourcepath_w (pEntry, AddressOf (wsName))) to iVoid
+            Delegate Get PWStr (archive_entry_sourcepath_w (pEntry)) to sText
+            Send AssertSAreEqual "C:\data\sourcé-€.txt" sText "copy_sourcepath_w / sourcepath_w"
+            // the pathname is not touched by the source path
+            Delegate Get PWStr (archive_entry_pathname_w (pEntry)) to sText
+            Send AssertSAreEqual "dir/updated-ä.txt" sText "pathname is independent of the sourcepath"
+            Delegate Send FreeEntry pEntry
+        End_Procedure
+    End_Object
+
+    Object oHardlinkTest is a cTest
+        Procedure Test
+            Pointer pEntry
+            Void_Type iVoid
+            Integer iResult
+            String sName sText
+            WString wsName
+
+            Move (archive_entry_new ()) to pEntry
+            Send AssertIAreEqual 0 (archive_entry_hardlink_is_set (pEntry)) "no hardlink in a new entry"
+            Delegate Get PStr (archive_entry_hardlink (pEntry)) to sText
+            Send AssertSAreEqual "<NULL>" sText "hardlink of a new entry"
+            Delegate Get PStr (archive_entry_hardlink_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "<NULL>" sText "hardlink_utf8 of a new entry"
+            Delegate Get PWStr (archive_entry_hardlink_w (pEntry)) to sText
+            Send AssertSAreEqual "<NULL>" sText "hardlink_w of a new entry"
+
+            Move "first/target.txt" to sName
+            Move (archive_entry_set_hardlink (pEntry, AddressOf (sName))) to iVoid
+            Send Assert (archive_entry_hardlink_is_set (pEntry) <> 0) "hardlink is set"
+            Delegate Get PStr (archive_entry_hardlink (pEntry)) to sText
+            Send AssertSAreEqual "first/target.txt" sText "set_hardlink / hardlink"
+            Delegate Get PStr (archive_entry_hardlink_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "first/target.txt" sText "hardlink_utf8 of a locale name"
+            Delegate Get PWStr (archive_entry_hardlink_w (pEntry)) to sText
+            Send AssertSAreEqual "first/target.txt" sText "hardlink_w of a locale name"
+            Move "second/copy.txt" to sName
+            Move (archive_entry_copy_hardlink (pEntry, AddressOf (sName))) to iVoid
+            Delegate Get PStr (archive_entry_hardlink (pEntry)) to sText
+            Send AssertSAreEqual "second/copy.txt" sText "copy_hardlink"
+            Move "third/zielé.txt" to sName
+            Move (archive_entry_set_hardlink_utf8 (pEntry, AddressOf (sName))) to iVoid
+            Delegate Get PStr (archive_entry_hardlink_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "third/zielé.txt" sText "set_hardlink_utf8 / hardlink_utf8"
+            Move "fourth/wide-ü.txt" to wsName
+            Move (archive_entry_copy_hardlink_w (pEntry, AddressOf (wsName))) to iVoid
+            Delegate Get PWStr (archive_entry_hardlink_w (pEntry)) to sText
+            Send AssertSAreEqual "fourth/wide-ü.txt" sText "copy_hardlink_w / hardlink_w"
+            Move "fifth/updated-ö.txt" to sName
+            Move (archive_entry_update_hardlink_utf8 (pEntry, AddressOf (sName))) to iResult
+            Send AssertIAreEqual 1 iResult "update_hardlink_utf8 succeeds"
+            Delegate Get PStr (archive_entry_hardlink_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "fifth/updated-ö.txt" sText "update_hardlink_utf8"
+            // a hardlink is not a symlink
+            Delegate Get PStr (archive_entry_symlink (pEntry)) to sText
+            Send AssertSAreEqual "<NULL>" sText "no symlink although a hardlink is set"
+            Delegate Send FreeEntry pEntry
+        End_Procedure
+    End_Object
+
+    Object oSymlinkTest is a cTest
+        Procedure Test
+            Pointer pEntry
+            Void_Type iVoid
+            Integer iResult
+            String sName sText
+            WString wsName
+
+            Move (archive_entry_new ()) to pEntry
+            Delegate Get PStr (archive_entry_symlink (pEntry)) to sText
+            Send AssertSAreEqual "<NULL>" sText "symlink of a new entry"
+            Delegate Get PStr (archive_entry_symlink_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "<NULL>" sText "symlink_utf8 of a new entry"
+            Delegate Get PWStr (archive_entry_symlink_w (pEntry)) to sText
+            Send AssertSAreEqual "<NULL>" sText "symlink_w of a new entry"
+            Send AssertIAreEqual AE_SYMLINK_TYPE_UNDEFINED (archive_entry_symlink_type (pEntry)) "default symlink type"
+
+            Move "..\target.txt" to sName
+            Move (archive_entry_set_symlink (pEntry, AddressOf (sName))) to iVoid
+            Delegate Get PStr (archive_entry_symlink (pEntry)) to sText
+            Send AssertSAreEqual "..\target.txt" sText "set_symlink / symlink"
+            Delegate Get PStr (archive_entry_symlink_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "..\target.txt" sText "symlink_utf8 of a locale name"
+            Delegate Get PWStr (archive_entry_symlink_w (pEntry)) to sText
+            Send AssertSAreEqual "..\target.txt" sText "symlink_w of a locale name"
+            Move "copied-target" to sName
+            Move (archive_entry_copy_symlink (pEntry, AddressOf (sName))) to iVoid
+            Delegate Get PStr (archive_entry_symlink (pEntry)) to sText
+            Send AssertSAreEqual "copied-target" sText "copy_symlink"
+            Move "ziel-é.txt" to sName
+            Move (archive_entry_set_symlink_utf8 (pEntry, AddressOf (sName))) to iVoid
+            Delegate Get PStr (archive_entry_symlink_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "ziel-é.txt" sText "set_symlink_utf8 / symlink_utf8"
+            Move "wide-ß.txt" to wsName
+            Move (archive_entry_copy_symlink_w (pEntry, AddressOf (wsName))) to iVoid
+            Delegate Get PWStr (archive_entry_symlink_w (pEntry)) to sText
+            Send AssertSAreEqual "wide-ß.txt" sText "copy_symlink_w / symlink_w"
+            Move "updated-å.txt" to sName
+            Move (archive_entry_update_symlink_utf8 (pEntry, AddressOf (sName))) to iResult
+            Send AssertIAreEqual 1 iResult "update_symlink_utf8 succeeds"
+            Delegate Get PStr (archive_entry_symlink_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "updated-å.txt" sText "update_symlink_utf8"
+
+            // symlink type: file or directory (Windows distinguishes the two)
+            Move (archive_entry_set_symlink_type (pEntry, AE_SYMLINK_TYPE_FILE)) to iVoid
+            Send AssertIAreEqual AE_SYMLINK_TYPE_FILE (archive_entry_symlink_type (pEntry)) "symlink type file"
+            Move (archive_entry_set_symlink_type (pEntry, AE_SYMLINK_TYPE_DIRECTORY)) to iVoid
+            Send AssertIAreEqual AE_SYMLINK_TYPE_DIRECTORY (archive_entry_symlink_type (pEntry)) "symlink type directory"
+
+            // a symlink entry
+            Move (archive_entry_set_filetype (pEntry, AE_IFLNK)) to iVoid
+            Send AssertIAreEqual AE_IFLNK (archive_entry_filetype (pEntry)) "symlink entry file type"
+            Send AssertIAreEqual 0 (archive_entry_hardlink_is_set (pEntry)) "no hardlink although a symlink is set"
+            Delegate Send FreeEntry pEntry
+        End_Procedure
+    End_Object
+
+    // The "link" functions write to the hardlink or the symlink field, depending on the last call of
+    // archive_entry_set_link_to_hardlink / archive_entry_set_link_to_symlink.
+    Function LinkText Pointer pEntry Boolean bSymlink Returns String
+        If (bSymlink) Begin
+            Function_Return (PStr (Self, archive_entry_symlink_utf8 (pEntry)))
+        End
+        Function_Return (PStr (Self, archive_entry_hardlink_utf8 (pEntry)))
+    End_Function
+
+    Function OtherLinkText Pointer pEntry Boolean bSymlink Returns String
+        If (bSymlink) Begin
+            Function_Return (PStr (Self, archive_entry_hardlink_utf8 (pEntry)))
+        End
+        Function_Return (PStr (Self, archive_entry_symlink_utf8 (pEntry)))
+    End_Function
+
+    Object oLinkTest is a cTest
+        Procedure Test
+            Pointer pEntry
+            Void_Type iVoid
+            Integer iResult iMode
+            Boolean bSymlink
+            String sName sText sLabel
+            WString wsName
+
+            For iMode from 1 to 2
+                Move (iMode = 2) to bSymlink
+                If (bSymlink) Begin
+                    Move "symlink" to sLabel
+                End
+                Else Begin
+                    Move "hardlink" to sLabel
+                End
+                Move (archive_entry_new ()) to pEntry
+                If (bSymlink) Begin
+                    Move (archive_entry_set_link_to_symlink (pEntry)) to iVoid
+                End
+                Else Begin
+                    Move (archive_entry_set_link_to_hardlink (pEntry)) to iVoid
+                End
+
+                Move "target-a" to sName
+                Move (archive_entry_set_link (pEntry, AddressOf (sName))) to iVoid
+                Delegate Get LinkText pEntry bSymlink to sText
+                Send AssertSAreEqual "target-a" sText (sLabel * "set_link")
+                Delegate Get OtherLinkText pEntry bSymlink to sText
+                Send AssertSAreEqual "<NULL>" sText (sLabel * "set_link leaves the other field empty")
+
+                Move "target-bé" to sName
+                Move (archive_entry_set_link_utf8 (pEntry, AddressOf (sName))) to iVoid
+                Delegate Get LinkText pEntry bSymlink to sText
+                Send AssertSAreEqual "target-bé" sText (sLabel * "set_link_utf8")
+
+                Move "target-c" to sName
+                Move (archive_entry_copy_link (pEntry, AddressOf (sName))) to iVoid
+                Delegate Get LinkText pEntry bSymlink to sText
+                Send AssertSAreEqual "target-c" sText (sLabel * "copy_link")
+
+                Move "target-dü" to wsName
+                Move (archive_entry_copy_link_w (pEntry, AddressOf (wsName))) to iVoid
+                Delegate Get LinkText pEntry bSymlink to sText
+                Send AssertSAreEqual "target-dü" sText (sLabel * "copy_link_w")
+
+                Move "target-eö" to sName
+                Move (archive_entry_update_link_utf8 (pEntry, AddressOf (sName))) to iResult
+                Send AssertIAreEqual 1 iResult (sLabel * "update_link_utf8 succeeds")
+                Delegate Get LinkText pEntry bSymlink to sText
+                Send AssertSAreEqual "target-eö" sText (sLabel * "update_link_utf8")
+                Delegate Get OtherLinkText pEntry bSymlink to sText
+                Send AssertSAreEqual "<NULL>" sText (sLabel * "the other field stays empty")
+
+                // switching the kind moves the link
+                If (bSymlink) Begin
+                    Move (archive_entry_set_link_to_hardlink (pEntry)) to iVoid
+                End
+                Else Begin
+                    Move (archive_entry_set_link_to_symlink (pEntry)) to iVoid
+                End
+                Move "moved" to sName
+                Move (archive_entry_set_link (pEntry, AddressOf (sName))) to iVoid
+                Delegate Get LinkText pEntry (bSymlink = False) to sText
+                Send AssertSAreEqual "moved" sText (sLabel * "link after switching the kind")
+                Delegate Get OtherLinkText pEntry (bSymlink = False) to sText
+                Send AssertSAreEqual "<NULL>" sText (sLabel * "old link is removed after switching the kind")
+                Move (archive_entry_free (pEntry)) to iVoid
+            Loop
+        End_Procedure
+    End_Object
+
+    // Writes entries with all kinds of metadata into a pax archive and reads them back.
+    Object oMetadataRoundTripTest is a cTest
+        Procedure Test
+            Pointer pArchive pEntry pReader
+            Void_Type iVoid
+            Integer iResult iDummy
+            BigInt iUsed iWritten
+            UChar[] ucWork ucData
+            String sName sText sData
+
+            Move (ResizeArray (ucWork, 65536)) to ucWork
+            Move (archive_write_new ()) to pArchive
+            Move (archive_write_set_format_pax (pArchive)) to iResult
+            Move (archive_write_open_memory (pArchive, AddressOf (ucWork), 65536, AddressOf (iUsed))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open"
+
+            // 1: regular file with owner and times
+            Move (archive_entry_new ()) to pEntry
+            Move "data/file.txt" to sName
+            Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sName))) to iVoid
+            Move (archive_entry_set_filetype (pEntry, AE_IFREG)) to iVoid
+            Move (archive_entry_set_perm (pEntry, 416)) to iVoid
+            Move (archive_entry_set_uid (pEntry, 1234)) to iVoid
+            Move (archive_entry_set_gid (pEntry, 5678)) to iVoid
+            Move "alice" to sName
+            Move (archive_entry_set_uname_utf8 (pEntry, AddressOf (sName))) to iVoid
+            Move "staff" to sName
+            Move (archive_entry_set_gname_utf8 (pEntry, AddressOf (sName))) to iVoid
+            Move (archive_entry_set_mtime (pEntry, 1700000000, 123456789)) to iVoid
+            Move (archive_entry_set_atime (pEntry, 1700000100, 500000000)) to iVoid
+            Move (archive_entry_set_ctime (pEntry, 1700000200, 250000000)) to iVoid
+            Move (archive_entry_set_size (pEntry, 4)) to iVoid
+            Move (archive_write_header (pArchive, pEntry)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "header 1"
+            Move "data" to sData
+            Move (archive_write_data (pArchive, AddressOf (sData), 4)) to iWritten
+
+            // 2: symbolic link
+            Move (archive_entry_clear (pEntry)) to pEntry
+            Move "link-sym" to sName
+            Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sName))) to iVoid
+            Move (archive_entry_set_filetype (pEntry, AE_IFLNK)) to iVoid
+            Move (archive_entry_set_perm (pEntry, 511)) to iVoid
+            Move "data/file.txt" to sName
+            Move (archive_entry_set_symlink_utf8 (pEntry, AddressOf (sName))) to iVoid
+            Move (archive_entry_set_mtime (pEntry, 1700000000, 0)) to iVoid
+            Move (archive_entry_set_size (pEntry, 0)) to iVoid
+            Move (archive_write_header (pArchive, pEntry)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "header 2"
+
+            // 3: hard link
+            Move (archive_entry_clear (pEntry)) to pEntry
+            Move "link-hard" to sName
+            Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sName))) to iVoid
+            Move (archive_entry_set_filetype (pEntry, AE_IFREG)) to iVoid
+            Move (archive_entry_set_perm (pEntry, 416)) to iVoid
+            Move "data/file.txt" to sName
+            Move (archive_entry_set_hardlink_utf8 (pEntry, AddressOf (sName))) to iVoid
+            Move (archive_entry_set_mtime (pEntry, 1700000000, 0)) to iVoid
+            Move (archive_entry_set_size (pEntry, 0)) to iVoid
+            Move (archive_write_header (pArchive, pEntry)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "header 3"
+
+            // 4: directory
+            Move (archive_entry_clear (pEntry)) to pEntry
+            Move "dir/" to sName
+            Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sName))) to iVoid
+            Move (archive_entry_set_filetype (pEntry, AE_IFDIR)) to iVoid
+            Move (archive_entry_set_perm (pEntry, 493)) to iVoid
+            Move (archive_entry_set_mtime (pEntry, 1700000000, 0)) to iVoid
+            Move (archive_write_header (pArchive, pEntry)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "header 4"
+            Move (archive_entry_free (pEntry)) to iVoid
+            Move (archive_write_close (pArchive)) to iResult
+            Move (archive_write_free (pArchive)) to iResult
+            Move (ResizeArray (ucWork, iUsed)) to ucWork
+
+            // read back
+            Move (archive_read_new ()) to pReader
+            Move (archive_read_support_format_all (pReader)) to iDummy
+            Move (archive_read_support_filter_all (pReader)) to iDummy
+            Move (archive_read_open_memory (pReader, AddressOf (ucWork), SizeOfArray (ucWork))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open for reading"
+
+            Move (archive_read_next_header (pReader, AddressOf (pEntry))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "read header 1"
+            Delegate Get PStr (archive_entry_pathname_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "data/file.txt" sText "pathname 1"
+            Send AssertIAreEqual AE_IFREG (archive_entry_filetype (pEntry)) "filetype 1"
+            Send AssertIAreEqual 416 (archive_entry_perm (pEntry)) "perm 1"
+            Send AssertBIAreEqual 1234 (archive_entry_uid (pEntry)) "uid 1"
+            Send AssertBIAreEqual 5678 (archive_entry_gid (pEntry)) "gid 1"
+            Delegate Get PStr (archive_entry_uname_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "alice" sText "uname 1"
+            Delegate Get PStr (archive_entry_gname_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "staff" sText "gname 1"
+            Send AssertBIAreEqual 1700000000 (archive_entry_mtime (pEntry)) "mtime 1"
+            Send AssertIAreEqual 123456789 (archive_entry_mtime_nsec (pEntry)) "mtime nsec 1"
+            Send Assert (archive_entry_atime_is_set (pEntry) <> 0) "atime is set 1"
+            Send AssertBIAreEqual 1700000100 (archive_entry_atime (pEntry)) "atime 1"
+            Send AssertIAreEqual 500000000 (archive_entry_atime_nsec (pEntry)) "atime nsec 1"
+            Send AssertBIAreEqual 1700000200 (archive_entry_ctime (pEntry)) "ctime 1"
+            Send AssertIAreEqual 250000000 (archive_entry_ctime_nsec (pEntry)) "ctime nsec 1"
+            Send AssertBIAreEqual 4 (archive_entry_size (pEntry)) "size 1"
+            Send AssertIAreEqual 0 (archive_entry_hardlink_is_set (pEntry)) "no hardlink 1"
+            Delegate Get PStr (archive_entry_strmode (pEntry)) to sText
+            Send AssertSAreEqual "-rw-r----- " sText "strmode 1"
+            Move (archive_read_data_skip (pReader)) to iResult
+
+            Move (archive_read_next_header (pReader, AddressOf (pEntry))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "read header 2"
+            Delegate Get PStr (archive_entry_pathname_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "link-sym" sText "pathname 2"
+            Send AssertIAreEqual AE_IFLNK (archive_entry_filetype (pEntry)) "filetype 2"
+            Delegate Get PStr (archive_entry_symlink_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "data/file.txt" sText "symlink target 2"
+
+            Move (archive_read_next_header (pReader, AddressOf (pEntry))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "read header 3"
+            Delegate Get PStr (archive_entry_pathname_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "link-hard" sText "pathname 3"
+            Send Assert (archive_entry_hardlink_is_set (pEntry) <> 0) "hardlink 3 is set"
+            Delegate Get PStr (archive_entry_hardlink_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "data/file.txt" sText "hardlink target 3"
+
+            Move (archive_read_next_header (pReader, AddressOf (pEntry))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "read header 4"
+            Delegate Get PStr (archive_entry_pathname_utf8 (pEntry)) to sText
+            Send AssertSAreEqual "dir/" sText "pathname 4"
+            Send AssertIAreEqual AE_IFDIR (archive_entry_filetype (pEntry)) "filetype 4"
+            Send AssertIAreEqual 493 (archive_entry_perm (pEntry)) "perm 4"
+            Delegate Get PStr (archive_entry_strmode (pEntry)) to sText
+            Send AssertSAreEqual "drwxr-xr-x " sText "strmode 4"
+            Move (archive_read_free (pReader)) to iResult
+        End_Procedure
+    End_Object
+End_Object

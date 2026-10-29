@@ -1,0 +1,545 @@
+﻿Use cArchiveBase.pkg
+Use cArchiveEntry.pkg
+
+// Wrapper around a libarchive "struct archive_match": tests archive entries against path patterns, time conditions
+// and owner conditions (archive_match_*). It is typically used to decide which entries of an archive to extract or list.
+//
+// The handle is created by CreateMatch or automatically by the first method that needs it (EnsureHandle) and released
+// (archive_match_free) by FreeHandle or when the object is destroyed.
+//
+// Entries are passed as cArchiveEntry object handles (CreateEntry / AttachEntry); an object without an entry raises a
+// DataFlex error. Strings (patterns, names, file names, dates) are passed as wide strings (the *_w functions) so every
+// character survives; the methods with the suffix Locale use the narrow functions (current ANSI code page).
+// Methods return the libarchive result (ARCHIVE_OK, ...) like the other wrapper classes (see cArchiveBase for error
+// handling) except where documented.
+//
+// libarchive has no way to call back into DataFlex, so the matcher has no callbacks. See Help\Classes\cArchiveMatch.md.
+Class cArchiveMatch is a cArchiveBase
+    Procedure Construct_Object
+        Forward Send Construct_Object
+
+        // The value last given to pbInclusionRecursion (libarchive has no getter).
+        { Visibility = Private }
+        Property Boolean pbInclusionRecursionState True
+    End_Procedure
+
+    // ---- handle -----------------------------------------------------------------------------------------------
+
+    // Releases the matcher (archive_match_free). Overrides cArchiveBase.FreeHandle.
+    Procedure FreeHandle
+        Pointer pMatch
+        Integer iResult
+
+        Get ppArchive to pMatch
+        If (pMatch <> 0) Begin
+            Move (archive_match_free (pMatch)) to iResult
+            Set ppArchive to 0
+        End
+        Set pbInclusionRecursionState to True
+    End_Procedure
+
+    // Frees the current matcher and creates a new empty one (archive_match_new).
+    Procedure CreateMatch
+        Pointer pMatch
+
+        Send FreeHandle
+        Move (archive_match_new ()) to pMatch
+        If (pMatch = 0) Begin
+            Error DFERR_PROGRAM "archive_match_new failed (out of memory)"
+            Procedure_Return
+        End
+        Set ppArchive to pMatch
+    End_Procedure
+
+    // Returns the handle of the matcher and creates the matcher when there is none yet. Every method that needs the handle
+    // calls this, so CreateMatch is optional.
+    Function EnsureHandle Returns Pointer
+        Pointer pMatch
+
+        Get ppArchive to pMatch
+        If (pMatch = 0) Begin
+            Send CreateMatch
+            Get ppArchive to pMatch
+        End
+        Function_Return pMatch
+    End_Function
+
+    // Raises a DataFlex error and returns 0 when the cArchiveEntry object hoEntry has no entry.
+    Function EntryPointer Handle hoEntry Returns Pointer
+        Pointer pEntry
+
+        Move 0 to pEntry
+        If (hoEntry <> 0) Begin
+            Get ppEntry of hoEntry to pEntry
+        End
+        If (pEntry = 0) Begin
+            Error DFERR_PROGRAM "The entry object does not wrap an archive entry"
+        End
+        Function_Return pEntry
+    End_Function
+
+    // Turns the result of a "is excluded" function into a Boolean: 1 is True, 0 False, negative values are errors.
+    Function ExcludedResult Integer iResult String sOperation Returns Boolean
+        Get CheckResult iResult sOperation to iResult
+        Function_Return (iResult > 0)
+    End_Function
+
+    // True (default): the content of an included directory is included too (archive_match_set_inclusion_recursion).
+    // Setting the property calls libarchive (and creates the handle when needed); libarchive has no getter, the value is the
+    // one last set. A new handle (CreateMatch) starts with True again.
+    { MethodType = Property }
+    Function pbInclusionRecursion Returns Boolean
+        Function_Return (pbInclusionRecursionState (Self))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set pbInclusionRecursion Boolean bEnable
+        Pointer pMatch
+        Integer iEnable iResult
+
+        Get EnsureHandle to pMatch
+        If (pMatch = 0) Begin
+            Procedure_Return
+        End
+        If bEnable Begin
+            Move 1 to iEnable
+        End
+        Else Begin
+            Move 0 to iEnable
+        End
+        Move (archive_match_set_inclusion_recursion (pMatch, iEnable)) to iResult
+        Get CheckResult iResult "archive_match_set_inclusion_recursion" to iResult
+        Set pbInclusionRecursionState to bEnable
+    End_Procedure
+
+    // ---- tests --------------------------------------------------------------------------------------------------
+
+    // True when the entry is excluded by the path, time or owner conditions (archive_match_excluded).
+    Function IsExcluded Handle hoEntry Returns Boolean
+        Pointer pMatch pEntry
+        Integer iResult
+
+        Get EnsureHandle to pMatch
+        Get EntryPointer hoEntry to pEntry
+        If (pMatch = 0 or pEntry = 0) Begin
+            Function_Return False
+        End
+        Move (archive_match_excluded (pMatch, pEntry)) to iResult
+        Function_Return (ExcludedResult (Self, iResult, "archive_match_excluded"))
+    End_Function
+
+    // True when the path name of the entry is excluded by the path patterns (archive_match_path_excluded).
+    Function IsPathExcluded Handle hoEntry Returns Boolean
+        Pointer pMatch pEntry
+        Integer iResult
+
+        Get EnsureHandle to pMatch
+        Get EntryPointer hoEntry to pEntry
+        If (pMatch = 0 or pEntry = 0) Begin
+            Function_Return False
+        End
+        Move (archive_match_path_excluded (pMatch, pEntry)) to iResult
+        Function_Return (ExcludedResult (Self, iResult, "archive_match_path_excluded"))
+    End_Function
+
+    // True when the entry is excluded by the time conditions (archive_match_time_excluded).
+    Function IsTimeExcluded Handle hoEntry Returns Boolean
+        Pointer pMatch pEntry
+        Integer iResult
+
+        Get EnsureHandle to pMatch
+        Get EntryPointer hoEntry to pEntry
+        If (pMatch = 0 or pEntry = 0) Begin
+            Function_Return False
+        End
+        Move (archive_match_time_excluded (pMatch, pEntry)) to iResult
+        Function_Return (ExcludedResult (Self, iResult, "archive_match_time_excluded"))
+    End_Function
+
+    // True when the entry is excluded by the owner (uid, gid, user name, group name) conditions (archive_match_owner_excluded).
+    Function IsOwnerExcluded Handle hoEntry Returns Boolean
+        Pointer pMatch pEntry
+        Integer iResult
+
+        Get EnsureHandle to pMatch
+        Get EntryPointer hoEntry to pEntry
+        If (pMatch = 0 or pEntry = 0) Begin
+            Function_Return False
+        End
+        Move (archive_match_owner_excluded (pMatch, pEntry)) to iResult
+        Function_Return (ExcludedResult (Self, iResult, "archive_match_owner_excluded"))
+    End_Function
+
+    // ---- path patterns ------------------------------------------------------------------------------------------
+    // Patterns are shell wildcard patterns. An entry matching an exclusion pattern is excluded. When inclusion patterns
+    // exist, an entry that matches none of them is excluded. Exclusions win over inclusions.
+
+    // Adds an exclusion path name pattern (archive_match_exclude_pattern_w).
+    Function ExcludePattern String sValue Returns Integer
+        Pointer pMatch
+        Integer iResult
+        WString wsValue
+
+        Get EnsureHandle to pMatch
+        Move sValue to wsValue
+        Move (archive_match_exclude_pattern_w (pMatch, AddressOf (wsValue))) to iResult
+        Get CheckResult iResult "archive_match_exclude_pattern_w" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Like ExcludePattern with a pattern in the current ANSI code page (archive_match_exclude_pattern).
+    Function ExcludePatternLocale String sValue Returns Integer
+        Pointer pMatch
+        Integer iResult
+
+        Get EnsureHandle to pMatch
+        Move (archive_match_exclude_pattern (pMatch, AddressOf (sValue))) to iResult
+        Get CheckResult iResult "archive_match_exclude_pattern" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds an inclusion path name pattern (archive_match_include_pattern_w).
+    Function IncludePattern String sValue Returns Integer
+        Pointer pMatch
+        Integer iResult
+        WString wsValue
+
+        Get EnsureHandle to pMatch
+        Move sValue to wsValue
+        Move (archive_match_include_pattern_w (pMatch, AddressOf (wsValue))) to iResult
+        Get CheckResult iResult "archive_match_include_pattern_w" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Like IncludePattern with a pattern in the current ANSI code page (archive_match_include_pattern).
+    Function IncludePatternLocale String sValue Returns Integer
+        Pointer pMatch
+        Integer iResult
+
+        Get EnsureHandle to pMatch
+        Move (archive_match_include_pattern (pMatch, AddressOf (sValue))) to iResult
+        Get CheckResult iResult "archive_match_include_pattern" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds the exclusion patterns of a text file, one per line, or separated by a null byte when bNullSeparator is True (archive_match_exclude_pattern_from_file_w).
+    Function ExcludePatternFromFile String sFileName Boolean bNullSeparator Returns Integer
+        Pointer pMatch
+        Integer iResult iNull
+        WString wsFileName
+
+        Get EnsureHandle to pMatch
+        If bNullSeparator Begin
+            Move 1 to iNull
+        End
+        Else Begin
+            Move 0 to iNull
+        End
+        Move sFileName to wsFileName
+        Move (archive_match_exclude_pattern_from_file_w (pMatch, AddressOf (wsFileName), iNull)) to iResult
+        Get CheckResult iResult "archive_match_exclude_pattern_from_file_w" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Like ExcludePatternFromFile with a file name in the current ANSI code page (archive_match_exclude_pattern_from_file).
+    Function ExcludePatternFromFileLocale String sFileName Boolean bNullSeparator Returns Integer
+        Pointer pMatch
+        Integer iResult iNull
+
+        Get EnsureHandle to pMatch
+        If bNullSeparator Begin
+            Move 1 to iNull
+        End
+        Else Begin
+            Move 0 to iNull
+        End
+        Move (archive_match_exclude_pattern_from_file (pMatch, AddressOf (sFileName), iNull)) to iResult
+        Get CheckResult iResult "archive_match_exclude_pattern_from_file" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds the inclusion patterns of a text file, one per line, or separated by a null byte when bNullSeparator is True (archive_match_include_pattern_from_file_w).
+    Function IncludePatternFromFile String sFileName Boolean bNullSeparator Returns Integer
+        Pointer pMatch
+        Integer iResult iNull
+        WString wsFileName
+
+        Get EnsureHandle to pMatch
+        If bNullSeparator Begin
+            Move 1 to iNull
+        End
+        Else Begin
+            Move 0 to iNull
+        End
+        Move sFileName to wsFileName
+        Move (archive_match_include_pattern_from_file_w (pMatch, AddressOf (wsFileName), iNull)) to iResult
+        Get CheckResult iResult "archive_match_include_pattern_from_file_w" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Like IncludePatternFromFile with a file name in the current ANSI code page (archive_match_include_pattern_from_file).
+    Function IncludePatternFromFileLocale String sFileName Boolean bNullSeparator Returns Integer
+        Pointer pMatch
+        Integer iResult iNull
+
+        Get EnsureHandle to pMatch
+        If bNullSeparator Begin
+            Move 1 to iNull
+        End
+        Else Begin
+            Move 0 to iNull
+        End
+        Move (archive_match_include_pattern_from_file (pMatch, AddressOf (sFileName), iNull)) to iResult
+        Get CheckResult iResult "archive_match_include_pattern_from_file" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Number of inclusion patterns that matched nothing so far (archive_match_path_unmatched_inclusions).
+    Function UnmatchedInclusions Returns Integer
+        Pointer pMatch
+
+        Get ppArchive to pMatch
+        If (pMatch = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_match_path_unmatched_inclusions (pMatch))
+    End_Function
+
+    // The inclusion patterns that matched nothing so far as an array (archive_match_path_unmatched_inclusions_next_w
+    // until ARCHIVE_EOF).
+    Function UnmatchedInclusionPatterns Returns String[]
+        Pointer pMatch pPattern
+        Integer iResult
+        String[] asPatterns
+
+        Get ppArchive to pMatch
+        If (pMatch = 0) Begin
+            Function_Return asPatterns
+        End
+        Move ARCHIVE_OK to iResult
+        While (iResult = ARCHIVE_OK)
+            Move 0 to pPattern
+            Move (archive_match_path_unmatched_inclusions_next_w (pMatch, AddressOf (pPattern))) to iResult
+            If (iResult = ARCHIVE_OK and pPattern <> 0) Begin
+                Move (PointerToWString (pPattern)) to asPatterns[SizeOfArray (asPatterns)]
+            End
+        Loop
+        Function_Return asPatterns
+    End_Function
+
+    // Like UnmatchedInclusionPatterns with the patterns in the current ANSI code page
+    // (archive_match_path_unmatched_inclusions_next).
+    Function UnmatchedInclusionPatternsLocale Returns String[]
+        Pointer pMatch pPattern
+        Integer iResult
+        String[] asPatterns
+
+        Get ppArchive to pMatch
+        If (pMatch = 0) Begin
+            Function_Return asPatterns
+        End
+        Move ARCHIVE_OK to iResult
+        While (iResult = ARCHIVE_OK)
+            Move 0 to pPattern
+            Move (archive_match_path_unmatched_inclusions_next (pMatch, AddressOf (pPattern))) to iResult
+            If (iResult = ARCHIVE_OK and pPattern <> 0) Begin
+                Move (PointerToString (pPattern)) to asPatterns[SizeOfArray (asPatterns)]
+            End
+        Loop
+        Function_Return asPatterns
+    End_Function
+
+    // ---- time conditions ----------------------------------------------------------------------------------------
+    // iFlag combines ARCHIVE_MATCH_MTIME or ARCHIVE_MATCH_CTIME (which time of the entry is tested) with
+    // ARCHIVE_MATCH_NEWER, ARCHIVE_MATCH_OLDER and/or ARCHIVE_MATCH_EQUAL (which entries are included).
+
+    // Includes entries by comparing their time with a Unix time (archive_match_include_time).
+    Function IncludeTime Integer iFlag BigInt iSeconds Integer iNanoSeconds Returns Integer
+        Pointer pMatch
+        Integer iResult
+
+        Get EnsureHandle to pMatch
+        Move (archive_match_include_time (pMatch, iFlag, iSeconds, iNanoSeconds)) to iResult
+        Get CheckResult iResult "archive_match_include_time" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Includes entries by comparing their time with a date text such as "2023-11-14 22:13:20 UTC" (archive_match_include_date_w).
+    Function IncludeDate Integer iFlag String sDate Returns Integer
+        Pointer pMatch
+        Integer iResult
+        WString wsDate
+
+        Get EnsureHandle to pMatch
+        Move sDate to wsDate
+        Move (archive_match_include_date_w (pMatch, iFlag, AddressOf (wsDate))) to iResult
+        Get CheckResult iResult "archive_match_include_date_w" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Like IncludeDate with a date text in the current ANSI code page (archive_match_include_date).
+    Function IncludeDateLocale Integer iFlag String sDate Returns Integer
+        Pointer pMatch
+        Integer iResult
+
+        Get EnsureHandle to pMatch
+        Move (archive_match_include_date (pMatch, iFlag, AddressOf (sDate))) to iResult
+        Get CheckResult iResult "archive_match_include_date" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Includes entries by comparing their time with the time stamps of a file (archive_match_include_file_time_w).
+    Function IncludeFileTime Integer iFlag String sFileName Returns Integer
+        Pointer pMatch
+        Integer iResult
+        WString wsFileName
+
+        Get EnsureHandle to pMatch
+        Move sFileName to wsFileName
+        Move (archive_match_include_file_time_w (pMatch, iFlag, AddressOf (wsFileName))) to iResult
+        Get CheckResult iResult "archive_match_include_file_time_w" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Like IncludeFileTime with a file name in the current ANSI code page (archive_match_include_file_time).
+    Function IncludeFileTimeLocale Integer iFlag String sFileName Returns Integer
+        Pointer pMatch
+        Integer iResult
+
+        Get EnsureHandle to pMatch
+        Move (archive_match_include_file_time (pMatch, iFlag, AddressOf (sFileName))) to iResult
+        Get CheckResult iResult "archive_match_include_file_time" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Excludes entries that are newer, older or equal (iFlag) to the entry hoEntry (archive_match_exclude_entry).
+    Function ExcludeEntry Integer iFlag Handle hoEntry Returns Integer
+        Pointer pMatch pEntry
+        Integer iResult
+
+        Get EnsureHandle to pMatch
+        Get EntryPointer hoEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ARCHIVE_FAILED
+        End
+        Move (archive_match_exclude_entry (pMatch, iFlag, pEntry)) to iResult
+        Get CheckResult iResult "archive_match_exclude_entry" to iResult
+        Function_Return iResult
+    End_Function
+
+    // ---- owner conditions ---------------------------------------------------------------------------------------
+    // When owner conditions exist, an entry that matches none of them is excluded.
+
+    // Adds a user id to the inclusion list (archive_match_include_uid).
+    Function IncludeUid BigInt iUserId Returns Integer
+        Pointer pMatch
+        Integer iResult
+
+        Get EnsureHandle to pMatch
+        Move (archive_match_include_uid (pMatch, iUserId)) to iResult
+        Get CheckResult iResult "archive_match_include_uid" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds a group id to the inclusion list (archive_match_include_gid).
+    Function IncludeGid BigInt iGroupId Returns Integer
+        Pointer pMatch
+        Integer iResult
+
+        Get EnsureHandle to pMatch
+        Move (archive_match_include_gid (pMatch, iGroupId)) to iResult
+        Get CheckResult iResult "archive_match_include_gid" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds a user name to the inclusion list (archive_match_include_uname_w).
+    Function IncludeUname String sValue Returns Integer
+        Pointer pMatch
+        Integer iResult
+        WString wsValue
+
+        Get EnsureHandle to pMatch
+        Move sValue to wsValue
+        Move (archive_match_include_uname_w (pMatch, AddressOf (wsValue))) to iResult
+        Get CheckResult iResult "archive_match_include_uname_w" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Like IncludeUname with a name in the current ANSI code page (archive_match_include_uname).
+    Function IncludeUnameLocale String sValue Returns Integer
+        Pointer pMatch
+        Integer iResult
+
+        Get EnsureHandle to pMatch
+        Move (archive_match_include_uname (pMatch, AddressOf (sValue))) to iResult
+        Get CheckResult iResult "archive_match_include_uname" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds a group name to the inclusion list (archive_match_include_gname_w).
+    Function IncludeGname String sValue Returns Integer
+        Pointer pMatch
+        Integer iResult
+        WString wsValue
+
+        Get EnsureHandle to pMatch
+        Move sValue to wsValue
+        Move (archive_match_include_gname_w (pMatch, AddressOf (wsValue))) to iResult
+        Get CheckResult iResult "archive_match_include_gname_w" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Like IncludeGname with a name in the current ANSI code page (archive_match_include_gname).
+    Function IncludeGnameLocale String sValue Returns Integer
+        Pointer pMatch
+        Integer iResult
+
+        Get EnsureHandle to pMatch
+        Move (archive_match_include_gname (pMatch, AddressOf (sValue))) to iResult
+        Get CheckResult iResult "archive_match_include_gname" to iResult
+        Function_Return iResult
+    End_Function
+
+    // ---- helper -------------------------------------------------------------------------------------------------
+
+    // Sorts an array of strings (archive_utility_string_sort, a byte wise comparison of the UTF-8 text) and returns the
+    // sorted array. Needs no handle. The input array is not changed.
+    Function SortStrings String[] asStrings Returns String[]
+        Integer iCount iIndex iOffset iResult
+        Pointer pBase pItem pSlot
+        BigInt iPointer
+        Boolean bOk
+        String sBlob
+        UChar[] ucPointers
+        String[] asSorted
+
+        Move (SizeOfArray (asStrings)) to iCount
+        If (iCount = 0) Begin
+            Function_Return asStrings
+        End
+        // One block holding all strings, each followed by a zero byte, and an array of pointers to them ended by NULL.
+        Move "" to sBlob
+        For iIndex from 0 to (iCount - 1)
+            Move (sBlob + asStrings[iIndex] + (Character (0))) to sBlob
+        Loop
+        Move (AddressOf (sBlob)) to pBase
+        Move (ResizeArray (ucPointers, (iCount + 1) * 8)) to ucPointers
+        Move 0 to iOffset
+        For iIndex from 0 to (iCount - 1)
+            Move (pBase + iOffset) to pItem
+            Move pItem to iPointer
+            Move (AddressOf (ucPointers) + (iIndex * 8)) to pSlot
+            Move (MemCopy (pSlot, AddressOf (iPointer), 8)) to bOk
+            Move (iOffset + SizeOfString (asStrings[iIndex]) + 1) to iOffset
+        Loop
+        Move (archive_utility_string_sort (AddressOf (ucPointers))) to iResult
+        Get CheckResult iResult "archive_utility_string_sort" to iResult
+        For iIndex from 0 to (iCount - 1)
+            Move (AddressOf (ucPointers) + (iIndex * 8)) to pSlot
+            Move (MemCopy (AddressOf (iPointer), pSlot, 8)) to bOk
+            Move iPointer to pItem
+            Move (PointerToString (pItem)) to asSorted[iIndex]
+        Loop
+        Function_Return asSorted
+    End_Function
+End_Class

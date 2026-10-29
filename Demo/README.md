@@ -32,3 +32,7 @@ These files, when you use the library in your own environment, need to be presen
 ## Support
 
 For any issues or questions, please refer to the documentation in the `Library` directory or contact the support team.
+
+## Unit tests
+
+`AppSrc/LibArchiveTests.src` is a DFUnit test application that tests every external function and every wrapper class. Build with `df-cli build -t LibArchiveTests.src "LibArchive Demo.sws"` and run `Programs\LibArchiveTests64.exe -c`. See `../Help/Tests.md`.

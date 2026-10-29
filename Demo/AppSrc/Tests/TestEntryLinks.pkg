@@ -1,0 +1,1084 @@
+﻿// Tests for the archive_entry_* functions of ArchiveEntry.h.pkg for ACLs, extended attributes, sparse maps, the hard
+// link resolver, file flags, stat structures, Mac metadata and digests.
+
+External_Function tel_crt_wstat64 "_wstat64" ucrtbase.dll ;
+    Pointer pFileName ;
+    Pointer pStat ;
+    Returns Integer
+
+External_Function tel_crt_wstat64i32 "_wstat64i32" ucrtbase.dll ;
+    Pointer pFileName ;
+    Pointer pStat ;
+    Returns Integer
+
+External_Function tel_copymem "RtlMoveMemory" kernel32.dll ;
+    Pointer pDest ;
+    Pointer pSource ;
+    Longptr iLength ;
+    Returns Void_Type
+
+External_Function tel_CreateFileW "CreateFileW" kernel32.dll ;
+    Pointer pFileName ;
+    UInteger iDesiredAccess ;
+    UInteger iShareMode ;
+    Pointer pSecurity ;
+    UInteger iCreationDisposition ;
+    UInteger iFlags ;
+    Handle hTemplate ;
+    Returns Handle
+
+External_Function tel_GetFileInformationByHandle "GetFileInformationByHandle" kernel32.dll ;
+    Handle hFile ;
+    Pointer pInformation ;
+    Returns Integer
+
+External_Function tel_CloseHandle "CloseHandle" kernel32.dll ;
+    Handle hObject ;
+    Returns Integer
+
+Object oEntryLinksTests is a cArchiveTestFixture
+    Set psTestFixtureName to "EntryLinks"
+
+    Function PStr Pointer pText Returns String
+        If (pText = 0) Begin
+            Function_Return "<NULL>"
+        End
+        Function_Return (PointerToString (pText))
+    End_Function
+
+    Function PWStr Pointer pText Returns String
+        If (pText = 0) Begin
+            Function_Return "<NULL>"
+        End
+        Function_Return (PointerToWString (pText))
+    End_Function
+
+    Procedure FreeEntry Pointer pEntry
+        Void_Type iVoid
+        Move (archive_entry_free (pEntry)) to iVoid
+    End_Procedure
+
+    // Adds the standard POSIX.1e access ACL: user::rw-, user:alice:r--, group::r--, mask::rwx, other::r--
+    Function AddAccessAcl Pointer pEntry Returns Integer
+        Integer iResult
+        String sName
+        Move "alice" to sName
+        Move (archive_entry_acl_add_entry (pEntry, ARCHIVE_ENTRY_ACL_TYPE_ACCESS, 6, ARCHIVE_ENTRY_ACL_USER_OBJ, -1, 0)) to iResult
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_entry_acl_add_entry (pEntry, ARCHIVE_ENTRY_ACL_TYPE_ACCESS, 4, ARCHIVE_ENTRY_ACL_USER, 1000, AddressOf (sName))) to iResult
+        End
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_entry_acl_add_entry (pEntry, ARCHIVE_ENTRY_ACL_TYPE_ACCESS, 4, ARCHIVE_ENTRY_ACL_GROUP_OBJ, -1, 0)) to iResult
+        End
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_entry_acl_add_entry (pEntry, ARCHIVE_ENTRY_ACL_TYPE_ACCESS, 7, ARCHIVE_ENTRY_ACL_MASK, -1, 0)) to iResult
+        End
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_entry_acl_add_entry (pEntry, ARCHIVE_ENTRY_ACL_TYPE_ACCESS, 4, ARCHIVE_ENTRY_ACL_OTHER, -1, 0)) to iResult
+        End
+        Function_Return iResult
+    End_Function
+
+    // ---- helpers ---------------------------------------------------------------------------------------------------
+
+    Function Field UChar[] ucBuf Integer iOffset Integer iBytes Returns BigInt
+        BigInt iValue
+        Void_Type iVoid
+        Move 0 to iValue
+        Move (tel_copymem (AddressOf (iValue), AddressOf (ucBuf) + iOffset, iBytes)) to iVoid
+        Function_Return iValue
+    End_Function
+
+    // Hex text of bytes at a pointer.
+    Function HexOf Pointer pData Integer iLength Returns String
+        UChar[] ucBuf
+        String sHex sDigits
+        Integer iIndex iByte
+        Void_Type iVoid
+
+        Move "0123456789abcdef" to sDigits
+        Move (ResizeArray (ucBuf, iLength + 1)) to ucBuf
+        Move (tel_copymem (AddressOf (ucBuf), pData, iLength)) to iVoid
+        Move "" to sHex
+        For iIndex from 0 to (iLength - 1)
+            Move ucBuf[iIndex] to iByte
+            Move (sHex + Mid (sDigits, 1, (iByte / 16) + 1) + Mid (sDigits, 1, Mod (iByte, 16) + 1)) to sHex
+        Loop
+        Function_Return sHex
+    End_Function
+
+    // ---- extended attributes -------------------------------------------------------------------------------------
+
+    Object oXattrTest is a cTest
+        Procedure Test
+            Pointer pEntry pName pValue
+            Integer iResult iCount
+            BigInt iSize
+            UChar[] ucValue
+            String sName sText sValue
+            Void_Type iVoid
+
+            Move (archive_entry_new ()) to pEntry
+            Send AssertIAreEqual 0 (archive_entry_xattr_count (pEntry)) "no xattr in a new entry"
+
+            Move "user.comment" to sName
+            Move "plain text" to sValue
+            Move (archive_entry_xattr_add_entry (pEntry, AddressOf (sName), AddressOf (sValue), 10)) to iVoid
+            // a binary value with a NUL byte inside
+            Move "user.binary" to sName
+            Move (ResizeArray (ucValue, 5)) to ucValue
+            Move 65 to ucValue[0]
+            Move 66 to ucValue[1]
+            Move 0 to ucValue[2]
+            Move 67 to ucValue[3]
+            Move 68 to ucValue[4]
+            Move (archive_entry_xattr_add_entry (pEntry, AddressOf (sName), AddressOf (ucValue), 5)) to iVoid
+            Send AssertIAreEqual 2 (archive_entry_xattr_count (pEntry)) "xattr count"
+            Send AssertIAreEqual 2 (archive_entry_xattr_reset (pEntry)) "xattr_reset returns the count"
+
+            // the attributes are listed with the most recently added one first
+            Move (archive_entry_xattr_next (pEntry, AddressOf (pName), AddressOf (pValue), AddressOf (iSize))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "xattr_next 1"
+            Delegate Get PStr pName to sText
+            Send AssertSAreEqual "user.binary" sText "name 1"
+            Send AssertBIAreEqual 5 iSize "size 1"
+            Delegate Get HexOf pValue 5 to sText
+            Send AssertSAreEqual "4142004344" sText "value 1 with the NUL byte"
+
+            Move (archive_entry_xattr_next (pEntry, AddressOf (pName), AddressOf (pValue), AddressOf (iSize))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "xattr_next 2"
+            Delegate Get PStr pName to sText
+            Send AssertSAreEqual "user.comment" sText "name 2"
+            Send AssertBIAreEqual 10 iSize "size 2"
+            Delegate Get HexOf pValue 10 to sText
+            Send AssertSAreEqual "706c61696e2074657874" sText "value 2"
+
+            Move (archive_entry_xattr_next (pEntry, AddressOf (pName), AddressOf (pValue), AddressOf (iSize))) to iResult
+            Send AssertIAreEqual ARCHIVE_WARN iResult "xattr_next after the last entry"
+
+            // reset starts again
+            Move (archive_entry_xattr_reset (pEntry)) to iCount
+            Move (archive_entry_xattr_next (pEntry, AddressOf (pName), AddressOf (pValue), AddressOf (iSize))) to iResult
+            Delegate Get PStr pName to sText
+            Send AssertSAreEqual "user.binary" sText "name after reset"
+
+            Move (archive_entry_xattr_clear (pEntry)) to iVoid
+            Send AssertIAreEqual 0 (archive_entry_xattr_count (pEntry)) "count after clear"
+            Send AssertIAreEqual 0 (archive_entry_xattr_reset (pEntry)) "xattr_reset without attributes"
+            Move (archive_entry_xattr_next (pEntry, AddressOf (pName), AddressOf (pValue), AddressOf (iSize))) to iResult
+            Send AssertIAreEqual ARCHIVE_WARN iResult "xattr_next without attributes"
+            Delegate Send FreeEntry pEntry
+        End_Procedure
+    End_Object
+
+    // Extended attributes are stored in pax archives (SCHILY.xattr) and survive the round trip.
+    Object oXattrRoundTripTest is a cTest
+        Procedure Test
+            Pointer pArchive pEntry pReader pName pValue
+            Void_Type iVoid
+            Integer iResult iDummy
+            BigInt iUsed iSize
+            UChar[] ucWork
+            String sName sValue sText
+
+            Move (ResizeArray (ucWork, 65536)) to ucWork
+            Move (archive_write_new ()) to pArchive
+            Move (archive_write_set_format_pax (pArchive)) to iResult
+            Move (archive_write_open_memory (pArchive, AddressOf (ucWork), 65536, AddressOf (iUsed))) to iResult
+            Move (archive_entry_new ()) to pEntry
+            Move "xattr.txt" to sName
+            Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sName))) to iVoid
+            Move (archive_entry_set_filetype (pEntry, AE_IFREG)) to iVoid
+            Move (archive_entry_set_perm (pEntry, 420)) to iVoid
+            Move (archive_entry_set_size (pEntry, 0)) to iVoid
+            Move (archive_entry_set_mtime (pEntry, 1700000000, 0)) to iVoid
+            Move "user.comment" to sName
+            Move "plain text" to sValue
+            Move (archive_entry_xattr_add_entry (pEntry, AddressOf (sName), AddressOf (sValue), 10)) to iVoid
+            Move (archive_write_header (pArchive, pEntry)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "write header with xattr"
+            Move (archive_entry_free (pEntry)) to iVoid
+            Move (archive_write_close (pArchive)) to iResult
+            Move (archive_write_free (pArchive)) to iResult
+            Move (ResizeArray (ucWork, iUsed)) to ucWork
+
+            Move (archive_read_new ()) to pReader
+            Move (archive_read_support_format_all (pReader)) to iDummy
+            Move (archive_read_open_memory (pReader, AddressOf (ucWork), SizeOfArray (ucWork))) to iResult
+            Move (archive_read_next_header (pReader, AddressOf (pEntry))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "read header"
+            // the pax writer stores the attribute in two header fields (SCHILY.xattr and LIBARCHIVE.xattr), so the
+            // reader may report it twice
+            Send Assert (archive_entry_xattr_count (pEntry) >= 1) "xattr count after the round trip"
+            Move (archive_entry_xattr_reset (pEntry)) to iDummy
+            Move (archive_entry_xattr_next (pEntry, AddressOf (pName), AddressOf (pValue), AddressOf (iSize))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "xattr_next after the round trip"
+            Delegate Get PStr pName to sText
+            Send AssertSAreEqual "user.comment" sText "xattr name after the round trip"
+            Send AssertBIAreEqual 10 iSize "xattr size after the round trip"
+            Delegate Get HexOf pValue 10 to sText
+            Send AssertSAreEqual "706c61696e2074657874" sText "xattr value after the round trip"
+            Move (archive_read_free (pReader)) to iResult
+        End_Procedure
+    End_Object
+
+    // ---- sparse regions ------------------------------------------------------------------------------------------
+
+    Object oSparseTest is a cTest
+        Procedure Test
+            Pointer pEntry
+            Integer iResult iCount
+            BigInt iOffset iLength
+            Void_Type iVoid
+
+            Move (archive_entry_new ()) to pEntry
+            Send AssertIAreEqual 0 (archive_entry_sparse_count (pEntry)) "no sparse regions in a new entry"
+            // regions beyond the entry size are ignored
+            Move (archive_entry_sparse_add_entry (pEntry, 0, 100)) to iVoid
+            Send AssertIAreEqual 0 (archive_entry_sparse_count (pEntry)) "a region beyond the entry size is ignored"
+            Move (archive_entry_set_size (pEntry, 6000000000)) to iVoid
+            Move (archive_entry_sparse_add_entry (pEntry, 0, 100)) to iVoid
+            Move (archive_entry_sparse_add_entry (pEntry, 5000000000, 50)) to iVoid
+            Send AssertIAreEqual 2 (archive_entry_sparse_count (pEntry)) "sparse count"
+            Send AssertIAreEqual 2 (archive_entry_sparse_reset (pEntry)) "sparse_reset returns the count"
+
+            Move (archive_entry_sparse_next (pEntry, AddressOf (iOffset), AddressOf (iLength))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "sparse_next 1"
+            Send AssertBIAreEqual 0 iOffset "offset 1"
+            Send AssertBIAreEqual 100 iLength "length 1"
+            Move (archive_entry_sparse_next (pEntry, AddressOf (iOffset), AddressOf (iLength))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "sparse_next 2"
+            Send AssertBIAreEqual 5000000000 iOffset "offset 2 above 4 GB"
+            Send AssertBIAreEqual 50 iLength "length 2"
+            Move (archive_entry_sparse_next (pEntry, AddressOf (iOffset), AddressOf (iLength))) to iResult
+            Send AssertIAreEqual ARCHIVE_WARN iResult "sparse_next after the last region"
+
+            Move (archive_entry_sparse_reset (pEntry)) to iCount
+            Move (archive_entry_sparse_next (pEntry, AddressOf (iOffset), AddressOf (iLength))) to iResult
+            Send AssertBIAreEqual 0 iOffset "offset 1 after reset"
+
+            Move (archive_entry_sparse_clear (pEntry)) to iVoid
+            Send AssertIAreEqual 0 (archive_entry_sparse_count (pEntry)) "count after clear"
+            Send AssertIAreEqual 0 (archive_entry_sparse_reset (pEntry)) "sparse_reset without regions"
+            Move (archive_entry_sparse_next (pEntry, AddressOf (iOffset), AddressOf (iLength))) to iResult
+            Send AssertIAreEqual ARCHIVE_WARN iResult "sparse_next without regions"
+            Delegate Send FreeEntry pEntry
+        End_Procedure
+    End_Object
+
+    // ---- file flags ----------------------------------------------------------------------------------------------
+    // On Windows the known flags are rdonly (1), hidden (2) and system (4); the "no" prefix clears a flag. Unknown
+    // tokens are returned by archive_entry_copy_fflags_text and kept in the flags text.
+
+    Object oFflagsTest is a cTest
+        Procedure Test
+            Pointer pEntry pRet
+            UInteger iSet iClear
+            Void_Type iVoid
+            String sFlags sText
+            WString wsFlags
+
+            Move (archive_entry_new ()) to pEntry
+            Send AssertPAreEqual 0 (archive_entry_fflags_text (pEntry)) "no flags text in a new entry"
+            Move (archive_entry_fflags (pEntry, AddressOf (iSet), AddressOf (iClear))) to iVoid
+            Send AssertUIAreEqual 0 iSet "no flags to set in a new entry"
+            Send AssertUIAreEqual 0 iClear "no flags to clear in a new entry"
+
+            Move "rdonly,hidden,system" to sFlags
+            Move (archive_entry_copy_fflags_text (pEntry, AddressOf (sFlags))) to pRet
+            Send AssertPAreEqual 0 pRet "all tokens are valid"
+            Move (archive_entry_fflags (pEntry, AddressOf (iSet), AddressOf (iClear))) to iVoid
+            Send AssertUIAreEqual 7 iSet "flags to set"
+            Send AssertUIAreEqual 0 iClear "flags to clear"
+            Delegate Get PStr (archive_entry_fflags_text (pEntry)) to sText
+            Send AssertSAreEqual "rdonly,hidden,system" sText "fflags_text"
+
+            Move "rdonly,nosystem,hidden" to sFlags
+            Move (archive_entry_copy_fflags_text (pEntry, AddressOf (sFlags))) to pRet
+            Send AssertPAreEqual 0 pRet "tokens with no prefix are valid"
+            Move (archive_entry_fflags (pEntry, AddressOf (iSet), AddressOf (iClear))) to iVoid
+            Send AssertUIAreEqual 3 iSet "flags to set with nosystem"
+            Send AssertUIAreEqual 4 iClear "flags to clear with nosystem"
+
+            // an unknown token is returned
+            Move "hidden,bogusflag" to sFlags
+            Move (archive_entry_copy_fflags_text (pEntry, AddressOf (sFlags))) to pRet
+            Send Assert (pRet <> 0) "an unknown token is reported"
+            Delegate Get PStr pRet to sText
+            Send AssertSAreEqual "bogusflag" sText "the unknown token"
+            Move (archive_entry_fflags (pEntry, AddressOf (iSet), AddressOf (iClear))) to iVoid
+            Send AssertUIAreEqual 2 iSet "the valid token is still applied"
+
+            // explicit length: only the first 6 characters of the text are used
+            Move "rdonly,system" to sFlags
+            Move (archive_entry_copy_fflags_text_len (pEntry, AddressOf (sFlags), 6)) to pRet
+            Send AssertPAreEqual 0 pRet "copy_fflags_text_len"
+            Move (archive_entry_fflags (pEntry, AddressOf (iSet), AddressOf (iClear))) to iVoid
+            Send AssertUIAreEqual 1 iSet "flags to set from the first 6 characters"
+            Delegate Get PStr (archive_entry_fflags_text (pEntry)) to sText
+            Send AssertSAreEqual "rdonly" sText "fflags_text from the first 6 characters"
+
+            // wide text
+            Move "hidden,nordonly" to wsFlags
+            Move (archive_entry_copy_fflags_text_w (pEntry, AddressOf (wsFlags))) to pRet
+            Send AssertPAreEqual 0 pRet "copy_fflags_text_w"
+            Move (archive_entry_fflags (pEntry, AddressOf (iSet), AddressOf (iClear))) to iVoid
+            Send AssertUIAreEqual 2 iSet "flags to set from wide text"
+            Send AssertUIAreEqual 1 iClear "flags to clear from wide text"
+
+            // numeric flags give the text
+            Move (archive_entry_set_fflags (pEntry, 6, 1)) to iVoid
+            Move (archive_entry_fflags (pEntry, AddressOf (iSet), AddressOf (iClear))) to iVoid
+            Send AssertUIAreEqual 6 iSet "set_fflags set"
+            Send AssertUIAreEqual 1 iClear "set_fflags clear"
+            Delegate Get PStr (archive_entry_fflags_text (pEntry)) to sText
+            Send AssertSAreEqual "hidden,nordonly,system" sText "fflags_text from numeric flags"
+            Delegate Send FreeEntry pEntry
+        End_Procedure
+    End_Object
+
+    // Collects the entries of an ACL enumeration as text lines: "tag:permset:qualifier:name:type" separated by "|".
+    Function AclEntries Pointer pEntry Integer iWantType Returns String
+        Integer iResult iType iPermset iTag iQualifier iCount
+        Pointer pName
+        String sLines sName
+
+        Move "" to sLines
+        Move (archive_entry_acl_reset (pEntry, iWantType)) to iCount
+        Move (archive_entry_acl_next (pEntry, iWantType, AddressOf (iType), AddressOf (iPermset), AddressOf (iTag), AddressOf (iQualifier), AddressOf (pName))) to iResult
+        While (iResult = ARCHIVE_OK)
+            Get PStr pName to sName
+            If (sLines <> "") Begin
+                Move (sLines + "|") to sLines
+            End
+            Move (sLines + String (iTag) + ":" + String (iPermset) + ":" + String (iQualifier) + ":" + sName + ":" + String (iType)) to sLines
+            Move (archive_entry_acl_next (pEntry, iWantType, AddressOf (iType), AddressOf (iPermset), AddressOf (iTag), AddressOf (iQualifier), AddressOf (pName))) to iResult
+        Loop
+        If (iResult <> ARCHIVE_EOF) Begin
+            Move (sLines + "|END=" + String (iResult)) to sLines
+        End
+        Function_Return sLines
+    End_Function
+
+    Object oAclPosixTest is a cTest
+        Procedure Test
+            Pointer pEntry pText
+            Integer iResult iCount
+            BigInt iLen
+            String sText sExpected
+
+            Move (archive_entry_new ()) to pEntry
+            Send AssertIAreEqual 0 (archive_entry_acl_count (pEntry, ARCHIVE_ENTRY_ACL_TYPE_ACCESS)) "no ACL entries in a new entry"
+            Send AssertIAreEqual 0 (archive_entry_acl_types (pEntry)) "no ACL types in a new entry"
+            Send Assert (archive_entry_acl (pEntry) <> 0) "archive_entry_acl returns the ACL object"
+
+            Delegate Get AddAccessAcl pEntry to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "add the access ACL entries"
+            Send AssertIAreEqual 5 (archive_entry_acl_count (pEntry, ARCHIVE_ENTRY_ACL_TYPE_ACCESS)) "count of access entries"
+            Send AssertIAreEqual 5 (archive_entry_acl_count (pEntry, ARCHIVE_ENTRY_ACL_TYPE_POSIX1E)) "count of POSIX.1e entries"
+            Send AssertIAreEqual 0 (archive_entry_acl_count (pEntry, ARCHIVE_ENTRY_ACL_TYPE_DEFAULT)) "count of default entries"
+            Send AssertIAreEqual 0 (archive_entry_acl_count (pEntry, ARCHIVE_ENTRY_ACL_TYPE_NFS4)) "count of NFSv4 entries"
+            Send AssertIAreEqual ARCHIVE_ENTRY_ACL_TYPE_ACCESS (archive_entry_acl_types (pEntry)) "ACL types"
+            Send AssertIAreEqual 420 (archive_entry_perm (pEntry)) "the base entries set the permission 0644"
+
+            // enumeration
+            Delegate Get AclEntries pEntry ARCHIVE_ENTRY_ACL_TYPE_ACCESS to sText
+            Move (String (ARCHIVE_ENTRY_ACL_USER_OBJ) + ":6:-1:<NULL>:256|" + String (ARCHIVE_ENTRY_ACL_GROUP_OBJ) + ":4:-1:<NULL>:256|" + String (ARCHIVE_ENTRY_ACL_OTHER) + ":4:-1:<NULL>:256|" + String (ARCHIVE_ENTRY_ACL_USER) + ":4:1000:alice:256|" + String (ARCHIVE_ENTRY_ACL_MASK) + ":7:-1:<NULL>:256") to sExpected
+            Send AssertSAreEqual sExpected sText "acl_reset / acl_next"
+            Send AssertIAreEqual 5 (archive_entry_acl_reset (pEntry, ARCHIVE_ENTRY_ACL_TYPE_ACCESS)) "acl_reset returns the count"
+            Send AssertIAreEqual 0 (archive_entry_acl_reset (pEntry, ARCHIVE_ENTRY_ACL_TYPE_DEFAULT)) "acl_reset for default entries"
+
+            // text forms
+            Move (archive_entry_acl_to_text (pEntry, AddressOf (iLen), 0)) to pText
+            Delegate Get PStr pText to sText
+            Move ("user::rw-" + (Character (10)) + "group::r--" + (Character (10)) + "other::r--" + (Character (10)) + "user:alice:r--" + (Character (10)) + "mask::rwx") to sExpected
+            Send AssertSAreEqual sExpected sText "acl_to_text"
+            Send AssertBIAreEqual (Length (sText)) iLen "acl_to_text length"
+            Move (archive_entry_acl_to_text (pEntry, 0, (ARCHIVE_ENTRY_ACL_STYLE_EXTRA_ID ior ARCHIVE_ENTRY_ACL_STYLE_SEPARATOR_COMMA))) to pText
+            Delegate Get PStr pText to sText
+            Send AssertSAreEqual "user::rw-,group::r--,other::r--,user:alice:r--:1000,mask::rwx" sText "acl_to_text with extra id and comma separator"
+            Move (archive_entry_acl_to_text (pEntry, 0, (ARCHIVE_ENTRY_ACL_STYLE_SOLARIS ior ARCHIVE_ENTRY_ACL_STYLE_SEPARATOR_COMMA))) to pText
+            Delegate Get PStr pText to sText
+            Send AssertSAreEqual "user::rw-,group::r--,other:r--,user:alice:r--,mask:rwx" sText "acl_to_text solaris style"
+            Move (archive_entry_acl_text (pEntry, ARCHIVE_ENTRY_ACL_TYPE_ACCESS)) to pText
+            Delegate Get PStr pText to sText
+            Send AssertSAreEqual "user::rw-,group::r--,other::r--,user:alice:r--,mask::rwx" sText "deprecated acl_text"
+
+            // from_text adds to the existing entries (the named user alice stays, an existing mask is overwritten) ...
+            Move ("user::rwx" + (Character (10)) + "user:bob:r-x" + (Character (10)) + "group::r--" + (Character (10)) + "mask::r-x" + (Character (10)) + "other::---") to sText
+            Move (archive_entry_acl_from_text (pEntry, AddressOf (sText), ARCHIVE_ENTRY_ACL_TYPE_ACCESS)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "acl_from_text"
+            Send AssertIAreEqual 6 (archive_entry_acl_count (pEntry, ARCHIVE_ENTRY_ACL_TYPE_ACCESS)) "from_text merges with the existing entries"
+            Move (archive_entry_acl_to_text (pEntry, 0, ARCHIVE_ENTRY_ACL_STYLE_SEPARATOR_COMMA)) to pText
+            Delegate Get PStr pText to sText
+            Send AssertSAreEqual "user::rwx,group::r--,other::---,user:alice:r--,mask::r-x,user:bob:r-x" sText "text after merging with from_text"
+            // ... after a clear it builds the ACL from scratch and sets the permission bits
+            Move (archive_entry_acl_clear (pEntry)) to iCount
+            Move ("user::rwx" + (Character (10)) + "user:bob:r-x" + (Character (10)) + "group::r--" + (Character (10)) + "mask::r-x" + (Character (10)) + "other::---") to sText
+            Move (archive_entry_acl_from_text (pEntry, AddressOf (sText), ARCHIVE_ENTRY_ACL_TYPE_ACCESS)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "acl_from_text after clear"
+            Send AssertIAreEqual 5 (archive_entry_acl_count (pEntry, ARCHIVE_ENTRY_ACL_TYPE_ACCESS)) "count after from_text"
+            Send AssertIAreEqual 480 (archive_entry_perm (pEntry)) "from_text sets the permission 0740"
+            Move (archive_entry_acl_to_text (pEntry, 0, ARCHIVE_ENTRY_ACL_STYLE_SEPARATOR_COMMA)) to pText
+            Delegate Get PStr pText to sText
+            Send AssertSAreEqual "user::rwx,group::r--,other::---,user:bob:r-x,mask::r-x" sText "text after from_text"
+            // text that is not an ACL is reported as a warning
+            Move "garbage text" to sText
+            Move (archive_entry_acl_from_text (pEntry, AddressOf (sText), ARCHIVE_ENTRY_ACL_TYPE_ACCESS)) to iResult
+            Send AssertIAreEqual ARCHIVE_WARN iResult "acl_from_text with invalid text"
+
+            // clear
+            Move (archive_entry_acl_clear (pEntry)) to iCount
+            Send AssertIAreEqual 0 (archive_entry_acl_count (pEntry, ARCHIVE_ENTRY_ACL_TYPE_ACCESS)) "count after clear"
+            Send AssertIAreEqual 0 (archive_entry_acl_types (pEntry)) "types after clear"
+            Delegate Send FreeEntry pEntry
+        End_Procedure
+    End_Object
+
+    Object oAclDefaultTest is a cTest
+        Procedure Test
+            Pointer pEntry pText
+            Integer iResult
+            String sText
+
+            Move (archive_entry_new ()) to pEntry
+            Delegate Get AddAccessAcl pEntry to iResult
+            // default ACL of a directory
+            Move (archive_entry_acl_add_entry (pEntry, ARCHIVE_ENTRY_ACL_TYPE_DEFAULT, 7, ARCHIVE_ENTRY_ACL_USER_OBJ, -1, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "add default user_obj"
+            Move (archive_entry_acl_add_entry (pEntry, ARCHIVE_ENTRY_ACL_TYPE_DEFAULT, 5, ARCHIVE_ENTRY_ACL_GROUP_OBJ, -1, 0)) to iResult
+            Move (archive_entry_acl_add_entry (pEntry, ARCHIVE_ENTRY_ACL_TYPE_DEFAULT, 5, ARCHIVE_ENTRY_ACL_OTHER, -1, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "add default entries"
+            Send AssertIAreEqual 5 (archive_entry_acl_count (pEntry, ARCHIVE_ENTRY_ACL_TYPE_ACCESS)) "access entries"
+            Send AssertIAreEqual 3 (archive_entry_acl_count (pEntry, ARCHIVE_ENTRY_ACL_TYPE_DEFAULT)) "default entries"
+            Send AssertIAreEqual 8 (archive_entry_acl_count (pEntry, ARCHIVE_ENTRY_ACL_TYPE_POSIX1E)) "all POSIX.1e entries"
+            Send AssertIAreEqual (ARCHIVE_ENTRY_ACL_TYPE_ACCESS ior ARCHIVE_ENTRY_ACL_TYPE_DEFAULT) (archive_entry_acl_types (pEntry)) "types with default entries"
+            Move (archive_entry_acl_to_text (pEntry, 0, (ARCHIVE_ENTRY_ACL_STYLE_MARK_DEFAULT ior ARCHIVE_ENTRY_ACL_STYLE_SEPARATOR_COMMA))) to pText
+            Delegate Get PStr pText to sText
+            Send AssertSAreEqual "user::rw-,group::r--,other::r--,user:alice:r--,mask::rwx,default:user::rwx,default:group::r-x,default:other::r-x" sText "text with default entries"
+            Move (archive_entry_acl_to_text (pEntry, 0, (ARCHIVE_ENTRY_ACL_TYPE_DEFAULT ior ARCHIVE_ENTRY_ACL_STYLE_SEPARATOR_COMMA))) to pText
+            Delegate Get PStr pText to sText
+            Send AssertSAreEqual "user::rwx,group::r-x,other::r-x" sText "text of the default entries only"
+            Delegate Send FreeEntry pEntry
+        End_Procedure
+    End_Object
+
+    Object oAclNfs4Test is a cTest
+        Procedure Test
+            Pointer pEntry pText
+            Integer iResult
+            String sName sText
+
+            Move (archive_entry_new ()) to pEntry
+            Move "bob" to sName
+            Move (archive_entry_acl_add_entry (pEntry, ARCHIVE_ENTRY_ACL_TYPE_ALLOW, (ARCHIVE_ENTRY_ACL_READ_DATA ior ARCHIVE_ENTRY_ACL_WRITE_DATA ior ARCHIVE_ENTRY_ACL_ENTRY_FILE_INHERIT), ARCHIVE_ENTRY_ACL_USER, 1001, AddressOf (sName))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "add allow entry"
+            Move (archive_entry_acl_add_entry (pEntry, ARCHIVE_ENTRY_ACL_TYPE_DENY, ARCHIVE_ENTRY_ACL_EXECUTE, ARCHIVE_ENTRY_ACL_EVERYONE, -1, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "add deny entry"
+            Send AssertIAreEqual (ARCHIVE_ENTRY_ACL_TYPE_ALLOW ior ARCHIVE_ENTRY_ACL_TYPE_DENY) (archive_entry_acl_types (pEntry)) "NFSv4 types"
+            Send AssertIAreEqual 2 (archive_entry_acl_count (pEntry, ARCHIVE_ENTRY_ACL_TYPE_NFS4)) "NFSv4 count"
+            Send AssertIAreEqual 0 (archive_entry_acl_count (pEntry, ARCHIVE_ENTRY_ACL_TYPE_POSIX1E)) "no POSIX.1e entries"
+            Move (archive_entry_acl_to_text (pEntry, 0, ARCHIVE_ENTRY_ACL_STYLE_SEPARATOR_COMMA)) to pText
+            Delegate Get PStr pText to sText
+            Send AssertSAreEqual "user:bob:rw------------:f------:allow,everyone@:--x-----------:-------:deny" sText "NFSv4 text"
+            Move (archive_entry_acl_to_text (pEntry, 0, (ARCHIVE_ENTRY_ACL_STYLE_COMPACT ior ARCHIVE_ENTRY_ACL_STYLE_SEPARATOR_COMMA))) to pText
+            Delegate Get PStr pText to sText
+            Send AssertSAreEqual "user:bob:rw:f:allow,everyone@:x::deny" sText "NFSv4 compact text"
+            Delegate Send FreeEntry pEntry
+        End_Procedure
+    End_Object
+
+    Object oAclWideTest is a cTest
+        Procedure Test
+            Pointer pEntry pText
+            Integer iResult iDummy
+            BigInt iLen
+            String sText
+            WString wsText wsAcl wsEmpty
+
+            Move (archive_entry_new ()) to pEntry
+            // a NULL name crashes archive_entry_acl_add_entry_w (it calls wcslen); the name of the base entries is ignored
+            Move "ignored" to wsEmpty
+            Move (archive_entry_acl_add_entry_w (pEntry, ARCHIVE_ENTRY_ACL_TYPE_ACCESS, 7, ARCHIVE_ENTRY_ACL_USER_OBJ, -1, AddressOf (wsEmpty))) to iResult
+            Move (archive_entry_acl_add_entry_w (pEntry, ARCHIVE_ENTRY_ACL_TYPE_ACCESS, 4, ARCHIVE_ENTRY_ACL_GROUP_OBJ, -1, AddressOf (wsEmpty))) to iResult
+            Move (archive_entry_acl_add_entry_w (pEntry, ARCHIVE_ENTRY_ACL_TYPE_ACCESS, 0, ARCHIVE_ENTRY_ACL_OTHER, -1, AddressOf (wsEmpty))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "acl_add_entry_w base entries"
+            Move "Zoë" to wsText
+            Move (archive_entry_acl_add_entry_w (pEntry, ARCHIVE_ENTRY_ACL_TYPE_ACCESS, 5, ARCHIVE_ENTRY_ACL_USER, 2000, AddressOf (wsText))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "acl_add_entry_w user"
+            Send AssertIAreEqual 4 (archive_entry_acl_count (pEntry, ARCHIVE_ENTRY_ACL_TYPE_ACCESS)) "count"
+            Move (archive_entry_acl_to_text_w (pEntry, AddressOf (iLen), ARCHIVE_ENTRY_ACL_STYLE_SEPARATOR_COMMA)) to pText
+            Delegate Get PWStr pText to sText
+            Send AssertSAreEqual "user::rwx,group::r--,other::---,user:Zoë:r-x" sText "acl_to_text_w"
+            Send AssertBIAreEqual 44 iLen "acl_to_text_w length in characters"
+            Move (archive_entry_acl_text_w (pEntry, (ARCHIVE_ENTRY_ACL_TYPE_ACCESS ior ARCHIVE_ENTRY_ACL_STYLE_SEPARATOR_COMMA))) to pText
+            Delegate Get PWStr pText to sText
+            Send AssertSAreEqual "user::rwx,group::r--,other::---,user:Zoë:r-x" sText "deprecated acl_text_w"
+
+            // from_text_w builds the ACL from wide text
+            Move (archive_entry_acl_clear (pEntry)) to iDummy
+            Move "user::rw-,group::r--,other::r--,user:Jürgen:rwx,mask::rwx" to wsAcl
+            Move (archive_entry_acl_from_text_w (pEntry, AddressOf (wsAcl), ARCHIVE_ENTRY_ACL_TYPE_ACCESS)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "acl_from_text_w"
+            Send AssertIAreEqual 5 (archive_entry_acl_count (pEntry, ARCHIVE_ENTRY_ACL_TYPE_ACCESS)) "count after from_text_w"
+            Move (archive_entry_acl_to_text_w (pEntry, 0, ARCHIVE_ENTRY_ACL_STYLE_SEPARATOR_COMMA)) to pText
+            Delegate Get PWStr pText to sText
+            Send AssertSAreEqual "user::rw-,group::r--,other::r--,user:Jürgen:rwx,mask::rwx" sText "text after from_text_w"
+            Delegate Send FreeEntry pEntry
+        End_Procedure
+    End_Object
+
+    // ACLs are stored in pax archives (SCHILY.acl.access) and survive the round trip.
+    Object oAclRoundTripTest is a cTest
+        Procedure Test
+            Pointer pArchive pEntry pReader pText
+            Void_Type iVoid
+            Integer iResult iDummy
+            BigInt iUsed
+            UChar[] ucWork
+            String sName sText
+
+            Move (ResizeArray (ucWork, 65536)) to ucWork
+            Move (archive_write_new ()) to pArchive
+            Move (archive_write_set_format_pax (pArchive)) to iResult
+            Move (archive_write_open_memory (pArchive, AddressOf (ucWork), 65536, AddressOf (iUsed))) to iResult
+            Move (archive_entry_new ()) to pEntry
+            Move "acl.txt" to sName
+            Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sName))) to iVoid
+            Move (archive_entry_set_filetype (pEntry, AE_IFREG)) to iVoid
+            Move (archive_entry_set_perm (pEntry, 420)) to iVoid
+            Move (archive_entry_set_size (pEntry, 0)) to iVoid
+            Move (archive_entry_set_mtime (pEntry, 1700000000, 0)) to iVoid
+            Delegate Get AddAccessAcl pEntry to iResult
+            Move (archive_write_header (pArchive, pEntry)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "write header with ACL"
+            Move (archive_entry_free (pEntry)) to iVoid
+            Move (archive_write_close (pArchive)) to iResult
+            Move (archive_write_free (pArchive)) to iResult
+            Move (ResizeArray (ucWork, iUsed)) to ucWork
+
+            Move (archive_read_new ()) to pReader
+            Move (archive_read_support_format_all (pReader)) to iDummy
+            Move (archive_read_open_memory (pReader, AddressOf (ucWork), SizeOfArray (ucWork))) to iResult
+            Move (archive_read_next_header (pReader, AddressOf (pEntry))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "read header"
+            Send AssertIAreEqual 5 (archive_entry_acl_count (pEntry, ARCHIVE_ENTRY_ACL_TYPE_ACCESS)) "ACL entries after the round trip"
+            Move (archive_entry_acl_to_text (pEntry, 0, ARCHIVE_ENTRY_ACL_STYLE_SEPARATOR_COMMA)) to pText
+            Delegate Get PStr pText to sText
+            Send AssertSAreEqual "user::rw-,group::r--,other::r--,user:alice:r--,mask::rwx" sText "ACL text after the round trip"
+            Move (archive_read_free (pReader)) to iResult
+        End_Procedure
+    End_Object
+
+    // Stores iBytes bytes of a value at an offset of a byte array.
+    Procedure PutInt UChar[] ByRef ucBuf Integer iOffset BigInt iValue Integer iBytes
+        Void_Type iVoid
+        Move (tel_copymem (AddressOf (ucBuf) + iOffset, AddressOf (iValue), iBytes)) to iVoid
+    End_Procedure
+
+    // Creates a text file in the temp folder and returns its path.
+    Function MakeTextFile String sName String sText Returns String
+        Integer iCh
+        String sFile
+
+        Get TempFile sName to sFile
+        Get Seq_New_Channel to iCh
+        Direct_Output channel iCh ("binary:" + sFile)
+        Write channel iCh sText
+        Close_Output channel iCh
+        Send Seq_Release_Channel iCh
+        Function_Return sFile
+    End_Function
+
+    // st_size / st_mtime of _wstat64 (struct _stat64: size at 24, mtime at 40).
+    Function DiskInfo String sFile Integer iWhat Returns BigInt
+        WString wsFile
+        UChar[] ucStat
+        Integer iResult
+
+        Move sFile to wsFile
+        Move (ResizeArray (ucStat, 64)) to ucStat
+        Move (tel_crt_wstat64 (AddressOf (wsFile), AddressOf (ucStat))) to iResult
+        If (iResult <> 0) Begin
+            Function_Return -1
+        End
+        If (iWhat = 1) Begin
+            Function_Return (Field (Self, ucStat, 24, 8))
+        End
+        Function_Return (Field (Self, ucStat, 40, 8))
+    End_Function
+
+    // ---- stat structures -------------------------------------------------------------------------------------------
+
+    // archive_entry_stat returns a struct _stat64i32 of the UCRT: dev 0, ino 4, mode 6, nlink 8, uid 10, gid 12,
+    // rdev 16, size 20 (32 bit), atime 24, mtime 32, ctime 40 (64 bit).
+    Object oStatTest is a cTest
+        Procedure Test
+            Pointer pEntry pStat
+            Void_Type iVoid
+            UChar[] ucStat
+
+            Move (archive_entry_new ()) to pEntry
+            Move (archive_entry_set_filetype (pEntry, AE_IFREG)) to iVoid
+            Move (archive_entry_set_perm (pEntry, 420)) to iVoid
+            Move (archive_entry_set_size (pEntry, 123456)) to iVoid
+            Move (archive_entry_set_mtime (pEntry, 1700000000, 0)) to iVoid
+            Move (archive_entry_set_atime (pEntry, 1700000100, 0)) to iVoid
+            Move (archive_entry_set_ctime (pEntry, 1700000200, 0)) to iVoid
+            Move (archive_entry_set_nlink (pEntry, 2)) to iVoid
+            Move (archive_entry_set_uid (pEntry, 1000)) to iVoid
+            Move (archive_entry_set_gid (pEntry, 2000)) to iVoid
+            Move (archive_entry_set_ino64 (pEntry, 77)) to iVoid
+            Move (archive_entry_set_dev (pEntry, 3)) to iVoid
+            Move (archive_entry_stat (pEntry)) to pStat
+            Send Assert (pStat <> 0) "archive_entry_stat returns a structure"
+            Move (ResizeArray (ucStat, 64)) to ucStat
+            Move (tel_copymem (AddressOf (ucStat), pStat, 48)) to iVoid
+            Send AssertBIAreEqual 3 (Field (Self, ucStat, 0, 4)) "st_dev"
+            Send AssertBIAreEqual 77 (Field (Self, ucStat, 4, 2)) "st_ino"
+            Send AssertBIAreEqual (AE_IFREG ior 420) (Field (Self, ucStat, 6, 2)) "st_mode"
+            Send AssertBIAreEqual 2 (Field (Self, ucStat, 8, 2)) "st_nlink"
+            Send AssertBIAreEqual 1000 (Field (Self, ucStat, 10, 2)) "st_uid"
+            Send AssertBIAreEqual 2000 (Field (Self, ucStat, 12, 2)) "st_gid"
+            Send AssertBIAreEqual 123456 (Field (Self, ucStat, 20, 4)) "st_size"
+            Send AssertBIAreEqual 1700000100 (Field (Self, ucStat, 24, 8)) "st_atime"
+            Send AssertBIAreEqual 1700000000 (Field (Self, ucStat, 32, 8)) "st_mtime"
+            Send AssertBIAreEqual 1700000200 (Field (Self, ucStat, 40, 8)) "st_ctime"
+            Delegate Send FreeEntry pEntry
+        End_Procedure
+    End_Object
+
+    Object oCopyStatTest is a cTest
+        Procedure Test
+            Pointer pEntry
+            Void_Type iVoid
+            Integer iResult
+            UChar[] ucStat
+            WString wsFile
+            String sFile sFolder
+
+            // a hand made structure
+            Move (archive_entry_new ()) to pEntry
+            Move (ResizeArray (ucStat, 64)) to ucStat
+            Delegate Send PutInt (&ucStat) 0 5 4
+            Delegate Send PutInt (&ucStat) 4 99 2
+            Delegate Send PutInt (&ucStat) 6 (AE_IFREG ior 420) 2
+            Delegate Send PutInt (&ucStat) 8 3 2
+            Delegate Send PutInt (&ucStat) 10 7 2
+            Delegate Send PutInt (&ucStat) 12 8 2
+            Delegate Send PutInt (&ucStat) 20 4242 4
+            Delegate Send PutInt (&ucStat) 24 1700000100 8
+            Delegate Send PutInt (&ucStat) 32 1700000000 8
+            Delegate Send PutInt (&ucStat) 40 1700000200 8
+            Move (archive_entry_copy_stat (pEntry, AddressOf (ucStat))) to iVoid
+            Send AssertUIAreEqual 5 (archive_entry_dev (pEntry)) "dev from the structure"
+            Send AssertBIAreEqual 99 (archive_entry_ino64 (pEntry)) "ino from the structure"
+            Send AssertIAreEqual AE_IFREG (archive_entry_filetype (pEntry)) "file type from the structure"
+            Send AssertIAreEqual 420 (archive_entry_perm (pEntry)) "permission from the structure"
+            Send AssertUIAreEqual 3 (archive_entry_nlink (pEntry)) "nlink from the structure"
+            Send AssertBIAreEqual 7 (archive_entry_uid (pEntry)) "uid from the structure"
+            Send AssertBIAreEqual 8 (archive_entry_gid (pEntry)) "gid from the structure"
+            Send AssertBIAreEqual 4242 (archive_entry_size (pEntry)) "size from the structure"
+            Send AssertBIAreEqual 1700000100 (archive_entry_atime (pEntry)) "atime from the structure"
+            Send AssertBIAreEqual 1700000000 (archive_entry_mtime (pEntry)) "mtime from the structure"
+            Send AssertBIAreEqual 1700000200 (archive_entry_ctime (pEntry)) "ctime from the structure"
+            Move (archive_entry_free (pEntry)) to iVoid
+
+            // the structure of a real file, filled by the C runtime
+            Delegate Get MakeTextFile "copy_stat.txt" "twelve bytes" to sFile
+            Move sFile to wsFile
+            Move (archive_entry_new ()) to pEntry
+            Move (ResizeArray (ucStat, 64)) to ucStat
+            Move (tel_crt_wstat64i32 (AddressOf (wsFile), AddressOf (ucStat))) to iResult
+            Send AssertIAreEqual 0 iResult "_wstat64i32 of the file"
+            Move (archive_entry_copy_stat (pEntry, AddressOf (ucStat))) to iVoid
+            Send AssertIAreEqual AE_IFREG (archive_entry_filetype (pEntry)) "file type of the real file"
+            Send AssertBIAreEqual 12 (archive_entry_size (pEntry)) "size of the real file"
+            Delegate Get DiskInfo sFile 2 to iResult
+            Send AssertBIAreEqual iResult (archive_entry_mtime (pEntry)) "mtime of the real file"
+            Move (archive_entry_free (pEntry)) to iVoid
+            EraseFile sFile
+
+            // a folder
+            Delegate Get TempFolder to sFolder
+            Move (Left (sFolder, Length (sFolder) - 1)) to sFolder
+            Move sFolder to wsFile
+            Move (archive_entry_new ()) to pEntry
+            Move (tel_crt_wstat64i32 (AddressOf (wsFile), AddressOf (ucStat))) to iResult
+            Move (archive_entry_copy_stat (pEntry, AddressOf (ucStat))) to iVoid
+            Send AssertIAreEqual AE_IFDIR (archive_entry_filetype (pEntry)) "file type of a folder"
+            Move (archive_entry_free (pEntry)) to iVoid
+        End_Procedure
+    End_Object
+
+    Object oCopyBhfiTest is a cTest
+        Procedure Test
+            Pointer pEntry hFile
+            Void_Type iVoid
+            Integer iResult
+            UChar[] ucInfo
+            WString wsFile
+            String sFile
+
+            // a hand made BY_HANDLE_FILE_INFORMATION
+            Move (archive_entry_new ()) to pEntry
+            Move (ResizeArray (ucInfo, 64)) to ucInfo
+            Delegate Send PutInt (&ucInfo) 0 32 4
+            Delegate Send PutInt (&ucInfo) 4 3329032192 4
+            Delegate Send PutInt (&ucInfo) 8 31070023 4
+            Delegate Send PutInt (&ucInfo) 12 3329032192 4
+            Delegate Send PutInt (&ucInfo) 16 31070023 4
+            Delegate Send PutInt (&ucInfo) 20 3329032192 4
+            Delegate Send PutInt (&ucInfo) 24 31070023 4
+            Delegate Send PutInt (&ucInfo) 28 43981 4
+            Delegate Send PutInt (&ucInfo) 32 0 4
+            Delegate Send PutInt (&ucInfo) 36 777 4
+            Delegate Send PutInt (&ucInfo) 40 2 4
+            Delegate Send PutInt (&ucInfo) 44 1 4
+            Delegate Send PutInt (&ucInfo) 48 2 4
+            Move (archive_entry_copy_bhfi (pEntry, AddressOf (ucInfo))) to iVoid
+            Send AssertIAreEqual 0 (archive_entry_filetype_is_set (pEntry)) "the information does not contain a file type"
+            Send AssertUIAreEqual 43981 (archive_entry_dev (pEntry)) "volume serial number becomes the dev"
+            Send AssertBIAreEqual 777 (archive_entry_size (pEntry)) "size from the information"
+            Send AssertBIAreEqual 1700000000 (archive_entry_mtime (pEntry)) "mtime from the information"
+            Send AssertBIAreEqual 1700000000 (archive_entry_atime (pEntry)) "atime from the information"
+            Send AssertBIAreEqual 1700000000 (archive_entry_birthtime (pEntry)) "creation time from the information"
+            Send AssertUIAreEqual 2 (archive_entry_nlink (pEntry)) "nlink from the information"
+            Send AssertBIAreEqual 4294967298 (archive_entry_ino64 (pEntry)) "file index from the information"
+            Send AssertBIAreEqual 1700000000 (archive_entry_ctime (pEntry)) "ctime from the information"
+            Move (archive_entry_free (pEntry)) to iVoid
+
+            // the information of a real file from GetFileInformationByHandle
+            Delegate Get MakeTextFile "copy_bhfi.txt" "twelve bytes" to sFile
+            Move sFile to wsFile
+            Move (tel_CreateFileW (AddressOf (wsFile), 2147483648, 3, 0, 3, 33554432, 0)) to hFile
+            Send Assert (hFile <> 0 and hFile <> -1) "CreateFileW opened the file"
+            Move (tel_GetFileInformationByHandle (hFile, AddressOf (ucInfo))) to iResult
+            Send Assert (iResult <> 0) "GetFileInformationByHandle succeeded"
+            Move (tel_CloseHandle (hFile)) to iResult
+            Move (archive_entry_new ()) to pEntry
+            Move (archive_entry_copy_bhfi (pEntry, AddressOf (ucInfo))) to iVoid
+            Send AssertBIAreEqual 12 (archive_entry_size (pEntry)) "size of the real file"
+            Send AssertUIAreEqual 1 (archive_entry_nlink (pEntry)) "nlink of the real file"
+            Delegate Get DiskInfo sFile 2 to iResult
+            Send AssertBIAreEqual iResult (archive_entry_mtime (pEntry)) "mtime of the real file"
+            Send Assert (archive_entry_ino64 (pEntry) <> 0) "the real file has a file index"
+            Move (archive_entry_free (pEntry)) to iVoid
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    // ---- Mac OS metadata -----------------------------------------------------------------------------------------
+
+    Object oMacMetadataTest is a cTest
+        Procedure Test
+            Pointer pEntry pMac
+            Void_Type iVoid
+            Integer iIndex
+            BigInt iSize
+            UChar[] ucMac
+            String sText
+
+            Move (archive_entry_new ()) to pEntry
+            Move 99 to iSize
+            Move (archive_entry_mac_metadata (pEntry, AddressOf (iSize))) to pMac
+            Send AssertPAreEqual 0 pMac "no metadata in a new entry"
+            Send AssertBIAreEqual 0 iSize "size 0 without metadata"
+
+            Move (ResizeArray (ucMac, 16)) to ucMac
+            For iIndex from 0 to 15
+                Move (iIndex + 65) to ucMac[iIndex]
+            Loop
+            Move (archive_entry_copy_mac_metadata (pEntry, AddressOf (ucMac), 16)) to iVoid
+            Move 0 to iSize
+            Move (archive_entry_mac_metadata (pEntry, AddressOf (iSize))) to pMac
+            Send Assert (pMac <> 0) "metadata is returned"
+            Send AssertBIAreEqual 16 iSize "metadata size"
+            Delegate Get HexOf pMac 16 to sText
+            Send AssertSAreEqual "4142434445464748494a4b4c4d4e4f50" sText "metadata bytes"
+            // the entry owns a copy
+            Move 90 to ucMac[0]
+            Move (archive_entry_mac_metadata (pEntry, AddressOf (iSize))) to pMac
+            Delegate Get HexOf pMac 2 to sText
+            Send AssertSAreEqual "4142" sText "the metadata is a copy"
+
+            // NULL clears the metadata
+            Move (archive_entry_copy_mac_metadata (pEntry, 0, 0)) to iVoid
+            Move (archive_entry_mac_metadata (pEntry, AddressOf (iSize))) to pMac
+            Send AssertPAreEqual 0 pMac "no metadata after clearing"
+            Send AssertBIAreEqual 0 iSize "size after clearing"
+            Delegate Send FreeEntry pEntry
+        End_Procedure
+    End_Object
+
+    // ---- digests -------------------------------------------------------------------------------------------------
+
+    // archive_entry_digest always returns a pointer to the digest bytes of known types: all zero when the entry has no
+    // digest. An mtree manifest provides digests.
+    Object oDigestTest is a cTest
+        Procedure Test
+            Pointer pEntry pReader pDigest
+            Integer iResult iType iDummy iLength
+            Void_Type iVoid
+            String sMtree sText sHex sExpected
+
+            Move (archive_entry_new ()) to pEntry
+            Move (archive_entry_digest (pEntry, ARCHIVE_ENTRY_DIGEST_MD5)) to pDigest
+            Send Assert (pDigest <> 0) "a pointer is returned for an entry without digest"
+            Delegate Get HexOf pDigest 16 to sText
+            Send AssertSAreEqual "00000000000000000000000000000000" sText "md5 bytes of an entry without digest"
+            Move (archive_entry_digest (pEntry, 99)) to pDigest
+            Send AssertPAreEqual 0 pDigest "an unknown digest type returns NULL"
+            Move (archive_entry_free (pEntry)) to iVoid
+
+            Move ("#mtree" + (Character (10)) + "./f.txt type=file size=5 md5digest=5d41402abc4b2a76b9719d911017c592 rmd160digest=108f07b8382412612c048d07d13f814118445acd sha1digest=aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d sha256digest=2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824 sha384digest=59e1748777448c69de6b800d7a33bbfb9ff1b463e44354c3553bcdb9c666fa90125a3c79f90397bdf5f6a13de828684f sha512digest=9b71d224bd62f3785d96d46ad3ea3d73319bfbc2890caadae2dff72519673ca72323c3d99ba5c11d7c7acc6e14b8c5da0c4663475c2e5c3adef46f73bcdec043" + (Character (10))) to sMtree
+            Move (archive_read_new ()) to pReader
+            Move (archive_read_support_format_mtree (pReader)) to iDummy
+            Move (archive_read_open_memory (pReader, AddressOf (sMtree), SizeOfString (sMtree))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open the mtree manifest"
+            Move (archive_read_next_header (pReader, AddressOf (pEntry))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "read the mtree entry"
+            For iType from 1 to 6
+                Case Begin
+                    Case (iType = ARCHIVE_ENTRY_DIGEST_MD5)
+                        Move 16 to iLength
+                        Move "5d41402abc4b2a76b9719d911017c592" to sExpected
+                        Case Break
+                    Case (iType = ARCHIVE_ENTRY_DIGEST_RMD160)
+                        Move 20 to iLength
+                        Move "108f07b8382412612c048d07d13f814118445acd" to sExpected
+                        Case Break
+                    Case (iType = ARCHIVE_ENTRY_DIGEST_SHA1)
+                        Move 20 to iLength
+                        Move "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d" to sExpected
+                        Case Break
+                    Case (iType = ARCHIVE_ENTRY_DIGEST_SHA256)
+                        Move 32 to iLength
+                        Move "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" to sExpected
+                        Case Break
+                    Case (iType = ARCHIVE_ENTRY_DIGEST_SHA384)
+                        Move 48 to iLength
+                        Move "59e1748777448c69de6b800d7a33bbfb9ff1b463e44354c3553bcdb9c666fa90125a3c79f90397bdf5f6a13de828684f" to sExpected
+                        Case Break
+                    Case (iType = ARCHIVE_ENTRY_DIGEST_SHA512)
+                        Move 64 to iLength
+                        Move "9b71d224bd62f3785d96d46ad3ea3d73319bfbc2890caadae2dff72519673ca72323c3d99ba5c11d7c7acc6e14b8c5da0c4663475c2e5c3adef46f73bcdec043" to sExpected
+                Case End
+                Move (archive_entry_digest (pEntry, iType)) to pDigest
+                Send Assert (pDigest <> 0) ("digest pointer type" * String (iType))
+                Delegate Get HexOf pDigest iLength to sHex
+                Send AssertSAreEqual sExpected sHex ("digest type" * String (iType))
+            Loop
+            Move (archive_read_free (pReader)) to iDummy
+        End_Procedure
+    End_Object
+
+    // ---- hard link resolver --------------------------------------------------------------------------------------
+
+    // Regular file entry on device 1 with the given inode, link count and size.
+    Function MakeLinkEntry String sPath BigInt iIno Integer iNlink BigInt iSize Returns Pointer
+        Pointer pEntry
+        Void_Type iVoid
+
+        Move (archive_entry_new ()) to pEntry
+        Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sPath))) to iVoid
+        Move (archive_entry_set_filetype (pEntry, AE_IFREG)) to iVoid
+        Move (archive_entry_set_perm (pEntry, 420)) to iVoid
+        Move (archive_entry_set_dev (pEntry, 1)) to iVoid
+        Move (archive_entry_set_ino64 (pEntry, iIno)) to iVoid
+        Move (archive_entry_set_nlink (pEntry, iNlink)) to iVoid
+        Move (archive_entry_set_size (pEntry, iSize)) to iVoid
+        Function_Return pEntry
+    End_Function
+
+    // "pathname|size|hardlink" of an entry, "none" for a NULL pointer.
+    Function Describe Pointer pEntry Returns String
+        If (pEntry = 0) Begin
+            Function_Return "none"
+        End
+        Function_Return (PStr (Self, archive_entry_pathname (pEntry)) + "|" + String (archive_entry_size (pEntry)) + "|" + PStr (Self, archive_entry_hardlink (pEntry)))
+    End_Function
+
+    Object oLinkResolverTarTest is a cTest
+        Procedure Test
+            Pointer pResolver pEntry pEntry1 pSparse pPartial
+            Integer iIndex iStrategy iCount
+            Void_Type iVoid
+            String sText sLabel
+
+            // the tar like formats write the first file with its data and the other names as hard links
+            For iIndex from 1 to 3
+                Case Begin
+                    Case (iIndex = 1)
+                        Move ARCHIVE_FORMAT_TAR_USTAR to iStrategy
+                        Move "ustar" to sLabel
+                        Case Break
+                    Case (iIndex = 2)
+                        Move ARCHIVE_FORMAT_TAR_PAX_INTERCHANGE to iStrategy
+                        Move "pax" to sLabel
+                        Case Break
+                    Case (iIndex = 3)
+                        Move ARCHIVE_FORMAT_TAR_GNUTAR to iStrategy
+                        Move "gnutar" to sLabel
+                Case End
+                Move (archive_entry_linkresolver_new ()) to pResolver
+                Send Assert (pResolver <> 0) (sLabel * "linkresolver_new")
+                Move (archive_entry_linkresolver_set_strategy (pResolver, iStrategy)) to iVoid
+
+                Delegate Get MakeLinkEntry "a.txt" 5 2 10 to pEntry
+                Move pEntry to pEntry1
+                Move 0 to pSparse
+                Move (archive_entry_linkify (pResolver, AddressOf (pEntry), AddressOf (pSparse))) to iVoid
+                Send AssertPAreEqual pEntry1 pEntry (sLabel * "the first entry is returned")
+                Send AssertPAreEqual 0 pSparse (sLabel * "no sparse entry")
+                Delegate Get Describe pEntry to sText
+                Send AssertSAreEqual "a.txt|10|<NULL>" sText (sLabel * "the first entry keeps its data")
+                Send AssertUIAreEqual 2 (archive_entry_nlink (pEntry)) (sLabel * "nlink")
+
+                Delegate Get MakeLinkEntry "b.txt" 5 2 10 to pEntry
+                Move (archive_entry_linkify (pResolver, AddressOf (pEntry), AddressOf (pSparse))) to iVoid
+                Delegate Get Describe pEntry to sText
+                Send AssertSAreEqual "b.txt|0|a.txt" sText (sLabel * "the second entry is a hard link without data")
+                Send Assert (archive_entry_hardlink_is_set (pEntry) <> 0) (sLabel * "hardlink is set")
+                Delegate Send FreeEntry pEntry
+
+                // all links were seen: nothing is left
+                Move (archive_entry_partial_links (pResolver, AddressOf (iCount))) to pPartial
+                Send AssertPAreEqual 0 pPartial (sLabel * "no partial links")
+                Delegate Send FreeEntry pEntry1
+                Move (archive_entry_linkresolver_free (pResolver)) to iVoid
+            Loop
+        End_Procedure
+    End_Object
+
+    Object oLinkResolverPartialTest is a cTest
+        Procedure Test
+            Pointer pResolver pEntry pSparse pPartial pEntry1
+            Integer iCount
+            Void_Type iVoid
+            String sText
+
+            // three names but only two are archived: the first entry is reported as partially linked
+            Move (archive_entry_linkresolver_new ()) to pResolver
+            Move (archive_entry_linkresolver_set_strategy (pResolver, ARCHIVE_FORMAT_TAR_USTAR)) to iVoid
+            Delegate Get MakeLinkEntry "a.txt" 5 3 10 to pEntry
+            Move pEntry to pEntry1
+            Move 0 to pSparse
+            Move (archive_entry_linkify (pResolver, AddressOf (pEntry), AddressOf (pSparse))) to iVoid
+            Delegate Get MakeLinkEntry "b.txt" 5 3 10 to pEntry
+            Move (archive_entry_linkify (pResolver, AddressOf (pEntry), AddressOf (pSparse))) to iVoid
+            Delegate Send FreeEntry pEntry
+
+            Move 0 to iCount
+            Move (archive_entry_partial_links (pResolver, AddressOf (iCount))) to pPartial
+            Send Assert (pPartial <> 0) "a partially linked entry is reported"
+            Delegate Get Describe pPartial to sText
+            Send AssertSAreEqual "a.txt|10|<NULL>" sText "the partially linked entry"
+            Send AssertIAreEqual 1 iCount "one link is missing"
+            Move (archive_entry_partial_links (pResolver, AddressOf (iCount))) to pPartial
+            Send AssertPAreEqual 0 pPartial "the list ends with NULL"
+            Delegate Send FreeEntry pEntry1
+            Move (archive_entry_linkresolver_free (pResolver)) to iVoid
+        End_Procedure
+    End_Object
+
+    // With the cpio newc strategy the data belongs to the last link: earlier names are written as hard links without
+    // data, the last one comes back in the second (sparse) parameter.
+    Object oLinkResolverCpioTest is a cTest
+        Procedure Test
+            Pointer pResolver pEntry pSparse
+            Void_Type iVoid
+            String sText
+
+            Move (archive_entry_linkresolver_new ()) to pResolver
+            Move (archive_entry_linkresolver_set_strategy (pResolver, ARCHIVE_FORMAT_CPIO_SVR4_NOCRC)) to iVoid
+
+            Delegate Get MakeLinkEntry "a.txt" 5 3 10 to pEntry
+            Move 0 to pSparse
+            Move (archive_entry_linkify (pResolver, AddressOf (pEntry), AddressOf (pSparse))) to iVoid
+            Send AssertPAreEqual 0 pEntry "the first link is held back"
+            Send AssertPAreEqual 0 pSparse "no sparse entry for the first link"
+
+            Delegate Get MakeLinkEntry "b.txt" 5 3 10 to pEntry
+            Move 0 to pSparse
+            Move (archive_entry_linkify (pResolver, AddressOf (pEntry), AddressOf (pSparse))) to iVoid
+            Delegate Get Describe pEntry to sText
+            Send AssertSAreEqual "a.txt|0|a.txt" sText "the first link comes back without data"
+            Send AssertPAreEqual 0 pSparse "still no sparse entry"
+            Delegate Send FreeEntry pEntry
+
+            Delegate Get MakeLinkEntry "c.txt" 5 3 10 to pEntry
+            Move 0 to pSparse
+            Move (archive_entry_linkify (pResolver, AddressOf (pEntry), AddressOf (pSparse))) to iVoid
+            Delegate Get Describe pEntry to sText
+            Send AssertSAreEqual "b.txt|0|a.txt" sText "the second link comes back without data"
+            Delegate Get Describe pSparse to sText
+            Send AssertSAreEqual "c.txt|10|<NULL>" sText "the last link carries the data"
+            Delegate Send FreeEntry pEntry
+            Delegate Send FreeEntry pSparse
+            Move (archive_entry_linkresolver_free (pResolver)) to iVoid
+        End_Procedure
+    End_Object
+
+    // A zero entry flushes what the resolver still holds back.
+    Object oLinkResolverFlushTest is a cTest
+        Procedure Test
+            Pointer pResolver pEntry pSparse
+            Void_Type iVoid
+            String sText
+
+            Move (archive_entry_linkresolver_new ()) to pResolver
+            Move (archive_entry_linkresolver_set_strategy (pResolver, ARCHIVE_FORMAT_CPIO_SVR4_NOCRC)) to iVoid
+            Delegate Get MakeLinkEntry "a.txt" 5 3 10 to pEntry
+            Move 0 to pSparse
+            Move (archive_entry_linkify (pResolver, AddressOf (pEntry), AddressOf (pSparse))) to iVoid
+            Move 0 to pEntry
+            Move 0 to pSparse
+            Move (archive_entry_linkify (pResolver, AddressOf (pEntry), AddressOf (pSparse))) to iVoid
+            Delegate Get Describe pEntry to sText
+            Send AssertSAreEqual "a.txt|10|<NULL>" sText "the held back link is returned by the flush"
+            Delegate Get Describe pSparse to sText
+            Send AssertSAreEqual "none" sText "no sparse entry from the flush"
+            Delegate Send FreeEntry pEntry
+            // nothing is left for a second flush
+            Move 0 to pEntry
+            Move (archive_entry_linkify (pResolver, AddressOf (pEntry), AddressOf (pSparse))) to iVoid
+            Send AssertPAreEqual 0 pEntry "a second flush returns nothing"
+            Move (archive_entry_linkresolver_free (pResolver)) to iVoid
+        End_Procedure
+    End_Object
+
+    // The strategies of formats that do not know hard links leave all entries as they are.
+    Object oLinkResolverPassThroughTest is a cTest
+        Procedure Test
+            Pointer pResolver pEntry pSparse pEntry2
+            Integer iIndex iStrategy
+            Void_Type iVoid
+            String sText sLabel
+
+            For iIndex from 1 to 2
+                If (iIndex = 1) Begin
+                    Move ARCHIVE_FORMAT_ZIP to iStrategy
+                    Move "zip" to sLabel
+                End
+                Else Begin
+                    Move ARCHIVE_FORMAT_CPIO_POSIX to iStrategy
+                    Move "cpio odc" to sLabel
+                End
+                Move (archive_entry_linkresolver_new ()) to pResolver
+                Move (archive_entry_linkresolver_set_strategy (pResolver, iStrategy)) to iVoid
+                Delegate Get MakeLinkEntry "a.txt" 5 2 10 to pEntry
+                Move 0 to pSparse
+                Move (archive_entry_linkify (pResolver, AddressOf (pEntry), AddressOf (pSparse))) to iVoid
+                Delegate Send FreeEntry pEntry
+                Delegate Get MakeLinkEntry "b.txt" 5 2 10 to pEntry
+                Move (archive_entry_linkify (pResolver, AddressOf (pEntry), AddressOf (pSparse))) to iVoid
+                Delegate Get Describe pEntry to sText
+                Send AssertSAreEqual "b.txt|10|<NULL>" sText (sLabel * "the second link is not changed")
+                Send AssertPAreEqual 0 pSparse (sLabel * "no sparse entry")
+                Delegate Send FreeEntry pEntry
+                Move (archive_entry_linkresolver_free (pResolver)) to iVoid
+            Loop
+        End_Procedure
+    End_Object
+End_Object

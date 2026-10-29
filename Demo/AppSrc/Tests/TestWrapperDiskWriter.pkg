@@ -1,0 +1,602 @@
+﻿External_Function dwtestRemoveDirectoryW "RemoveDirectoryW" kernel32.dll ;
+    WString wsPathName ;
+    Returns Integer
+
+External_Function dwtestGetFileAttributesExW "GetFileAttributesExW" kernel32.dll ;
+    WString wsFileName ;
+    Integer iInfoLevel ;
+    Pointer pFileInformation ;
+    Returns Integer
+
+External_Function dwtestSetFileAttributesW "SetFileAttributesW" kernel32.dll ;
+    WString wsFileName ;
+    DWord dwFileAttributes ;
+    Returns Integer
+
+// Tests of cArchiveDiskWriter. The created files and folders are verified on disk with DataFlex file functions and
+// Windows API calls.
+Object oWrapperDiskWriterTests is a cArchiveTestFixture
+    Set psTestFixtureName to "WrapperDiskWriter"
+
+    // Folder (with trailing backslash) the tests extract into.
+    Function OutFolder Returns String
+        String sFolder
+
+        Get TempFolder to sFolder
+        Function_Return (sFolder + "DiskOut\")
+    End_Function
+
+    // Same path with forward slashes, as used for entry path names.
+    Function EntryPath String sRelative Returns String
+        String sFolder
+
+        Get OutFolder to sFolder
+        Function_Return (Replace ("\", sFolder, "/") + sRelative)
+    End_Function
+
+    // Deletes a folder with everything in it (read-only attributes are cleared).
+    Procedure RemoveTree String sFolder
+        tWin32FindDataW FindData
+        Handle hFind
+        Pointer pName
+        Integer iNext iVoid iIndex iCount
+        String sName
+        String[] sNames
+        Boolean[] bFolders
+
+        If (Right (sFolder, 1) <> "\") Begin
+            Move (sFolder + "\") to sFolder
+        End
+        Move (winFindFirstFileW (sFolder + "*", AddressOf (FindData))) to hFind
+        If (hFind <> INVALID_HANDLE_VALUE) Begin
+            Repeat
+                Move (AddressOf (FindData) + 44) to pName
+                Move (PointerToWString (pName)) to sName
+                If (sName <> "." and sName <> "..") Begin
+                    Move sName to sNames[-1]
+                    Move (IsFlagIn (FILE_ATTRIBUTE_DIRECTORY, FindData.dwFileAttributes)) to bFolders[-1]
+                End
+                Move (winFindNextFileW (hFind, AddressOf (FindData))) to iNext
+            Until (iNext = 0)
+            Move (winFindClose (hFind)) to iVoid
+        End
+        Move (SizeOfArray (sNames)) to iCount
+        For iIndex from 0 to (iCount - 1)
+            If (bFolders[iIndex]) Begin
+                Send RemoveTree (sFolder + sNames[iIndex])
+            End
+            Else Begin
+                Move (dwtestSetFileAttributesW (sFolder + sNames[iIndex], 128)) to iVoid
+                EraseFile (sFolder + sNames[iIndex])
+            End
+        Loop
+        Move (dwtestSetFileAttributesW (sFolder, 16)) to iVoid
+        Move (dwtestRemoveDirectoryW (sFolder)) to iVoid
+    End_Procedure
+
+    // Deletes the output folder of the tests and creates a fresh one.
+    Procedure CleanOutFolder
+        String sFolder
+        Boolean bOk
+
+        Get OutFolder to sFolder
+        Send RemoveTree sFolder
+        Move (CreateDirectoryRecursive (sFolder)) to bOk
+    End_Procedure
+
+    // Last write time (seconds since 1970) of a file or folder, -1 when it does not exist.
+    Function FileMTime String sPath Returns BigInt
+        UChar[] ucInfo
+        BigInt iTicks
+        Integer iOk iVoid
+
+        Move (ResizeArray (ucInfo, 36)) to ucInfo
+        Move (dwtestGetFileAttributesExW (sPath, 0, AddressOf (ucInfo))) to iOk
+        If (iOk = 0) Begin
+            Function_Return -1
+        End
+        Move (MemCopy (AddressOf (iTicks), AddressOf (ucInfo) + 20, 8)) to iVoid
+        Function_Return (iTicks / 10000000 - 11644473600)
+    End_Function
+
+    // The bytes of a file. Returns the file size, -1 when it cannot be read.
+    Function ReadFileBytes String sFileName UChar[] ByRef ucData Returns Integer
+        Integer iChannel
+        UChar[] ucEmpty
+
+        Move ucEmpty to ucData
+        If (GetFileAttributes (sFileName) = INVALID_FILE_ATTRIBUTES) Begin
+            Function_Return -1
+        End
+        Move (Seq_New_Channel ()) to iChannel
+        Direct_Input channel iChannel ("BINARY:" + sFileName)
+        If (not (SeqEof)) Begin
+            Read_Block channel iChannel ucData -1
+        End
+        Close_Input channel iChannel
+        Send Seq_Release_Channel iChannel
+        Function_Return (SizeOfArray (ucData))
+    End_Function
+
+    // The text of a file (without zero bytes), "" when it cannot be read.
+    Function ReadFileText String sFileName Returns String
+        UChar[] ucData
+        String sText
+        Integer iSize iVoid
+
+        Get ReadFileBytes sFileName (&ucData) to iSize
+        If (iSize <= 0) Begin
+            Function_Return ""
+        End
+        Move (Repeat (" ", iSize)) to sText
+        Move (MemCopy (AddressOf (sText), AddressOf (ucData), iSize)) to iVoid
+        Function_Return sText
+    End_Function
+
+    // Weighted checksum of bytes (sensitive to the order and to zero bytes).
+    Function ByteSumOf UChar[] ucData Returns BigInt
+        Integer iIndex iCount iByte
+        BigInt iSum
+
+        Move 0 to iSum
+        Move (SizeOfArray (ucData)) to iCount
+        For iIndex from 0 to (iCount - 1)
+            Move ucData[iIndex] to iByte
+            // DataFlex evaluates arithmetic from left to right without operator precedence: parenthesize
+            Move (iSum + ((iByte + 1) * (Mod (iIndex, 251) + 1))) to iSum
+        Loop
+        Function_Return iSum
+    End_Function
+
+    // Fills an entry object with the data of a file, directory or link.
+    Procedure PrepareEntry Handle hoEntry String sPath Integer eType Integer iPerm BigInt iSize BigInt iMTime
+        Pointer pEntry
+        Integer iOk
+        Void_Type iVoid
+
+        Send CreateEntry of hoEntry
+        Get ppEntry of hoEntry to pEntry
+        // The result is 0 for names with characters outside of the ANSI code page (Japanese on a Western system), the
+        // entry keeps the name nevertheless.
+        Move (archive_entry_update_pathname_utf8 (pEntry, AddressOf (sPath))) to iOk
+        Move (archive_entry_set_filetype (pEntry, eType)) to iVoid
+        Move (archive_entry_set_perm (pEntry, iPerm)) to iVoid
+        Move (archive_entry_set_size (pEntry, iSize)) to iVoid
+        Move (archive_entry_set_mtime (pEntry, iMTime, 0)) to iVoid
+    End_Procedure
+
+    // Creates a disk writer object that does not raise errors.
+    Function NewDiskWriter Returns Handle
+        Handle hoWriter
+
+        Get Create (RefClass (cArchiveDiskWriter)) to hoWriter
+        Set pbRaiseErrors of hoWriter to False
+        Send CreateDiskWriter of hoWriter
+        Function_Return hoWriter
+    End_Function
+
+    // Fills an entry object for a path relative to the output folder.
+    Procedure PrepareOutEntry Handle hoEntry String sRelative Integer eType Integer iPerm BigInt iSize BigInt iMTime
+        String sPath
+
+        Get EntryPath sRelative to sPath
+        Send PrepareEntry hoEntry sPath eType iPerm iSize iMTime
+    End_Procedure
+
+    // Writes a regular file entry with the text as content: header, data, finish.
+    Function WriteTextFileEntry Handle hoWriter Handle hoEntry String sPath String sText Returns Integer
+        Integer iResult
+        BigInt iWritten
+
+        Send PrepareOutEntry hoEntry sPath AE_IFREG 420 (SizeOfString (sText)) 1700000000
+        Get WriteHeader of hoWriter hoEntry to iResult
+        If (iResult >= ARCHIVE_WARN) Begin
+            Get WriteString of hoWriter sText to iWritten
+            Get FinishEntry of hoWriter to iResult
+        End
+        Function_Return iResult
+    End_Function
+
+
+    Object oDiskLifecycleTest is a cTest
+        Procedure Test
+            Handle hoWriter
+            Pointer pArchive
+            Integer iResult iOptions
+            Boolean bHas
+
+            Get Create (RefClass (cArchiveDiskWriter)) to hoWriter
+            Get HasHandle of hoWriter to bHas
+            Send AssertFalse bHas "no handle before CreateDiskWriter"
+
+            // without a writer the methods raise a programming error and return ARCHIVE_FATAL
+            Send ExpectError DFERR_PROGRAM
+            Get FinishEntry of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "FinishEntry without writer"
+            Get CloseWriter of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "CloseWriter without writer"
+            Send UnExpectError DFERR_PROGRAM
+
+            // piOptions: the default and a value set before the writer exists
+            Get piOptions of hoWriter to iOptions
+            Send AssertIAreEqual (ARCHIVE_EXTRACT_TIME ior ARCHIVE_EXTRACT_PERM ior ARCHIVE_EXTRACT_SECURE_NODOTDOT ior ARCHIVE_EXTRACT_SECURE_SYMLINKS) iOptions "default options"
+            Set piOptions of hoWriter to (ARCHIVE_EXTRACT_TIME ior ARCHIVE_EXTRACT_NO_OVERWRITE)
+            Send CreateDiskWriter of hoWriter
+            Get HasHandle of hoWriter to bHas
+            Send Assert bHas "handle after CreateDiskWriter"
+            Get ppArchive of hoWriter to pArchive
+            Send Assert (pArchive <> 0) "pointer"
+            Get piOptions of hoWriter to iOptions
+            Send AssertIAreEqual (ARCHIVE_EXTRACT_TIME ior ARCHIVE_EXTRACT_NO_OVERWRITE) iOptions "options after CreateDiskWriter"
+            Get piLastResult of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "no error"
+            Set piOptions of hoWriter to ARCHIVE_EXTRACT_PERM
+            Get piOptions of hoWriter to iOptions
+            Send AssertIAreEqual ARCHIVE_EXTRACT_PERM iOptions "options set with a writer"
+            Get piLastResult of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "options accepted"
+
+            Get CloseWriter of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "CloseWriter"
+            Send FreeWriter of hoWriter
+            Get HasHandle of hoWriter to bHas
+            Send AssertFalse bHas "no handle after FreeWriter"
+            Send FreeWriter of hoWriter // harmless
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+    Object oDiskFolderTreeTest is a cTest
+        Procedure Test
+            Handle hoWriter hoEntry
+            Integer iResult iSize
+            BigInt iWritten iSum
+            String sOut sText
+            UChar[] ucData ucRead
+            String sData
+
+            Delegate Send CleanOutFolder
+            Delegate Get OutFolder to sOut
+            Delegate Get NewDiskWriter to hoWriter
+            Get Create (RefClass (cArchiveEntry)) to hoEntry
+
+            // a directory, a file in it, a file in a sub folder that does not exist yet (created automatically)
+            Delegate Send PrepareOutEntry hoEntry "tree/" AE_IFDIR 493 0 1700000000
+            Get WriteHeader of hoWriter hoEntry to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "directory"
+            Send Assert (IsDirectory (sOut + "tree")) "folder tree exists"
+
+            Delegate Get WriteTextFileEntry hoWriter hoEntry "tree/a.txt" "Content A" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "tree/a.txt"
+            Delegate Get WriteTextFileEntry hoWriter hoEntry "tree/sub/deep/b.txt" "Content B in a new folder" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "tree/sub/deep/b.txt"
+            Delegate Get WriteTextFileEntry hoWriter hoEntry "tree/ünï-日本語.txt" "Unicode name" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "unicode name"
+
+            // data as byte array
+            Move (ResizeArray (ucData, 700)) to ucData
+            For iResult from 0 to 699
+                Move (Mod (iResult * 3, 256)) to ucData[iResult]
+            Loop
+            Delegate Send PrepareOutEntry hoEntry "tree/data.bin" AE_IFREG 420 700 1700000000
+            Get WriteHeader of hoWriter hoEntry to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "data.bin header"
+            Get WriteData of hoWriter ucData to iWritten
+            Send AssertBIAreEqual 700 iWritten "WriteData"
+            Get FinishEntry of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "data.bin finish"
+
+            // data as pointer, in two parts
+            Move "ABCDEFGH" to sData
+            Delegate Send PrepareOutEntry hoEntry "tree/pointer.txt" AE_IFREG 420 8 1700000000
+            Get WriteHeader of hoWriter hoEntry to iResult
+            Get WriteDataPointer of hoWriter (AddressOf (sData)) 3 to iWritten
+            Send AssertBIAreEqual 3 iWritten "WriteDataPointer part 1"
+            Get WriteDataPointer of hoWriter (AddressOf (sData) + 3) 5 to iWritten
+            Send AssertBIAreEqual 5 iWritten "WriteDataPointer part 2"
+            Get FinishEntry of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "pointer.txt finish"
+
+            Get CloseWriter of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "close"
+            Send FreeWriter of hoWriter
+
+            // verify the disk
+            Delegate Get ReadFileText (sOut + "tree\a.txt") to sText
+            Send AssertSAreEqual "Content A" sText "a.txt content"
+            Delegate Get ReadFileText (sOut + "tree\sub\deep\b.txt") to sText
+            Send AssertSAreEqual "Content B in a new folder" sText "b.txt content"
+            Delegate Get ReadFileText (sOut + "tree\ünï-日本語.txt") to sText
+            Send AssertSAreEqual "Unicode name" sText "unicode file name content"
+            Delegate Get ReadFileBytes (sOut + "tree\data.bin") (&ucRead) to iSize
+            Send AssertIAreEqual 700 iSize "data.bin size"
+            Delegate Get ByteSumOf ucRead to iWritten
+            Delegate Get ByteSumOf ucData to iSum
+            Send AssertBIAreEqual iSum iWritten "data.bin content"
+            Delegate Get ReadFileText (sOut + "tree\pointer.txt") to sText
+            Send AssertSAreEqual "ABCDEFGH" sText "pointer.txt content"
+            Send Assert (IsDirectory (sOut + "tree\sub\deep")) "automatically created folders"
+
+            // the time stamps are restored (ARCHIVE_EXTRACT_TIME is part of the default options)
+            Delegate Get FileMTime (sOut + "tree\a.txt") to iWritten
+            Send AssertBIAreEqual 1700000000 iWritten "mtime of a.txt"
+            Delegate Get FileMTime (sOut + "tree") to iWritten
+            Send AssertBIAreEqual 1700000000 iWritten "mtime of the directory (restored when the archive is closed)"
+
+            Send Destroy of hoEntry
+            Send Destroy of hoWriter
+            Delegate Send CleanOutFolder
+        End_Procedure
+    End_Object
+
+    Object oDiskDataBlockTest is a cTest
+        Procedure Test
+            Handle hoWriter hoEntry
+            Integer iResult iSize
+            BigInt iWritten
+            String sOut
+            UChar[] ucBlock ucRead
+
+            Delegate Send CleanOutFolder
+            Delegate Get NewDiskWriter to hoWriter
+            Get Create (RefClass (cArchiveEntry)) to hoEntry
+
+            // two blocks with a gap: the gap is filled with zero bytes
+            Delegate Send PrepareOutEntry hoEntry "blocks.bin" AE_IFREG 420 12 1700000000
+            Get WriteHeader of hoWriter hoEntry to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "header"
+            Move (ResizeArray (ucBlock, 4)) to ucBlock
+            Move 66 to ucBlock[0]
+            Move 66 to ucBlock[1]
+            Move 66 to ucBlock[2]
+            Move 66 to ucBlock[3]
+            Get WriteDataBlock of hoWriter ucBlock 8 to iWritten
+            Send Assert (iWritten >= 0) ("WriteDataBlock at offset 8 returned" * String (iWritten))
+            Move 65 to ucBlock[0]
+            Move 65 to ucBlock[1]
+            Move 65 to ucBlock[2]
+            Move 65 to ucBlock[3]
+            Get WriteDataBlock of hoWriter ucBlock 0 to iWritten
+            Send Assert (iWritten >= 0) ("WriteDataBlock at offset 0 returned" * String (iWritten))
+            Get FinishEntry of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "finish"
+            Get CloseWriter of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "close"
+            Send FreeWriter of hoWriter
+
+            Delegate Get OutFolder to sOut
+            Delegate Get ReadFileBytes (sOut + "blocks.bin") (&ucRead) to iSize
+            Send AssertIAreEqual 12 iSize "size"
+            If (iSize = 12) Begin
+                Send AssertIAreEqual 65 ucRead[0] "byte 0"
+                Send AssertIAreEqual 65 ucRead[3] "byte 3"
+                Send AssertIAreEqual 0 ucRead[4] "gap"
+                Send AssertIAreEqual 0 ucRead[7] "gap"
+                Send AssertIAreEqual 66 ucRead[8] "byte 8"
+                Send AssertIAreEqual 66 ucRead[11] "byte 11"
+            End
+            // an empty block is accepted
+            Delegate Get NewDiskWriter to hoWriter
+            Move (ResizeArray (ucBlock, 0)) to ucBlock
+            Get WriteDataBlock of hoWriter ucBlock 0 to iWritten
+            Send AssertBIAreEqual ARCHIVE_OK iWritten "empty block"
+            Send Destroy of hoEntry
+            Send Destroy of hoWriter
+            Delegate Send CleanOutFolder
+        End_Procedure
+    End_Object
+
+    Object oDiskTimeOptionTest is a cTest
+        Procedure Test
+            Handle hoWriter hoEntry
+            Integer iResult
+            BigInt iMTime
+            String sOut
+
+            Delegate Send CleanOutFolder
+            Delegate Get OutFolder to sOut
+            Get Create (RefClass (cArchiveEntry)) to hoEntry
+
+            // ARCHIVE_EXTRACT_TIME restores the time stamp of the entry
+            Delegate Get NewDiskWriter to hoWriter
+            Set piOptions of hoWriter to ARCHIVE_EXTRACT_TIME
+            Delegate Get WriteTextFileEntry hoWriter hoEntry "with-time.txt" "abc" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "write with ARCHIVE_EXTRACT_TIME"
+            Get CloseWriter of hoWriter to iResult
+            Send FreeWriter of hoWriter
+            Delegate Get FileMTime (sOut + "with-time.txt") to iMTime
+            Send AssertBIAreEqual 1700000000 iMTime "time stamp restored"
+
+            // without it the file gets the time of its creation
+            Delegate Get NewDiskWriter to hoWriter
+            Set piOptions of hoWriter to ARCHIVE_EXTRACT_PERM
+            Delegate Get WriteTextFileEntry hoWriter hoEntry "without-time.txt" "abc" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "write without ARCHIVE_EXTRACT_TIME"
+            Get CloseWriter of hoWriter to iResult
+            Send FreeWriter of hoWriter
+            Delegate Get FileMTime (sOut + "without-time.txt") to iMTime
+            Send Assert (iMTime > 1750000000) ("time stamp is the creation time:" * String (iMTime))
+
+            Send Destroy of hoEntry
+            Send Destroy of hoWriter
+            Delegate Send CleanOutFolder
+        End_Procedure
+    End_Object
+
+    Object oDiskOverwriteTest is a cTest
+        Procedure Test
+            Handle hoWriter hoEntry
+            Integer iResult
+            String sOut sText
+
+            Delegate Send CleanOutFolder
+            Delegate Get OutFolder to sOut
+            Delegate Get NewDiskWriter to hoWriter
+            Get Create (RefClass (cArchiveEntry)) to hoEntry
+
+            Delegate Get WriteTextFileEntry hoWriter hoEntry "file.txt" "first" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "first write"
+            // by default an existing file is replaced
+            Delegate Get WriteTextFileEntry hoWriter hoEntry "file.txt" "second" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "overwrite"
+            Get CloseWriter of hoWriter to iResult
+            Send FreeWriter of hoWriter
+            Delegate Get ReadFileText (sOut + "file.txt") to sText
+            Send AssertSAreEqual "second" sText "file replaced"
+
+            // ARCHIVE_EXTRACT_NO_OVERWRITE keeps it
+            Delegate Get NewDiskWriter to hoWriter
+            Set piOptions of hoWriter to (ARCHIVE_EXTRACT_TIME ior ARCHIVE_EXTRACT_NO_OVERWRITE)
+            Delegate Send PrepareOutEntry hoEntry "file.txt" AE_IFREG 420 5 1700000000
+            Get WriteHeader of hoWriter hoEntry to iResult
+            // the existing file is skipped silently
+            Send AssertIAreEqual ARCHIVE_OK iResult "header with NO_OVERWRITE"
+            Get CloseWriter of hoWriter to iResult
+            Send FreeWriter of hoWriter
+            Delegate Get ReadFileText (sOut + "file.txt") to sText
+            Send AssertSAreEqual "second" sText "file kept"
+
+            // ARCHIVE_EXTRACT_NO_AUTODIR does not create missing parent folders
+            Delegate Get NewDiskWriter to hoWriter
+            Set piOptions of hoWriter to (ARCHIVE_EXTRACT_NO_AUTODIR)
+            Delegate Send PrepareOutEntry hoEntry "no/such/folder/file.txt" AE_IFREG 420 1 1700000000
+            Get WriteHeader of hoWriter hoEntry to iResult
+            Send Assert (iResult < ARCHIVE_OK) ("header with NO_AUTODIR returned" * String (iResult))
+            Send AssertFalse (IsDirectory (sOut + "no")) "no folder created"
+            Send Destroy of hoEntry
+            Send Destroy of hoWriter
+            Delegate Send CleanOutFolder
+        End_Procedure
+    End_Object
+
+    Object oDiskSecurityTest is a cTest
+        Procedure Test
+            Handle hoWriter hoEntry
+            Integer iResult
+            String sOut
+
+            Delegate Send CleanOutFolder
+            Delegate Get OutFolder to sOut
+            Delegate Get NewDiskWriter to hoWriter
+            Get Create (RefClass (cArchiveEntry)) to hoEntry
+
+            // the default options reject ".." path elements
+            Delegate Send PrepareEntry hoEntry "../escaped.txt" AE_IFREG 420 3 1700000000
+            Get WriteHeader of hoWriter hoEntry to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "path with .."
+            Get psLastError of hoWriter to sOut
+            Send Assert (sOut <> "") "error text"
+            Send Destroy of hoEntry
+            Send Destroy of hoWriter
+            Delegate Send CleanOutFolder
+        End_Procedure
+    End_Object
+
+    Object oDiskHardlinkTest is a cTest
+        Procedure Test
+            Handle hoWriter hoEntry
+            Integer iResult
+            Pointer pEntry
+            String sOut sText sTarget
+            Void_Type iVoid
+
+            Delegate Send CleanOutFolder
+            Delegate Get OutFolder to sOut
+            Delegate Get NewDiskWriter to hoWriter
+            Get Create (RefClass (cArchiveEntry)) to hoEntry
+
+            Delegate Get WriteTextFileEntry hoWriter hoEntry "original.txt" "linked content" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "original"
+            Delegate Send PrepareOutEntry hoEntry "hardlink.txt" AE_IFREG 420 0 1700000000
+            Get ppEntry of hoEntry to pEntry
+            Delegate Get EntryPath "original.txt" to sTarget
+            Move (archive_entry_update_hardlink_utf8 (pEntry, AddressOf (sTarget))) to iResult
+            Get WriteHeader of hoWriter hoEntry to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "hard link"
+            Get CloseWriter of hoWriter to iResult
+            Send FreeWriter of hoWriter
+            Delegate Get ReadFileText (sOut + "hardlink.txt") to sText
+            Send AssertSAreEqual "linked content" sText "content seen through the hard link"
+            Send Destroy of hoEntry
+            Send Destroy of hoWriter
+            Delegate Send CleanOutFolder
+        End_Procedure
+    End_Object
+
+    // archive_write_disk_set_skip_file protects the file with the given device and inode on disk from being overwritten
+    // (the archive that is being extracted). The device and inode numbers of Windows files are not available to the
+    // tests, so this only checks that the setting is accepted and does not disturb other entries.
+    Object oDiskSkipFileTest is a cTest
+        Procedure Test
+            Handle hoWriter hoEntry
+            Integer iResult
+            String sOut sText
+
+            Delegate Send CleanOutFolder
+            Delegate Get OutFolder to sOut
+            Delegate Get NewDiskWriter to hoWriter
+            Get Create (RefClass (cArchiveEntry)) to hoEntry
+            Get SetSkipFile of hoWriter 7 42 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "SetSkipFile"
+            Delegate Get WriteTextFileEntry hoWriter hoEntry "other.txt" "other file" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "another file is written"
+            Get CloseWriter of hoWriter to iResult
+            Send FreeWriter of hoWriter
+            Delegate Get ReadFileText (sOut + "other.txt") to sText
+            Send AssertSAreEqual "other file" sText "content"
+            Send Destroy of hoEntry
+            Send Destroy of hoWriter
+            Delegate Send CleanOutFolder
+        End_Procedure
+    End_Object
+
+    Object oDiskLookupTest is a cTest
+        Procedure Test
+            Handle hoWriter
+            Integer iResult
+            BigInt iId
+
+            Delegate Get NewDiskWriter to hoWriter
+            // without a lookup the default is returned
+            Get LookupUid of hoWriter "no-such-user" 4242 to iId
+            Send AssertBIAreEqual 4242 iId "LookupUid default"
+            Get LookupGid of hoWriter "no-such-group" 4343 to iId
+            Send AssertBIAreEqual 4343 iId "LookupGid default"
+            Get SetStandardLookup of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "SetStandardLookup"
+            Get LookupUid of hoWriter "no-such-user" 4242 to iId
+            Send AssertBIAreEqual 4242 iId "LookupUid unknown user returns the default"
+            Get LookupGid of hoWriter "no-such-group" 4343 to iId
+            Send AssertBIAreEqual 4343 iId "LookupGid unknown group returns the default"
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+    Object oDiskErrorTest is a cTest
+        Procedure Test
+            Handle hoWriter hoEntry
+            Integer iResult
+            String sError
+
+            Delegate Get NewDiskWriter to hoWriter
+            Get Create (RefClass (cArchiveEntry)) to hoEntry
+            Get WriteHeader of hoWriter hoEntry to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "WriteHeader of an entry object without an entry"
+            Get piLastResult of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "piLastResult"
+            Get psLastError of hoWriter to sError
+            Send Assert (sError <> "") "psLastError"
+            Get WriteHeaderPointer of hoWriter 0 to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "WriteHeaderPointer 0"
+
+            // raised errors
+            Set pbRaiseErrors of hoWriter to True
+            Send ExpectError DFERR_PROGRAM
+            Get WriteHeader of hoWriter hoEntry to iResult
+            Send UnExpectError DFERR_PROGRAM
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "error raised and code returned"
+            Send Destroy of hoEntry
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+End_Object

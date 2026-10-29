@@ -1,0 +1,158 @@
+﻿// Functions to read files and folders from the local file system as archive entries (archive_read_disk_*).
+
+/*
+is a crucial function in the libarchive library, serving as the entry point for creating a new libarchive read handle specifically designed for reading metadata and data directly from the local filesystem (disk).
+*/
+External_Function archive_read_disk_new "archive_read_disk_new" archive.dll ;
+    Returns Pointer
+
+/*
+Is used when you want to read information directly from the file system (i.e., disk) rather than from an archive file. This is particularly useful when you're trying to create an archive from a directory or a set of files on your local system, or when you need to inspect the metadata of files on disk.
+*/
+/*
+Note: The narrow path is interpreted in the ANSI code page. A path with a trailing backslash fails (a drive
+root like C:\ works).
+*/
+External_Function archive_read_disk_open "archive_read_disk_open" archive.dll ;
+    Pointer pArchive ;
+    Pointer pPath ;
+    Returns Integer
+
+/* Starts a traversal of the file or directory tree at the wide (UTF-16, WString) path. */
+/* Note: A path with a trailing backslash fails (a drive root like C:\ works). */
+External_Function archive_read_disk_open_w "archive_read_disk_open_w" archive.dll ;
+    Pointer pArchive ;
+    Pointer pPath ;
+    Returns Integer
+
+/*
+Requests that the directory returned by the last archive_read_next_header is entered. Ignored for entries that
+are not directories.
+*/
+External_Function archive_read_disk_descend "archive_read_disk_descend" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Returns 1 when the current entry is a directory that can be descended into, otherwise 0. */
+External_Function archive_read_disk_can_descend "archive_read_disk_can_descend" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/*
+Fills an archive_entry (whose pathname or sourcepath must be set) with the metadata of the file.
+iFileDescriptor can be -1 and pStat can be 0.
+*/
+External_Function archive_read_disk_entry_from_file "archive_read_disk_entry_from_file" archive.dll ;
+    Pointer pArchive ;
+    Pointer pEntry ;
+    Integer iFileDescriptor ;
+    Pointer pStat ;
+    Returns Integer
+
+/*
+is a function in the libarchive library that allows you to configure various specific behaviors when archive_read_disk is traversing the local filesystem. Instead of a single flag,
+*/
+External_Function archive_read_disk_set_behavior "archive_read_disk_set_behavior" archive.dll ;
+    Pointer pArchive ;
+    Integer iFlags ;
+    Returns Integer
+
+/* Requests that the access time of visited entries is restored (same as ARCHIVE_READDISK_RESTORE_ATIME). */
+External_Function archive_read_disk_set_atime_restored "archive_read_disk_set_atime_restored" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/*
+is a function in libarchive that controls how archive_read_disk handles symbolic links (symlinks) when reading files from the disk.
+*/
+External_Function archive_read_disk_set_symlink_logical "archive_read_disk_set_symlink_logical" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/*
+is a function within the libarchive library that dictates how the archive_read_disk component handles symbolic links (symlinks) encountered while reading files and directories directly from the local filesystem.
+*/
+External_Function archive_read_disk_set_symlink_physical "archive_read_disk_set_symlink_physical" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Follow symlink initially, then not. */
+External_Function archive_read_disk_set_symlink_hybrid "archive_read_disk_set_symlink_hybrid" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/*
+is a convenience function in the libarchive library that configures an archive_read_disk object to use standard system mechanisms for looking up user and group names from their IDs (UIDs and GIDs), and vice-versa.
+*/
+/*
+Note: Returns ARCHIVE_FATAL on Windows ("Standard lookups not available on Windows"); archive_read_disk_uname
+/ _gname then return 0.
+*/
+External_Function archive_read_disk_set_standard_lookup "archive_read_disk_set_standard_lookup" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Installs a custom group name lookup (const char *(*)(void*, la_int64_t)). Needs native function pointers. */
+External_Function archive_read_disk_set_gname_lookup "archive_read_disk_set_gname_lookup" archive.dll ;
+    Pointer pArchive ;
+    Pointer pPrivateData ;
+    Pointer pLookupFunc ;
+    Pointer pCleanupFunc ;
+    Returns Integer
+
+/* Installs a custom user name lookup (const char *(*)(void*, la_int64_t)). Needs native function pointers. */
+External_Function archive_read_disk_set_uname_lookup "archive_read_disk_set_uname_lookup" archive.dll ;
+    Pointer pArchive ;
+    Pointer pPrivateData ;
+    Pointer pLookupFunc ;
+    Pointer pCleanupFunc ;
+    Returns Integer
+
+/* Pointer to the group name for a group id using the installed lookup, or 0. */
+External_Function archive_read_disk_gname "archive_read_disk_gname" archive.dll ;
+    Pointer pArchive ;
+    BigInt iGroupId ;
+    Returns Pointer
+
+/* Pointer to the user name for a user id using the installed lookup, or 0. */
+External_Function archive_read_disk_uname "archive_read_disk_uname" archive.dll ;
+    Pointer pArchive ;
+    BigInt iUserId ;
+    Returns Pointer
+
+/*
+Sets an archive_match object that decides which entries are skipped. The callback is optional (0). Needs a
+native function pointer when used.
+*/
+External_Function archive_read_disk_set_matching "archive_read_disk_set_matching" archive.dll ;
+    Pointer pArchive ;
+    Pointer pMatchArchive ;
+    Pointer pExcludedFunc ;
+    Pointer pClientData ;
+    Returns Integer
+
+/*
+Sets a callback that decides per entry whether it is included (int (*)(archive*, void*, archive_entry*)).
+Needs a native function pointer.
+*/
+External_Function archive_read_disk_set_metadata_filter_callback "archive_read_disk_set_metadata_filter_callback" archive.dll ;
+    Pointer pArchive ;
+    Pointer pFilterFunc ;
+    Pointer pClientData ;
+    Returns Integer
+
+/* Returns the id of the file system the current entry lives on. */
+External_Function archive_read_disk_current_filesystem "archive_read_disk_current_filesystem" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Returns 1 when the current file system is synthetic (like proc), 0 when not, ARCHIVE_FAILED when unknown. */
+/* Note: Returns -1 when the answer is not available. */
+External_Function archive_read_disk_current_filesystem_is_synthetic "archive_read_disk_current_filesystem_is_synthetic" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Returns 1 when the current file system is remote, 0 when not, ARCHIVE_FAILED when unknown. */
+External_Function archive_read_disk_current_filesystem_is_remote "archive_read_disk_current_filesystem_is_remote" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer

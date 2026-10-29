@@ -1,0 +1,209 @@
+﻿// Functions to match entries against path, time and owner conditions (archive_match_*).
+
+/* Allocates a new archive_match object that tests entries against path, time and owner conditions. */
+External_Function archive_match_new "archive_match_new" archive.dll ;
+    Returns Pointer
+
+/* Releases an archive_match object. */
+External_Function archive_match_free "archive_match_free" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Convenience test: 1 when the entry is excluded by path, time or owner conditions. */
+External_Function archive_match_excluded "archive_match_excluded" archive.dll ;
+    Pointer pArchive ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* 1 when the pathname of the entry is excluded by the path patterns. */
+External_Function archive_match_path_excluded "archive_match_path_excluded" archive.dll ;
+    Pointer pArchive ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* Controls whether the content of an included directory is included too (default on). */
+External_Function archive_match_set_inclusion_recursion "archive_match_set_inclusion_recursion" archive.dll ;
+    Pointer pArchive ;
+    Integer iEnable ;
+    Returns Integer
+
+/* Adds an exclusion pathname pattern. */
+External_Function archive_match_exclude_pattern "archive_match_exclude_pattern" archive.dll ;
+    Pointer pArchive ;
+    Pointer pPattern ;
+    Returns Integer
+
+/* Adds an exclusion pathname pattern (wide string). */
+External_Function archive_match_exclude_pattern_w "archive_match_exclude_pattern_w" archive.dll ;
+    Pointer pArchive ;
+    Pointer pPattern ;
+    Returns Integer
+
+/*
+Adds exclusion patterns read from a text file; patterns are separated by a null byte instead of a newline when
+iNullSeparator is not 0.
+*/
+External_Function archive_match_exclude_pattern_from_file "archive_match_exclude_pattern_from_file" archive.dll ;
+    Pointer pArchive ;
+    Pointer pFileName ;
+    Integer iNullSeparator ;
+    Returns Integer
+
+/* Wide file name variant of archive_match_exclude_pattern_from_file. */
+External_Function archive_match_exclude_pattern_from_file_w "archive_match_exclude_pattern_from_file_w" archive.dll ;
+    Pointer pArchive ;
+    Pointer pFileName ;
+    Integer iNullSeparator ;
+    Returns Integer
+
+/* Adds an inclusion pathname pattern. */
+External_Function archive_match_include_pattern "archive_match_include_pattern" archive.dll ;
+    Pointer pArchive ;
+    Pointer pPattern ;
+    Returns Integer
+
+/* Adds an inclusion pathname pattern (wide string). */
+External_Function archive_match_include_pattern_w "archive_match_include_pattern_w" archive.dll ;
+    Pointer pArchive ;
+    Pointer pPattern ;
+    Returns Integer
+
+/*
+Adds inclusion patterns read from a text file; patterns are separated by a null byte instead of a newline when
+iNullSeparator is not 0.
+*/
+External_Function archive_match_include_pattern_from_file "archive_match_include_pattern_from_file" archive.dll ;
+    Pointer pArchive ;
+    Pointer pFileName ;
+    Integer iNullSeparator ;
+    Returns Integer
+
+/* Wide file name variant of archive_match_include_pattern_from_file. */
+External_Function archive_match_include_pattern_from_file_w "archive_match_include_pattern_from_file_w" archive.dll ;
+    Pointer pArchive ;
+    Pointer pFileName ;
+    Integer iNullSeparator ;
+    Returns Integer
+
+/* Number of inclusion patterns that matched nothing so far. */
+External_Function archive_match_path_unmatched_inclusions "archive_match_path_unmatched_inclusions" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/*
+Stores a pointer to the next unmatched inclusion pattern in the variable pointed to; returns ARCHIVE_EOF when
+there are no more.
+*/
+External_Function archive_match_path_unmatched_inclusions_next "archive_match_path_unmatched_inclusions_next" archive.dll ;
+    Pointer pArchive ;
+    Pointer ppPattern ;
+    Returns Integer
+
+/* Wide string variant of archive_match_path_unmatched_inclusions_next. */
+External_Function archive_match_path_unmatched_inclusions_next_w "archive_match_path_unmatched_inclusions_next_w" archive.dll ;
+    Pointer pArchive ;
+    Pointer ppPattern ;
+    Returns Integer
+
+/* 1 when the entry is excluded by the time conditions. */
+External_Function archive_match_time_excluded "archive_match_time_excluded" archive.dll ;
+    Pointer pArchive ;
+    Pointer pEntry ;
+    Returns Integer
+
+/*
+Sets an inclusion time. iFlag combines ARCHIVE_MATCH_MTIME or _CTIME with ARCHIVE_MATCH_NEWER, _OLDER and/or
+_EQUAL.
+*/
+External_Function archive_match_include_time "archive_match_include_time" archive.dll ;
+    Pointer pArchive ;
+    Integer iFlag ;
+    BigInt iSeconds ;
+    Integer iNanoSeconds ;
+    Returns Integer
+
+/* Sets an inclusion time from a date string. iFlag as for archive_match_include_time. */
+External_Function archive_match_include_date "archive_match_include_date" archive.dll ;
+    Pointer pArchive ;
+    Integer iFlag ;
+    Pointer pDateString ;
+    Returns Integer
+
+/* Wide string variant of archive_match_include_date. */
+External_Function archive_match_include_date_w "archive_match_include_date_w" archive.dll ;
+    Pointer pArchive ;
+    Integer iFlag ;
+    Pointer pDateString ;
+    Returns Integer
+
+/* Sets an inclusion time from the time stamps of a file. iFlag as for archive_match_include_time. */
+External_Function archive_match_include_file_time "archive_match_include_file_time" archive.dll ;
+    Pointer pArchive ;
+    Integer iFlag ;
+    Pointer pPathName ;
+    Returns Integer
+
+/* Wide string variant of archive_match_include_file_time. */
+External_Function archive_match_include_file_time_w "archive_match_include_file_time_w" archive.dll ;
+    Pointer pArchive ;
+    Integer iFlag ;
+    Pointer pPathName ;
+    Returns Integer
+
+/* Excludes entries that are newer, older or equal to the given entry; iFlag as for archive_match_include_time. */
+/*
+Note: The match is by path name: it excludes entries with the same path whose time is newer, older or equal as
+flagged, not any newer or older entry.
+*/
+External_Function archive_match_exclude_entry "archive_match_exclude_entry" archive.dll ;
+    Pointer pArchive ;
+    Integer iFlag ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* 1 when the entry is excluded by the owner (uid, gid, uname, gname) conditions. */
+External_Function archive_match_owner_excluded "archive_match_owner_excluded" archive.dll ;
+    Pointer pArchive ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* Adds a user id to the inclusion list. */
+External_Function archive_match_include_uid "archive_match_include_uid" archive.dll ;
+    Pointer pArchive ;
+    BigInt iUserId ;
+    Returns Integer
+
+/* Adds a group id to the inclusion list. */
+External_Function archive_match_include_gid "archive_match_include_gid" archive.dll ;
+    Pointer pArchive ;
+    BigInt iGroupId ;
+    Returns Integer
+
+/* Adds a user name to the inclusion list. */
+External_Function archive_match_include_uname "archive_match_include_uname" archive.dll ;
+    Pointer pArchive ;
+    Pointer pUserName ;
+    Returns Integer
+
+/* Wide string variant of archive_match_include_uname. */
+External_Function archive_match_include_uname_w "archive_match_include_uname_w" archive.dll ;
+    Pointer pArchive ;
+    Pointer pUserName ;
+    Returns Integer
+
+/* Adds a group name to the inclusion list. */
+External_Function archive_match_include_gname "archive_match_include_gname" archive.dll ;
+    Pointer pArchive ;
+    Pointer pGroupName ;
+    Returns Integer
+
+/* Wide string variant of archive_match_include_gname. */
+External_Function archive_match_include_gname_w "archive_match_include_gname_w" archive.dll ;
+    Pointer pArchive ;
+    Pointer pGroupName ;
+    Returns Integer
+
+/* Sorts a zero-terminated array of char pointers in place. */
+External_Function archive_utility_string_sort "archive_utility_string_sort" archive.dll ;
+    Pointer pStrings ;
+    Returns Integer

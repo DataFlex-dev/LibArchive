@@ -1,0 +1,560 @@
+﻿// Tests of the wrapper class cArchiveMatch (cArchiveMatch.pkg must be Used by the test application before this
+// package is included). Entries are created with the wrapper class cArchiveEntry.
+Object oWrapperMatchTests is a cArchiveTestFixture
+    Set psTestFixtureName to "WrapperMatch"
+
+    Object oMatch is a cArchiveMatch
+    End_Object
+
+    Object oEntryA is a cArchiveEntry
+    End_Object
+
+    Object oEntryB is a cArchiveEntry
+    End_Object
+
+    Object oEntryC is a cArchiveEntry
+    End_Object
+
+    // Fills a wrapper entry object with a new regular file entry.
+    Procedure MakeEntry Handle hoEntry String sName BigInt iMtime BigInt iUid BigInt iGid String sUname String sGname
+        Send CreateEntry of hoEntry
+        Set psPathname of hoEntry to sName
+        Set piMode of hoEntry to (AE_IFREG ior 420)
+        Set piSize of hoEntry to 10
+        Send SetMtime of hoEntry iMtime 0
+        Send SetCtime of hoEntry iMtime 0
+        Set piUid of hoEntry to iUid
+        Set piGid of hoEntry to iGid
+        Set psUname of hoEntry to sUname
+        Set psGname of hoEntry to sGname
+    End_Procedure
+
+    // Fills a wrapper entry object with a regular file of default owner and time.
+    Procedure MakeNamedEntry Handle hoEntry String sName
+        Send MakeEntry hoEntry sName 1700000000 1000 2000 "alice" "staff"
+    End_Procedure
+
+    // Writes a text file (used for the pattern files).
+    Procedure WriteTextFile String sFile String sContent
+        Integer iChannel
+        Move (Seq_New_Channel ()) to iChannel
+        Direct_Output channel iChannel sFile
+        Write channel iChannel sContent
+        Close_Output channel iChannel
+        Send Seq_Release_Channel iChannel
+    End_Procedure
+
+    // ---- handle ---------------------------------------------------------------------------------------------------
+
+    Object oHandleTest is a cTest
+        Procedure Test
+            Pointer pFirst
+            Integer iResult
+
+            Send FreeHandle of oMatch // the test objects live as long as the application: start clean when the tests run again
+            Send AssertFalse (HasHandle (oMatch)) "no handle before first use"
+            Send AssertIAreEqual 0 (UnmatchedInclusions (oMatch)) "no unmatched inclusions without handle"
+            Send AssertIAreEqual 0 (SizeOfArray (UnmatchedInclusionPatterns (oMatch))) "no patterns without handle"
+            Send Assert (pbInclusionRecursion (oMatch)) "recursion on by default"
+
+            Send MakeNamedEntry oEntryA "a.txt"
+            Send AssertFalse (IsExcluded (oMatch, oEntryA)) "nothing excluded without conditions"
+            Send Assert (HasHandle (oMatch)) "first use creates the handle"
+            Move (ppArchive (oMatch)) to pFirst
+
+            Send CreateMatch of oMatch
+            Send Assert (HasHandle (oMatch)) "CreateMatch creates a handle"
+            Send Assert (ppArchive (oMatch) <> 0) "match handle"
+            Send Assert (EnsureHandle (oMatch) = ppArchive (oMatch)) "EnsureHandle returns the handle"
+
+            Move (ExcludePattern (oMatch, "*.txt")) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "ExcludePattern result"
+            Send Assert (IsExcluded (oMatch, oEntryA)) "excluded after the pattern"
+            Send FreeHandle of oMatch
+            Send AssertFalse (HasHandle (oMatch)) "FreeHandle"
+            Send AssertFalse (IsExcluded (oMatch, oEntryA)) "a new handle has no conditions"
+            Send FreeHandle of oMatch
+            Send FreeHandle of oMatch
+
+            // error handling of cArchiveBase works on the matcher handle
+            Send AssertSAreEqual "" (psErrorString (oMatch)) "no error text"
+
+            // an entry object without entry is reported
+            Send FreeEntry of oEntryA
+            Send ExpectError DFERR_PROGRAM
+            Send AssertFalse (IsExcluded (oMatch, oEntryA)) "no entry"
+            Send UnExpectError DFERR_PROGRAM
+            Send ExpectError DFERR_PROGRAM
+            Send AssertFalse (IsPathExcluded (oMatch, 0)) "no entry object"
+            Send UnExpectError DFERR_PROGRAM
+        End_Procedure
+    End_Object
+
+    // ---- path patterns --------------------------------------------------------------------------------------------
+
+    Object oExcludePatternTest is a cTest
+        Procedure Test
+            Integer iResult
+
+            Send FreeHandle of oMatch
+            Send MakeNamedEntry oEntryA "a.tmp"
+            Send MakeNamedEntry oEntryB "a.txt"
+            Send MakeNamedEntry oEntryC "héllo-ünï.bak"
+
+            Send AssertFalse (IsPathExcluded (oMatch, oEntryA)) "not excluded without patterns"
+            Move (ExcludePattern (oMatch, "*.tmp")) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "exclude *.tmp"
+            Send Assert (IsPathExcluded (oMatch, oEntryA)) "a.tmp excluded"
+            Send Assert (IsExcluded (oMatch, oEntryA)) "a.tmp excluded (IsExcluded)"
+            Send AssertFalse (IsPathExcluded (oMatch, oEntryB)) "a.txt not excluded"
+            Send AssertFalse (IsExcluded (oMatch, oEntryB)) "a.txt not excluded (IsExcluded)"
+
+            Move (ExcludePattern (oMatch, "*ünï*")) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "exclude unicode pattern"
+            Send Assert (IsPathExcluded (oMatch, oEntryC)) "unicode name excluded by the unicode pattern"
+
+            Send FreeHandle of oMatch
+            Move (ExcludePatternLocale (oMatch, "*.txt")) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "exclude locale pattern"
+            Send Assert (IsPathExcluded (oMatch, oEntryB)) "a.txt excluded by the locale pattern"
+            Send AssertFalse (IsPathExcluded (oMatch, oEntryA)) "a.tmp not excluded by the locale pattern"
+        End_Procedure
+    End_Object
+
+    Object oIncludePatternTest is a cTest
+        Procedure Test
+            Integer iResult
+
+            Send FreeHandle of oMatch
+            Send MakeNamedEntry oEntryA "a.log"
+            Send MakeNamedEntry oEntryB "a.txt"
+            Send MakeNamedEntry oEntryC "secret.txt"
+
+            Move (IncludePattern (oMatch, "*.txt")) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include *.txt"
+            Send Assert (IsPathExcluded (oMatch, oEntryA)) "a.log matches no inclusion: excluded"
+            Send AssertFalse (IsPathExcluded (oMatch, oEntryB)) "a.txt included"
+            Send AssertFalse (IsPathExcluded (oMatch, oEntryC)) "secret.txt included"
+            Move (ExcludePattern (oMatch, "secret*")) to iResult
+            Send Assert (IsPathExcluded (oMatch, oEntryC)) "exclusion wins over inclusion"
+            Send AssertFalse (IsPathExcluded (oMatch, oEntryB)) "a.txt still included"
+
+            Send FreeHandle of oMatch
+            Move (IncludePatternLocale (oMatch, "*.log")) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include locale pattern"
+            Send AssertFalse (IsPathExcluded (oMatch, oEntryA)) "a.log included by the locale pattern"
+            Send Assert (IsPathExcluded (oMatch, oEntryB)) "a.txt excluded: not in the locale inclusion"
+        End_Procedure
+    End_Object
+
+    Object oUnmatchedInclusionsTest is a cTest
+        Procedure Test
+            Integer iResult
+            String[] asPatterns
+
+            Send FreeHandle of oMatch
+            Send MakeNamedEntry oEntryA "keep.txt"
+            Move (IncludePattern (oMatch, "keep*")) to iResult
+            Move (IncludePattern (oMatch, "other*")) to iResult
+            Move (IncludePattern (oMatch, "ünï*")) to iResult
+            Send AssertIAreEqual 3 (UnmatchedInclusions (oMatch)) "all inclusions unmatched at first"
+            Send AssertFalse (IsPathExcluded (oMatch, oEntryA)) "keep.txt included"
+            Send AssertIAreEqual 2 (UnmatchedInclusions (oMatch)) "one inclusion matched"
+            Get UnmatchedInclusionPatterns of oMatch to asPatterns
+            Send AssertIAreEqual 2 (SizeOfArray (asPatterns)) "two unmatched patterns"
+            Send AssertSAreEqual "other*" asPatterns[0] "first unmatched pattern"
+            Send AssertSAreEqual "ünï*" asPatterns[1] "second unmatched pattern (wide)"
+            // the list can be enumerated again
+            Get UnmatchedInclusionPatterns of oMatch to asPatterns
+            Send AssertIAreEqual 2 (SizeOfArray (asPatterns)) "enumeration repeatable"
+            Get UnmatchedInclusionPatternsLocale of oMatch to asPatterns
+            Send AssertIAreEqual 2 (SizeOfArray (asPatterns)) "locale enumeration"
+            Send AssertSAreEqual "other*" asPatterns[0] "locale pattern"
+
+            Send MakeNamedEntry oEntryB "other.txt"
+            Send AssertFalse (IsPathExcluded (oMatch, oEntryB)) "other.txt included"
+            Send AssertIAreEqual 1 (UnmatchedInclusions (oMatch)) "two inclusions matched"
+            Get UnmatchedInclusionPatterns of oMatch to asPatterns
+            Send AssertIAreEqual 1 (SizeOfArray (asPatterns)) "one unmatched pattern"
+        End_Procedure
+    End_Object
+
+    Object oInclusionRecursionTest is a cTest
+        Procedure Test
+            Integer iResult
+
+            Send FreeHandle of oMatch
+            Send MakeNamedEntry oEntryA "dir/sub/file.txt"
+            Send MakeNamedEntry oEntryB "dir"
+            Move (IncludePattern (oMatch, "dir")) to iResult
+            Send Assert (pbInclusionRecursion (oMatch)) "recursion default"
+            Send AssertFalse (IsPathExcluded (oMatch, oEntryB)) "the directory itself is included"
+            Send AssertFalse (IsPathExcluded (oMatch, oEntryA)) "content of an included directory is included"
+            Set pbInclusionRecursion of oMatch to False
+            Send AssertFalse (pbInclusionRecursion (oMatch)) "recursion off"
+            Send Assert (IsPathExcluded (oMatch, oEntryA)) "content excluded without recursion"
+            Send AssertFalse (IsPathExcluded (oMatch, oEntryB)) "the directory itself is still included"
+            Set pbInclusionRecursion of oMatch to True
+            Send Assert (pbInclusionRecursion (oMatch)) "recursion on again"
+            Send AssertFalse (IsPathExcluded (oMatch, oEntryA)) "content included again"
+        End_Procedure
+    End_Object
+
+    Object oPatternFileTest is a cTest
+        Procedure Test
+            Integer iResult
+            String sFile sNul
+
+            Send MakeNamedEntry oEntryA "a.aaa"
+            Send MakeNamedEntry oEntryB "b.bbb"
+            Send MakeNamedEntry oEntryC "c.ccc"
+
+            // exclusion patterns from a text file (one per line)
+            Delegate Get TempFile "excludes.txt" to sFile
+            Send WriteTextFile sFile ("*.aaa" + (Character (10)) + "*.bbb" + (Character (10)))
+            Send FreeHandle of oMatch
+            Move (ExcludePatternFromFile (oMatch, sFile, False)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "exclude patterns from file"
+            Send Assert (IsPathExcluded (oMatch, oEntryA)) "first pattern of the file"
+            Send Assert (IsPathExcluded (oMatch, oEntryB)) "second pattern of the file"
+            Send AssertFalse (IsPathExcluded (oMatch, oEntryC)) "not in the file"
+
+            Send FreeHandle of oMatch
+            Move (ExcludePatternFromFileLocale (oMatch, sFile, False)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "exclude patterns from file (locale name)"
+            Send Assert (IsPathExcluded (oMatch, oEntryB)) "pattern of the file (locale name)"
+            Send AssertFalse (IsPathExcluded (oMatch, oEntryC)) "not in the file (locale name)"
+
+            // inclusion patterns from a text file
+            Delegate Get TempFile "includes.txt" to sFile
+            Send WriteTextFile sFile ("*.ccc" + (Character (10)))
+            Send FreeHandle of oMatch
+            Move (IncludePatternFromFile (oMatch, sFile, False)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include patterns from file"
+            Send AssertFalse (IsPathExcluded (oMatch, oEntryC)) "included by the file"
+            Send Assert (IsPathExcluded (oMatch, oEntryA)) "not in the include file"
+            Send FreeHandle of oMatch
+            Move (IncludePatternFromFileLocale (oMatch, sFile, False)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include patterns from file (locale name)"
+            Send AssertFalse (IsPathExcluded (oMatch, oEntryC)) "included by the file (locale name)"
+            Send Assert (IsPathExcluded (oMatch, oEntryB)) "not in the include file (locale name)"
+
+            // null separated patterns
+            Delegate Get TempFile "nulls.txt" to sFile
+            Move (Character (0)) to sNul
+            Send WriteTextFile sFile ("*.aaa" + sNul + "*.bbb")
+            Send FreeHandle of oMatch
+            Move (ExcludePatternFromFile (oMatch, sFile, True)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "null separated exclude patterns"
+            Send Assert (IsPathExcluded (oMatch, oEntryA)) "first null separated pattern"
+            Send Assert (IsPathExcluded (oMatch, oEntryB)) "second null separated pattern"
+            Send AssertFalse (IsPathExcluded (oMatch, oEntryC)) "third entry not excluded"
+            Send FreeHandle of oMatch
+            Move (IncludePatternFromFile (oMatch, sFile, True)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "null separated include patterns"
+            Send AssertFalse (IsPathExcluded (oMatch, oEntryB)) "second null separated inclusion"
+            Send Assert (IsPathExcluded (oMatch, oEntryC)) "not included"
+
+            // a missing file is a failure
+            Send FreeHandle of oMatch
+            Set pbRaiseErrors of oMatch to False
+            Delegate Get TempFile "does-not-exist.txt" to sFile
+            Move (ExcludePatternFromFile (oMatch, sFile, False)) to iResult
+            Send Assert (iResult < ARCHIVE_OK) "missing file fails"
+            Send Assert (piLastResult (oMatch) <= ARCHIVE_FAILED) "failure remembered"
+            Send Assert (psLastError (oMatch) <> "") "error text remembered"
+            Set pbRaiseErrors of oMatch to True
+
+            Delegate Get TempFile "excludes.txt" to sFile
+            Delegate Get TempFile "includes.txt" to sFile
+            Delegate Get TempFile "nulls.txt" to sFile
+        End_Procedure
+    End_Object
+
+    // ---- time conditions ------------------------------------------------------------------------------------------
+
+    Object oTimeTest is a cTest
+        Procedure Test
+            Integer iResult
+
+            // entries: A older (1699999900), B equal (1700000000), C newer (1700000100)
+            Send MakeEntry oEntryA "old.txt" 1699999900 1 1 "u" "g"
+            Send MakeEntry oEntryB "same.txt" 1700000000 1 1 "u" "g"
+            Send MakeEntry oEntryC "new.txt" 1700000100 1 1 "u" "g"
+
+            // newer than 1700000000
+            Send FreeHandle of oMatch
+            Send AssertFalse (IsTimeExcluded (oMatch, oEntryA)) "no time condition"
+            Move (IncludeTime (oMatch, (ARCHIVE_MATCH_MTIME ior ARCHIVE_MATCH_NEWER), 1700000000, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include newer"
+            Send Assert (IsTimeExcluded (oMatch, oEntryA)) "older excluded"
+            Send Assert (IsTimeExcluded (oMatch, oEntryB)) "equal excluded (only newer wanted)"
+            Send AssertFalse (IsTimeExcluded (oMatch, oEntryC)) "newer included"
+            Send Assert (IsExcluded (oMatch, oEntryA)) "older excluded (IsExcluded)"
+            Send AssertFalse (IsExcluded (oMatch, oEntryC)) "newer included (IsExcluded)"
+
+            // newer or equal
+            Send FreeHandle of oMatch
+            Move (IncludeTime (oMatch, (ARCHIVE_MATCH_MTIME ior ARCHIVE_MATCH_NEWER ior ARCHIVE_MATCH_EQUAL), 1700000000, 0)) to iResult
+            Send Assert (IsTimeExcluded (oMatch, oEntryA)) "older excluded (newer or equal)"
+            Send AssertFalse (IsTimeExcluded (oMatch, oEntryB)) "equal included (newer or equal)"
+            Send AssertFalse (IsTimeExcluded (oMatch, oEntryC)) "newer included (newer or equal)"
+
+            // older than 1700000000
+            Send FreeHandle of oMatch
+            Move (IncludeTime (oMatch, (ARCHIVE_MATCH_MTIME ior ARCHIVE_MATCH_OLDER), 1700000000, 0)) to iResult
+            Send AssertFalse (IsTimeExcluded (oMatch, oEntryA)) "older included"
+            Send Assert (IsTimeExcluded (oMatch, oEntryB)) "equal excluded (only older wanted)"
+            Send Assert (IsTimeExcluded (oMatch, oEntryC)) "newer excluded (only older wanted)"
+
+            // equal
+            Send FreeHandle of oMatch
+            Move (IncludeTime (oMatch, (ARCHIVE_MATCH_MTIME ior ARCHIVE_MATCH_EQUAL), 1700000000, 0)) to iResult
+            Send Assert (IsTimeExcluded (oMatch, oEntryA)) "older excluded (equal wanted)"
+            Send AssertFalse (IsTimeExcluded (oMatch, oEntryB)) "equal included"
+            Send Assert (IsTimeExcluded (oMatch, oEntryC)) "newer excluded (equal wanted)"
+
+            // the nanoseconds count
+            Send SetMtime of oEntryB 1700000000 500
+            Send FreeHandle of oMatch
+            Move (IncludeTime (oMatch, (ARCHIVE_MATCH_MTIME ior ARCHIVE_MATCH_NEWER), 1700000000, 0)) to iResult
+            Send AssertFalse (IsTimeExcluded (oMatch, oEntryB)) "500 ns later counts as newer"
+
+            // ctime is tested separately from mtime
+            Send MakeEntry oEntryA "ctime.txt" 1699999900 1 1 "u" "g"
+            Send SetMtime of oEntryA 1700000100 0
+            Send FreeHandle of oMatch
+            Move (IncludeTime (oMatch, (ARCHIVE_MATCH_CTIME ior ARCHIVE_MATCH_NEWER), 1700000000, 0)) to iResult
+            Send Assert (IsTimeExcluded (oMatch, oEntryA)) "ctime older although mtime newer"
+            Send FreeHandle of oMatch
+            Move (IncludeTime (oMatch, (ARCHIVE_MATCH_MTIME ior ARCHIVE_MATCH_NEWER), 1700000000, 0)) to iResult
+            Send AssertFalse (IsTimeExcluded (oMatch, oEntryA)) "mtime newer"
+        End_Procedure
+    End_Object
+
+    Object oIncludeDateTest is a cTest
+        Procedure Test
+            Integer iResult
+
+            Send MakeEntry oEntryA "old.txt" 1699999900 1 1 "u" "g"
+            Send MakeEntry oEntryC "new.txt" 1700000100 1 1 "u" "g"
+
+            Send FreeHandle of oMatch
+            Move (IncludeDate (oMatch, (ARCHIVE_MATCH_MTIME ior ARCHIVE_MATCH_NEWER), "2023-11-14 22:13:20 UTC")) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include date"
+            Send Assert (IsTimeExcluded (oMatch, oEntryA)) "older than the date excluded"
+            Send AssertFalse (IsTimeExcluded (oMatch, oEntryC)) "newer than the date included"
+
+            Send FreeHandle of oMatch
+            Move (IncludeDateLocale (oMatch, (ARCHIVE_MATCH_MTIME ior ARCHIVE_MATCH_OLDER), "2023-11-14 22:13:20 UTC")) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include date (locale)"
+            Send AssertFalse (IsTimeExcluded (oMatch, oEntryA)) "older than the date included"
+            Send Assert (IsTimeExcluded (oMatch, oEntryC)) "newer than the date excluded"
+
+            // an invalid date is a failure
+            Send FreeHandle of oMatch
+            Set pbRaiseErrors of oMatch to False
+            Move (IncludeDate (oMatch, (ARCHIVE_MATCH_MTIME ior ARCHIVE_MATCH_NEWER), "this is no date")) to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "invalid date"
+            Send Assert (psLastError (oMatch) <> "") "error text for the invalid date"
+            Set pbRaiseErrors of oMatch to True
+            Send ExpectError DFERR_PROGRAM
+            Move (IncludeDate (oMatch, (ARCHIVE_MATCH_MTIME ior ARCHIVE_MATCH_NEWER), "this is no date")) to iResult
+            Send UnExpectError DFERR_PROGRAM
+        End_Procedure
+    End_Object
+
+    Object oIncludeFileTimeTest is a cTest
+        Procedure Test
+            Integer iResult
+            String sFile
+
+            Delegate Get TempFile "reference.txt" to sFile
+            Send WriteTextFile sFile "reference"
+            // the file was just written: far older and far newer entries
+            Send MakeEntry oEntryA "ancient.txt" 1000000000 1 1 "u" "g"
+            Send MakeEntry oEntryC "future.txt" 4102444800 1 1 "u" "g"
+
+            Send FreeHandle of oMatch
+            Move (IncludeFileTime (oMatch, (ARCHIVE_MATCH_MTIME ior ARCHIVE_MATCH_NEWER), sFile)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include file time"
+            Send Assert (IsTimeExcluded (oMatch, oEntryA)) "ancient entry older than the file"
+            Send AssertFalse (IsTimeExcluded (oMatch, oEntryC)) "future entry newer than the file"
+
+            Send FreeHandle of oMatch
+            Move (IncludeFileTimeLocale (oMatch, (ARCHIVE_MATCH_MTIME ior ARCHIVE_MATCH_OLDER), sFile)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include file time (locale)"
+            Send AssertFalse (IsTimeExcluded (oMatch, oEntryA)) "ancient entry included when older wanted"
+            Send Assert (IsTimeExcluded (oMatch, oEntryC)) "future entry excluded when older wanted"
+
+            Send FreeHandle of oMatch
+            Set pbRaiseErrors of oMatch to False
+            Delegate Get TempFile "missing-reference.txt" to sFile
+            Move (IncludeFileTime (oMatch, (ARCHIVE_MATCH_MTIME ior ARCHIVE_MATCH_NEWER), sFile)) to iResult
+            Send Assert (iResult < ARCHIVE_OK) "missing file fails"
+            Set pbRaiseErrors of oMatch to True
+
+            Delegate Get TempFile "reference.txt" to sFile
+        End_Procedure
+    End_Object
+
+    Object oExcludeEntryTest is a cTest
+        Procedure Test
+            Integer iResult
+
+            // The reference entry names a path and a time. Entries with the same path name whose time compares as the flag
+            // says are excluded; entries with other path names are never affected.
+            Send MakeEntry oEntryB "ref.txt" 1700000000 1 1 "u" "g"
+            Send MakeEntry oEntryA "ref.txt" 1699999900 1 1 "u" "g"
+            Send MakeEntry oEntryC "ref.txt" 1700000100 1 1 "u" "g"
+
+            Send FreeHandle of oMatch
+            Move (ExcludeEntry (oMatch, (ARCHIVE_MATCH_MTIME ior ARCHIVE_MATCH_NEWER), oEntryB)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "exclude newer than the entry"
+            Send AssertFalse (IsTimeExcluded (oMatch, oEntryA)) "older kept"
+            Send Assert (IsTimeExcluded (oMatch, oEntryC)) "newer excluded"
+            Send Assert (IsExcluded (oMatch, oEntryC)) "newer excluded (IsExcluded)"
+            Send AssertFalse (IsTimeExcluded (oMatch, oEntryB)) "equal kept"
+
+            Send FreeHandle of oMatch
+            Move (ExcludeEntry (oMatch, (ARCHIVE_MATCH_MTIME ior ARCHIVE_MATCH_OLDER), oEntryB)) to iResult
+            Send Assert (IsTimeExcluded (oMatch, oEntryA)) "older excluded"
+            Send AssertFalse (IsTimeExcluded (oMatch, oEntryC)) "newer kept"
+
+            Send FreeHandle of oMatch
+            Move (ExcludeEntry (oMatch, (ARCHIVE_MATCH_MTIME ior ARCHIVE_MATCH_EQUAL), oEntryB)) to iResult
+            Send AssertFalse (IsTimeExcluded (oMatch, oEntryA)) "older kept (equal excluded)"
+            Send Assert (IsTimeExcluded (oMatch, oEntryB)) "equal excluded"
+            Send AssertFalse (IsTimeExcluded (oMatch, oEntryC)) "newer kept (equal excluded)"
+
+            // another path name is not affected
+            Send MakeEntry oEntryC "other.txt" 1700000100 1 1 "u" "g"
+            Send FreeHandle of oMatch
+            Move (ExcludeEntry (oMatch, (ARCHIVE_MATCH_MTIME ior ARCHIVE_MATCH_NEWER ior ARCHIVE_MATCH_OLDER ior ARCHIVE_MATCH_EQUAL), oEntryB)) to iResult
+            Send AssertFalse (IsTimeExcluded (oMatch, oEntryC)) "other path name never excluded"
+            Send Assert (IsTimeExcluded (oMatch, oEntryA)) "same path name excluded whatever the time"
+
+            Send FreeEntry of oEntryB
+            Send ExpectError DFERR_PROGRAM
+            Move (ExcludeEntry (oMatch, (ARCHIVE_MATCH_MTIME ior ARCHIVE_MATCH_NEWER), oEntryB)) to iResult
+            Send UnExpectError DFERR_PROGRAM
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "entry without entry"
+        End_Procedure
+    End_Object
+
+    // ---- owner conditions -----------------------------------------------------------------------------------------
+
+    Object oOwnerTest is a cTest
+        Procedure Test
+            Integer iResult
+
+            Send MakeEntry oEntryA "a.txt" 1700000000 1000 2000 "alice" "staff"
+            Send MakeEntry oEntryB "b.txt" 1700000000 1001 2001 "bob" "wheel"
+            Send MakeEntry oEntryC "c.txt" 1700000000 1002 2002 "Jürgen" "Straße"
+
+            Send FreeHandle of oMatch
+            Send AssertFalse (IsOwnerExcluded (oMatch, oEntryA)) "no owner condition"
+
+            // uid
+            Move (IncludeUid (oMatch, 1000)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include uid"
+            Send AssertFalse (IsOwnerExcluded (oMatch, oEntryA)) "uid 1000 included"
+            Send Assert (IsOwnerExcluded (oMatch, oEntryB)) "uid 1001 excluded"
+            Send Assert (IsExcluded (oMatch, oEntryB)) "uid 1001 excluded (IsExcluded)"
+            Send AssertFalse (IsExcluded (oMatch, oEntryA)) "uid 1000 included (IsExcluded)"
+            Move (IncludeUid (oMatch, 1001)) to iResult
+            Send AssertFalse (IsOwnerExcluded (oMatch, oEntryB)) "second uid included"
+            Send Assert (IsOwnerExcluded (oMatch, oEntryC)) "third uid excluded"
+
+            // gid
+            Send FreeHandle of oMatch
+            Move (IncludeGid (oMatch, 2001)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include gid"
+            Send Assert (IsOwnerExcluded (oMatch, oEntryA)) "gid 2000 excluded"
+            Send AssertFalse (IsOwnerExcluded (oMatch, oEntryB)) "gid 2001 included"
+
+            // user name
+            Send FreeHandle of oMatch
+            Move (IncludeUname (oMatch, "bob")) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include uname"
+            Send Assert (IsOwnerExcluded (oMatch, oEntryA)) "alice excluded"
+            Send AssertFalse (IsOwnerExcluded (oMatch, oEntryB)) "bob included"
+            Move (IncludeUname (oMatch, "Jürgen")) to iResult
+            Send AssertFalse (IsOwnerExcluded (oMatch, oEntryC)) "unicode user name included"
+            Send FreeHandle of oMatch
+            Move (IncludeUnameLocale (oMatch, "alice")) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include uname (locale)"
+            Send AssertFalse (IsOwnerExcluded (oMatch, oEntryA)) "alice included (locale)"
+            Send Assert (IsOwnerExcluded (oMatch, oEntryB)) "bob excluded (locale)"
+
+            // group name
+            Send FreeHandle of oMatch
+            Move (IncludeGname (oMatch, "wheel")) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include gname"
+            Send Assert (IsOwnerExcluded (oMatch, oEntryA)) "staff excluded"
+            Send AssertFalse (IsOwnerExcluded (oMatch, oEntryB)) "wheel included"
+            Move (IncludeGname (oMatch, "Straße")) to iResult
+            Send AssertFalse (IsOwnerExcluded (oMatch, oEntryC)) "unicode group name included"
+            Send FreeHandle of oMatch
+            Move (IncludeGnameLocale (oMatch, "staff")) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include gname (locale)"
+            Send AssertFalse (IsOwnerExcluded (oMatch, oEntryA)) "staff included (locale)"
+            Send Assert (IsOwnerExcluded (oMatch, oEntryB)) "wheel excluded (locale)"
+        End_Procedure
+    End_Object
+
+    // ---- all conditions together ------------------------------------------------------------------------------------
+
+    Object oCombinedTest is a cTest
+        Procedure Test
+            Integer iResult
+
+            Send MakeEntry oEntryA "keep.txt" 1700000100 1000 2000 "alice" "staff"
+            Send MakeEntry oEntryB "keep.log" 1700000100 1000 2000 "alice" "staff"
+            Send MakeEntry oEntryC "keep2.txt" 1600000000 1000 2000 "alice" "staff"
+
+            Send FreeHandle of oMatch
+            Move (IncludePattern (oMatch, "*.txt")) to iResult
+            Move (IncludeTime (oMatch, (ARCHIVE_MATCH_MTIME ior ARCHIVE_MATCH_NEWER), 1700000000, 0)) to iResult
+            Move (IncludeUid (oMatch, 1000)) to iResult
+            Send AssertFalse (IsExcluded (oMatch, oEntryA)) "matches every condition"
+            Send Assert (IsExcluded (oMatch, oEntryB)) "excluded by the path"
+            Send Assert (IsExcluded (oMatch, oEntryC)) "excluded by the time"
+            Send MakeEntry oEntryA "keep.txt" 1700000100 1005 2000 "alice" "staff"
+            Send Assert (IsExcluded (oMatch, oEntryA)) "excluded by the owner"
+            Send AssertFalse (IsPathExcluded (oMatch, oEntryA)) "path alone is fine"
+            Send AssertFalse (IsTimeExcluded (oMatch, oEntryA)) "time alone is fine"
+            Send Assert (IsOwnerExcluded (oMatch, oEntryA)) "owner alone is excluded"
+        End_Procedure
+    End_Object
+
+    // ---- helper ---------------------------------------------------------------------------------------------------
+
+    Object oSortStringsTest is a cTest
+        Procedure Test
+            String[] asInput asSorted
+
+            Move "pear" to asInput[0]
+            Move "apple" to asInput[1]
+            Move "Zebra" to asInput[2]
+            Move "banana" to asInput[3]
+            Move "ünï" to asInput[4]
+            Get SortStrings of oMatch asInput to asSorted
+            Send AssertIAreEqual 5 (SizeOfArray (asSorted)) "same number of strings"
+            Send AssertSAreEqual "Zebra" asSorted[0] "uppercase sorts before lowercase"
+            Send AssertSAreEqual "apple" asSorted[1] "second"
+            Send AssertSAreEqual "banana" asSorted[2] "third"
+            Send AssertSAreEqual "pear" asSorted[3] "fourth"
+            Send AssertSAreEqual "ünï" asSorted[4] "non ASCII sorts last (byte order)"
+            Send AssertSAreEqual "pear" asInput[0] "input array unchanged"
+
+            Get SortStrings of oMatch asSorted to asInput
+            Send AssertIAreEqual 5 (SizeOfArray (asInput)) "sorting a sorted array"
+            Send AssertSAreEqual "Zebra" asInput[0] "still sorted"
+
+            Move (ResizeArray (asInput, 0)) to asInput
+            Get SortStrings of oMatch asInput to asSorted
+            Send AssertIAreEqual 0 (SizeOfArray (asSorted)) "empty input"
+        End_Procedure
+    End_Object
+End_Object

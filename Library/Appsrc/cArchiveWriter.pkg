@@ -1,0 +1,1670 @@
+﻿Use cArchiveBase.pkg
+Use cArchiveEntry.pkg
+Use cWorkspace.pkg
+
+// Constants of the zip writer compression (peZipCompression).
+Define ARCHIVE_ZIP_COMPRESSION_DEFLATE for 0
+Define ARCHIVE_ZIP_COMPRESSION_STORE   for 1
+
+// Windows helpers the class needs for AddFile (last write time and size of a file) and for the default time stamp.
+External_Function archivewriter_GetSystemTimeAsFileTime "GetSystemTimeAsFileTime" kernel32.dll ;
+    Pointer pFileTime ;
+    Returns Void_Type
+
+External_Function archivewriter_GetFileAttributesExW "GetFileAttributesExW" kernel32.dll ;
+    WString wsFileName ;
+    Integer iInfoLevel ;
+    Pointer pFileInformation ;
+    Returns Integer
+
+// WIN32_FILE_ATTRIBUTE_DATA
+Struct tArchiveWriterFileInfo
+    UInteger dwFileAttributes
+    UInteger dwCreationLow
+    UInteger dwCreationHigh
+    UInteger dwAccessLow
+    UInteger dwAccessHigh
+    UInteger dwWriteLow
+    UInteger dwWriteHigh
+    UInteger dwSizeHigh
+    UInteger dwSizeLow
+End_Struct
+
+// Wrapper around the archive writer of libarchive (archive_write_*): creates archives in a file, in memory, on a
+// file descriptor or on a C runtime FILE pointer. All archive_write_* functions are available except
+//  - the callback based ones: archive_write_open, archive_write_open2 and archive_write_set_passphrase_callback. DataFlex
+//    cannot create native callback function pointers, so they are not exposed. Use OpenFile, OpenMemory, OpenFd
+//    or OpenFilePtr instead and SetPassphrase for encryption;
+//  - the deprecated synonyms archive_write_finish, archive_write_open_file and archive_write_set_compression_*
+//    (use FreeWriter, OpenFile / OpenFileAnsi and the AddFilter... methods);
+//  - the archive_write_disk_* functions, which belong to cArchiveDiskWriter.
+//
+// Typical use:
+//   Send CreateWriter
+//   Get SetFormatZip to iResult
+//   Get OpenFile "C:\Temp\test.zip" to iResult
+//   Get AddText "readme.txt" "Hello" to iResult
+//   Get AddFile "C:\Temp\data.bin" "data/data.bin" to iResult
+//   Get CloseWriter to iResult
+//   Send FreeWriter
+//
+// Every method returns the libarchive result (ARCHIVE_OK, ...) unless it is documented otherwise; failures are
+// reported as described in cArchiveBase (pbRaiseErrors, OnError). Archive path names are UTF-8 and use "/" as
+// separator; "\" in the path names given to the Add... methods is converted to "/".
+//
+// Names with characters outside of the ANSI code page of the system (for example Japanese on a Western system) and
+// even the euro sign: libarchive corrupts its heap for such names in a zip archive unless the option hdrcharset=UTF-8
+// is set. With pbUtf8HeaderCharset True (default) the class sets it whenever a format is chosen. pax and 7zip store
+// Unicode names anyway; readers of ustar, gnutar and cpio archives have to use hdrcharset=UTF-8 as well.
+Class cArchiveWriter is a cArchiveBase
+    Procedure Construct_Object
+        Forward Send Construct_Object
+
+        // Permission bits (octal 0644 = 420) of the files and (octal 0755 = 493) directories the Add... methods create.
+        Property Integer piFilePermission 420
+        Property Integer piDirectoryPermission 493
+
+        // True: names are written as UTF-8 (option hdrcharset=UTF-8 is set whenever a format is chosen). Set it to False
+        // before choosing the format to keep the character set handling of libarchive (the ANSI code page).
+        Property Boolean pbUtf8HeaderCharset True
+
+        // The bytes of the archive that was written with OpenMemory (see OutputBytes).
+        { DesignTime = False }
+        Property UChar[] pucOutput
+
+        { DesignTime = False }
+        Property Integer piZipCompressionValue ARCHIVE_ZIP_COMPRESSION_DEFLATE
+
+        // Native memory of OpenMemory: the output buffer and the size_t counter libarchive updates.
+        { DesignTime = False }
+        Property Pointer ppMemoryBuffer 0
+        { DesignTime = False }
+        Property Pointer ppMemoryUsed 0
+    End_Procedure
+
+    // ---- handle -----------------------------------------------------------------------------------------------
+
+    // Releases the archive (archive_write_free, which closes the archive when needed). The bytes written with
+    // OpenMemory are copied to pucOutput first, so OutputBytes still works afterwards.
+    Procedure FreeHandle
+        Forward Send FreeHandle
+        Send CaptureOutput
+        Send ReleaseMemory
+    End_Procedure
+
+    // Returns the archive handle. Raises an error and returns 0 when there is none (CreateWriter was not sent).
+    Function RequireHandle Returns Pointer
+        Pointer pArchive
+
+        Get ppArchive to pArchive
+        If (pArchive = 0) Begin
+            Error DFERR_PROGRAM "There is no archive writer. Send CreateWriter first."
+        End
+        Function_Return pArchive
+    End_Function
+
+    // Creates a new archive writer (archive_write_new). An existing writer is freed first.
+    Procedure CreateWriter
+        Pointer pArchive
+        UChar[] ucEmpty
+
+        Send FreeHandle
+        Set pucOutput to ucEmpty
+        Set piZipCompressionValue to ARCHIVE_ZIP_COMPRESSION_DEFLATE
+        Move (archive_write_new ()) to pArchive
+        If (pArchive = 0) Begin
+            Error DFERR_PROGRAM "archive_write_new failed (out of memory)"
+        End
+        Set ppArchive to pArchive
+        Send ClearLastResult
+    End_Procedure
+
+    // Closes the archive when needed and frees the writer (archive_write_free). Safe to call without a writer.
+    Procedure FreeWriter
+        Send FreeHandle
+    End_Procedure
+
+    // Finishes the archive: writes the trailer and flushes and closes the output (archive_write_close).
+    // The writer must still be freed (FreeWriter).
+    Function CloseWriter Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_close (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_close" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Marks the archive as failed so that FreeWriter does not try to finish it cleanly (archive_write_fail).
+    // Use it to abandon a partial archive. Returns ARCHIVE_FATAL (archive_write_fail itself returns the internal
+    // state value of the dead archive, which is not a result code).
+    Function FailWriter Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_fail (pArchive)) to iResult
+        Function_Return ARCHIVE_FATAL
+    End_Function
+
+    // ---- properties of the writer ------------------------------------------------------------------------------
+
+    // Block size of the output (archive_write_get_bytes_per_block / archive_write_set_bytes_per_block). Set it
+    // before the archive is opened. 0 without a writer.
+    { MethodType = Property }
+    Function piBytesPerBlock Returns Integer
+        Pointer pArchive
+
+        Get ppArchive to pArchive
+        If (pArchive = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_write_get_bytes_per_block (pArchive))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piBytesPerBlock Integer iBytesPerBlock
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive <> 0) Begin
+            Move (archive_write_set_bytes_per_block (pArchive, iBytesPerBlock)) to iResult
+            Get CheckResult iResult "archive_write_set_bytes_per_block" to iResult
+        End
+    End_Procedure
+
+    // Size the last block is padded to (archive_write_get_bytes_in_last_block / archive_write_set_bytes_in_last_block).
+    // 1 disables the padding. Set it before the archive is opened. 0 without a writer.
+    { MethodType = Property }
+    Function piBytesInLastBlock Returns Integer
+        Pointer pArchive
+
+        Get ppArchive to pArchive
+        If (pArchive = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_write_get_bytes_in_last_block (pArchive))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piBytesInLastBlock Integer iBytesInLastBlock
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive <> 0) Begin
+            Move (archive_write_set_bytes_in_last_block (pArchive, iBytesInLastBlock)) to iResult
+            Get CheckResult iResult "archive_write_set_bytes_in_last_block" to iResult
+        End
+    End_Procedure
+
+    // Compression method of the zip writer: ARCHIVE_ZIP_COMPRESSION_DEFLATE (default) or
+    // ARCHIVE_ZIP_COMPRESSION_STORE (archive_write_zip_set_compression_deflate / _store). The zip format must be
+    // selected (SetFormatZip) before it is set. Without a writer the value is only remembered.
+    { MethodType = Property }
+    Function peZipCompression Returns Integer
+        Function_Return (piZipCompressionValue (Self))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set peZipCompression Integer eCompression
+        Integer iResult
+
+        If (eCompression = ARCHIVE_ZIP_COMPRESSION_STORE) Begin
+            Get SetZipCompressionStore to iResult
+        End
+        Else Begin
+            Get SetZipCompressionDeflate to iResult
+        End
+    End_Procedure
+
+    // Entries of the zip writer are compressed with deflate (archive_write_zip_set_compression_deflate).
+    Function SetZipCompressionDeflate Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_zip_set_compression_deflate (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_zip_set_compression_deflate" to iResult
+        If (iResult >= ARCHIVE_OK) Begin
+            Set piZipCompressionValue to ARCHIVE_ZIP_COMPRESSION_DEFLATE
+        End
+        Function_Return iResult
+    End_Function
+
+    // Entries of the zip writer are stored without compression (archive_write_zip_set_compression_store).
+    Function SetZipCompressionStore Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_zip_set_compression_store (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_zip_set_compression_store" to iResult
+        If (iResult >= ARCHIVE_OK) Begin
+            Set piZipCompressionValue to ARCHIVE_ZIP_COMPRESSION_STORE
+        End
+        Function_Return iResult
+    End_Function
+
+    // Device and inode of a file that must not be archived, normally the archive itself (archive_write_set_skip_file).
+    Function SetSkipFile BigInt iDevice BigInt iInode Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_skip_file (pArchive, iDevice, iInode)) to iResult
+        Get CheckResult iResult "archive_write_set_skip_file" to iResult
+        Function_Return iResult
+    End_Function
+
+    // ---- format -----------------------------------------------------------------------------------------------
+    // Select the format before the archive is opened. One format per archive.
+
+    // Header character set: without the option hdrcharset=UTF-8 the zip writer converts names to the ANSI code page
+    // of the system and corrupts the heap of archive.dll for names with characters outside of it (Japanese or the
+    // euro sign on a Western system), cpio refuses such names and tar formats lose them. When pbUtf8HeaderCharset is
+    // True (default) the option is set for every format right after the format is chosen. Formats that do not know
+    // the option (7zip, ar, iso9660, ...) answer with a failure that is ignored. SetOption "" "hdrcharset" ... overrides it.
+    { Visibility = Private }
+    Procedure ApplyFormatDefaults
+        Pointer pArchive
+        Integer iResult
+        String sOption sValue
+
+        Get ppArchive to pArchive
+        If (pArchive = 0 or not (pbUtf8HeaderCharset (Self))) Begin
+            Procedure_Return
+        End
+        Move "hdrcharset" to sOption
+        Move "UTF-8" to sValue
+        Move (archive_write_set_format_option (pArchive, 0, AddressOf (sOption), AddressOf (sValue))) to iResult
+    End_Procedure
+
+    // Sets the format by code, one of the ARCHIVE_FORMAT_* constants (for example ARCHIVE_FORMAT_ZIP, ARCHIVE_FORMAT_TAR_USTAR, ARCHIVE_FORMAT_7ZIP) (archive_write_set_format).
+    Function SetFormat Integer eFormatCode Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format (pArchive, eFormatCode)) to iResult
+        Get CheckResult iResult "archive_write_set_format" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // Sets the format by name ("zip", "7zip", "pax", "ustar", "gnutar", "cpio", "iso9660", "raw", ...) (archive_write_set_format_by_name).
+    Function SetFormatByName String sName Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format_by_name (pArchive, AddressOf (sName))) to iResult
+        Get CheckResult iResult "archive_write_set_format_by_name" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // Selects format and compression filter from the extension of a file name (.zip, .7z, .tar, .tar.gz, .tar.bz2, .tar.xz, .tar.zst, ...). Returns ARCHIVE_FATAL when the extension is not known (archive_write_set_format_filter_by_ext).
+    Function SetFormatFilterByExtension String sFileName Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format_filter_by_ext (pArchive, AddressOf (sFileName))) to iResult
+        Get CheckResult iResult "archive_write_set_format_filter_by_ext" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // Like SetFormatFilterByExtension, but uses the extension sDefaultExt (for example ".tar.gz") when sFileName has no known extension (archive_write_set_format_filter_by_ext_def).
+    Function SetFormatFilterByExtensionDefault String sFileName String sDefaultExt Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format_filter_by_ext_def (pArchive, AddressOf (sFileName), AddressOf (sDefaultExt))) to iResult
+        Get CheckResult iResult "archive_write_set_format_filter_by_ext_def" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // Sets the output format to 7-Zip (.7z) (archive_write_set_format_7zip).
+    Function SetFormat7zip Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format_7zip (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_set_format_7zip" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // Sets the output format to BSD variant of the ar archive (.a) (archive_write_set_format_ar_bsd).
+    Function SetFormatArBsd Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format_ar_bsd (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_set_format_ar_bsd" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // Sets the output format to SVR4 / GNU variant of the ar archive (.a) (archive_write_set_format_ar_svr4).
+    Function SetFormatArSvr4 Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format_ar_svr4 (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_set_format_ar_svr4" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // Sets the output format to POSIX cpio (same as SetFormatCpioOdc) (archive_write_set_format_cpio).
+    Function SetFormatCpio Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format_cpio (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_set_format_cpio" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // Sets the output format to old binary cpio (archive_write_set_format_cpio_bin).
+    Function SetFormatCpioBin Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format_cpio_bin (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_set_format_cpio_bin" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // Sets the output format to SVR4 "newc" cpio (archive_write_set_format_cpio_newc).
+    Function SetFormatCpioNewc Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format_cpio_newc (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_set_format_cpio_newc" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // Sets the output format to old character (POSIX.1) cpio (archive_write_set_format_cpio_odc).
+    Function SetFormatCpioOdc Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format_cpio_odc (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_set_format_cpio_odc" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // Sets the output format to PWB (Programmer's WorkBench) cpio (archive_write_set_format_cpio_pwb).
+    Function SetFormatCpioPwb Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format_cpio_pwb (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_set_format_cpio_pwb" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // Sets the output format to GNU tar (archive_write_set_format_gnutar).
+    Function SetFormatGnuTar Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format_gnutar (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_set_format_gnutar" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // Sets the output format to ISO 9660 CD image (archive_write_set_format_iso9660).
+    Function SetFormatIso9660 Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format_iso9660 (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_set_format_iso9660" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // Sets the output format to mtree manifest (archive_write_set_format_mtree).
+    Function SetFormatMtree Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format_mtree (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_set_format_mtree" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // Sets the output format to classic mtree manifest (archive_write_set_format_mtree_classic).
+    Function SetFormatMtreeClassic Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format_mtree_classic (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_set_format_mtree_classic" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // Sets the output format to POSIX.1-2001 pax (tar with extended headers) (archive_write_set_format_pax).
+    Function SetFormatPax Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format_pax (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_set_format_pax" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // Sets the output format to restricted pax (only uses extended headers when needed) (archive_write_set_format_pax_restricted).
+    Function SetFormatPaxRestricted Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format_pax_restricted (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_set_format_pax_restricted" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // Sets the output format to raw data without any archive structure (a single entry) (archive_write_set_format_raw).
+    Function SetFormatRaw Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format_raw (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_set_format_raw" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // Sets the output format to shell archive (archive_write_set_format_shar).
+    Function SetFormatShar Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format_shar (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_set_format_shar" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // Sets the output format to shell archive (dump style, uuencoded data) (archive_write_set_format_shar_dump).
+    Function SetFormatSharDump Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format_shar_dump (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_set_format_shar_dump" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // Sets the output format to POSIX.1-1988 ustar tar (archive_write_set_format_ustar).
+    Function SetFormatUstar Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format_ustar (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_set_format_ustar" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // Sets the output format to old Version 7 tar (archive_write_set_format_v7tar).
+    Function SetFormatV7Tar Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format_v7tar (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_set_format_v7tar" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // Sets the output format to Web ARChive (WARC) (archive_write_set_format_warc).
+    Function SetFormatWarc Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format_warc (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_set_format_warc" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // Sets the output format to XAR (archive_write_set_format_xar).
+    Function SetFormatXar Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format_xar (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_set_format_xar" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // Sets the output format to ZIP (archive_write_set_format_zip).
+    Function SetFormatZip Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_format_zip (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_set_format_zip" to iResult
+        Send ApplyFormatDefaults
+        Function_Return iResult
+    End_Function
+
+    // ---- filters ----------------------------------------------------------------------------------------------
+    // Filters are applied in the order they are added (add the compression last). Add them before the archive is opened.
+
+    // Adds a filter by code, one of the ARCHIVE_FILTER_* constants (for example ARCHIVE_FILTER_GZIP) (archive_write_add_filter).
+    Function AddFilter Integer eFilterCode Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_add_filter (pArchive, eFilterCode)) to iResult
+        Get CheckResult iResult "archive_write_add_filter" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds a filter by name ("gzip", "bzip2", "xz", "zstd", "lz4", "lzma", "lzip", "compress", "uuencode", "b64encode", ...; "none" is not accepted, use AddFilterNone) (archive_write_add_filter_by_name).
+    Function AddFilterByName String sName Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_add_filter_by_name (pArchive, AddressOf (sName))) to iResult
+        Get CheckResult iResult "archive_write_add_filter_by_name" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds a base64 encoding filter (archive_write_add_filter_b64encode).
+    Function AddFilterB64Encode Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_add_filter_b64encode (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_add_filter_b64encode" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds a bzip2 compression filter (archive_write_add_filter_bzip2).
+    Function AddFilterBzip2 Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_add_filter_bzip2 (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_add_filter_bzip2" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds a Unix compress (.Z) filter (archive_write_add_filter_compress).
+    Function AddFilterCompress Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_add_filter_compress (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_add_filter_compress" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds a grzip compression filter (needs the external grzip program) (archive_write_add_filter_grzip).
+    Function AddFilterGrzip Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_add_filter_grzip (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_add_filter_grzip" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds a gzip compression filter (archive_write_add_filter_gzip).
+    Function AddFilterGzip Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_add_filter_gzip (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_add_filter_gzip" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds an lrzip compression filter (needs the external lrzip program) (archive_write_add_filter_lrzip).
+    Function AddFilterLrzip Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_add_filter_lrzip (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_add_filter_lrzip" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds an lz4 compression filter (archive_write_add_filter_lz4).
+    Function AddFilterLz4 Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_add_filter_lz4 (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_add_filter_lz4" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds an lzip compression filter (archive_write_add_filter_lzip).
+    Function AddFilterLzip Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_add_filter_lzip (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_add_filter_lzip" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds an lzma compression filter (archive_write_add_filter_lzma).
+    Function AddFilterLzma Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_add_filter_lzma (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_add_filter_lzma" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds an lzop compression filter (needs the external lzop program) (archive_write_add_filter_lzop).
+    Function AddFilterLzop Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_add_filter_lzop (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_add_filter_lzop" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds a pass-through filter that does nothing (archive_write_add_filter_none).
+    Function AddFilterNone Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_add_filter_none (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_add_filter_none" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds a uuencode filter (archive_write_add_filter_uuencode).
+    Function AddFilterUuencode Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_add_filter_uuencode (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_add_filter_uuencode" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds an xz compression filter (archive_write_add_filter_xz).
+    Function AddFilterXz Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_add_filter_xz (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_add_filter_xz" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds a Zstandard compression filter (archive_write_add_filter_zstd).
+    Function AddFilterZstd Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_add_filter_zstd (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_add_filter_zstd" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds an external program as filter. The program reads the archive data from its standard input and writes the filtered data to its standard output (archive_write_add_filter_program).
+    Function AddFilterProgram String sCommand Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_add_filter_program (pArchive, AddressOf (sCommand))) to iResult
+        Get CheckResult iResult "archive_write_add_filter_program" to iResult
+        Function_Return iResult
+    End_Function
+
+    // ---- options and encryption --------------------------------------------------------------------------------
+    // sModule is the name of the format or filter the option is for ("zip", "7zip", "gzip", ...). An empty sModule
+    // matches any module. An empty sValue passes NULL, which switches a boolean option off. The functions return
+    // ARCHIVE_OK, or ARCHIVE_FAILED when the option is unknown or its value is invalid (libarchive documents
+    // ARCHIVE_WARN for options no module handles; archive.dll 3.7.7 answered ARCHIVE_FAILED in every case tested).
+
+    // Sets an option of the format and of the filters (archive_write_set_option). Examples: SetOption "zip" "encryption" "aes256",
+    // SetOption "gzip" "compression-level" "9", SetOption "zip" "compression" "store".
+    Function SetOption String sModule String sOption String sValue Returns Integer
+        Pointer pArchive pModule pValue
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        If (sModule <> "") Begin
+            Move (AddressOf (sModule)) to pModule
+        End
+        If (sValue <> "") Begin
+            Move (AddressOf (sValue)) to pValue
+        End
+        Move (archive_write_set_option (pArchive, pModule, AddressOf (sOption), pValue)) to iResult
+        Get CheckResult iResult "archive_write_set_option" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Sets an option of the format only (archive_write_set_format_option).
+    Function SetFormatOption String sModule String sOption String sValue Returns Integer
+        Pointer pArchive pModule pValue
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        If (sModule <> "") Begin
+            Move (AddressOf (sModule)) to pModule
+        End
+        If (sValue <> "") Begin
+            Move (AddressOf (sValue)) to pValue
+        End
+        Move (archive_write_set_format_option (pArchive, pModule, AddressOf (sOption), pValue)) to iResult
+        Get CheckResult iResult "archive_write_set_format_option" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Sets an option of the filters only (archive_write_set_filter_option).
+    Function SetFilterOption String sModule String sOption String sValue Returns Integer
+        Pointer pArchive pModule pValue
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        If (sModule <> "") Begin
+            Move (AddressOf (sModule)) to pModule
+        End
+        If (sValue <> "") Begin
+            Move (AddressOf (sValue)) to pValue
+        End
+        Move (archive_write_set_filter_option (pArchive, pModule, AddressOf (sOption), pValue)) to iResult
+        Get CheckResult iResult "archive_write_set_filter_option" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Sets several options from a string "module:option=value,option2,!option3" (archive_write_set_options).
+    Function SetOptions String sOptions Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_options (pArchive, AddressOf (sOptions))) to iResult
+        Get CheckResult iResult "archive_write_set_options" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Sets the passphrase for encryption (archive_write_set_passphrase). Select the encryption with
+    // SetOption "zip" "encryption" "zipcrypt" / "aes128" / "aes256" (zip) or the 7zip equivalent; without such an option
+    // the passphrase is not used. There is no passphrase callback (see the class description).
+    Function SetPassphrase String sPassphrase Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_set_passphrase (pArchive, AddressOf (sPassphrase))) to iResult
+        Get CheckResult iResult "archive_write_set_passphrase" to iResult
+        Function_Return iResult
+    End_Function
+
+    // ---- open -------------------------------------------------------------------------------------------------
+    // Format and filters must be set before the archive is opened. Open the archive exactly once per writer.
+
+    // Creates the archive file (archive_write_open_filename_w). The name may contain any Unicode character.
+    Function OpenFile String sFileName Returns Integer
+        Pointer pArchive
+        Integer iResult
+        WString wsFileName
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move sFileName to wsFileName
+        Move (archive_write_open_filename_w (pArchive, AddressOf (wsFileName))) to iResult
+        Get CheckResult iResult "archive_write_open_filename_w" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Creates the archive file with the narrow function archive_write_open_filename. The name is interpreted in the
+    // ANSI code page of the system, so use OpenFile for names with characters outside of it.
+    Function OpenFileAnsi String sFileName Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_open_filename (pArchive, AddressOf (sFileName))) to iResult
+        Get CheckResult iResult "archive_write_open_filename" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Writes the archive into a memory buffer of iBufferSize bytes (archive_write_open_memory); writing fails with
+    // ARCHIVE_FATAL when the archive gets larger. The buffer is native memory (Alloc) owned by this object, so the size
+    // of libarchive's size_t counter is not limited by DataFlex array handling. After CloseWriter the archive is
+    // available through OutputBytes / GetOutput, also after FreeWriter. Choose the buffer larger than the data plus
+    // the overhead of the format (tar pads to blocks of 10240 bytes by default).
+    Function OpenMemory Integer iBufferSize Returns Integer
+        Pointer pArchive pBuffer pUsed
+        Integer iResult iVoid
+        BigInt iUsed
+        UChar[] ucEmpty
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Get ppMemoryBuffer to pBuffer
+        If (pBuffer <> 0) Begin
+            Get Fail "OpenMemory" "OpenMemory was already called for this writer. Send CreateWriter for a new archive." to iResult
+            Function_Return iResult
+        End
+        If (iBufferSize <= 0) Begin
+            Get Fail "OpenMemory" "The buffer size must be greater than 0." to iResult
+            Function_Return iResult
+        End
+        Move (Alloc (iBufferSize)) to pBuffer
+        Move (Alloc (8)) to pUsed
+        Set ppMemoryBuffer to pBuffer
+        Set ppMemoryUsed to pUsed
+        If (pBuffer = 0 or pUsed = 0) Begin
+            Send ReleaseMemory
+            Get Fail "OpenMemory" "Not enough memory for the output buffer." to iResult
+            Function_Return iResult
+        End
+        Move 0 to iUsed
+        Move (MemCopy (pUsed, AddressOf (iUsed), 8)) to iVoid
+        Move (archive_write_open_memory (pArchive, pBuffer, iBufferSize, pUsed)) to iResult
+        If (iResult <= ARCHIVE_FAILED) Begin
+            Send ReleaseMemory
+            Get CheckResult iResult "archive_write_open_memory" to iResult
+            Function_Return iResult
+        End
+        Set pucOutput to ucEmpty
+        Function_Return iResult
+    End_Function
+
+    // Writes the archive to an open C runtime file descriptor (archive_write_open_fd). The caller keeps the descriptor
+    // open and closes it after FreeWriter.
+    Function OpenFd Integer iFileDescriptor Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_open_fd (pArchive, iFileDescriptor)) to iResult
+        Get CheckResult iResult "archive_write_open_fd" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Writes the archive to an open C runtime FILE pointer of the same C runtime as archive.dll (archive_write_open_FILE).
+    // The caller keeps the file open and closes it after FreeWriter.
+    Function OpenFilePtr Pointer pFile Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_open_FILE_Ptr (pArchive, pFile)) to iResult
+        Get CheckResult iResult "archive_write_open_FILE" to iResult
+        Function_Return iResult
+    End_Function
+
+    // ---- output of OpenMemory ------------------------------------------------------------------------------------
+
+    // Copies the bytes libarchive wrote into the OpenMemory buffer to pucOutput.
+    { Visibility = Private }
+    Procedure CaptureOutput
+        Pointer pBuffer pUsed
+        BigInt iUsed
+        Integer iVoid
+        UChar[] ucOutput
+
+        Get ppMemoryBuffer to pBuffer
+        If (pBuffer = 0) Begin
+            Procedure_Return
+        End
+        Get ppMemoryUsed to pUsed
+        Move (MemCopy (AddressOf (iUsed), pUsed, 8)) to iVoid
+        Move (ResizeArray (ucOutput, iUsed)) to ucOutput
+        If (iUsed > 0) Begin
+            Move (MemCopy (AddressOf (ucOutput), pBuffer, iUsed)) to iVoid
+        End
+        Set pucOutput to ucOutput
+    End_Procedure
+
+    { Visibility = Private }
+    Procedure ReleaseMemory
+        Pointer pBuffer pUsed
+        Integer iVoid
+
+        Get ppMemoryBuffer to pBuffer
+        Get ppMemoryUsed to pUsed
+        If (pBuffer <> 0) Begin
+            Move (Free (pBuffer)) to iVoid
+        End
+        If (pUsed <> 0) Begin
+            Move (Free (pUsed)) to iVoid
+        End
+        Set ppMemoryBuffer to 0
+        Set ppMemoryUsed to 0
+    End_Procedure
+
+    // The bytes written so far to the memory buffer of OpenMemory; after FreeWriter the final archive. Send CloseWriter
+    // before to get the complete archive. Empty when OpenMemory was not used.
+    Function OutputBytes Returns UChar[]
+        UChar[] ucOutput
+
+        Send CaptureOutput
+        Get pucOutput to ucOutput
+        Function_Return ucOutput
+    End_Function
+
+    // Like OutputBytes: ucOutput receives the bytes, the result is their number.
+    Function GetOutput UChar[] ByRef ucOutput Returns BigInt
+        Get OutputBytes to ucOutput
+        Function_Return (SizeOfArray (ucOutput))
+    End_Function
+
+    // Number of bytes in the OpenMemory output (the size_t counter of archive_write_open_memory).
+    Function OutputSize Returns BigInt
+        UChar[] ucOutput
+
+        Send CaptureOutput
+        Get pucOutput to ucOutput
+        Function_Return (SizeOfArray (ucOutput))
+    End_Function
+
+    // ---- entries and data ---------------------------------------------------------------------------------------
+
+    // Writes the header of an entry (archive_write_header). hoEntry is a cArchiveEntry object with the entry
+    // data (path name, type, size, time stamps, ...). Write the data of the entry afterwards with WriteData,
+    // WriteString or WriteDataPointer. The entry is not freed or changed.
+    Function WriteHeader Handle hoEntry Returns Integer
+        Pointer pEntry
+        Integer iResult
+
+        Get ppEntry of hoEntry to pEntry
+        If (pEntry = 0) Begin
+            Get Fail "WriteHeader" "The entry object has no entry (use CreateEntry first)." to iResult
+            Function_Return iResult
+        End
+        Get WriteHeaderPointer pEntry to iResult
+        Function_Return iResult
+    End_Function
+
+    // Writes the header of a raw libarchive entry (archive_write_header).
+    Function WriteHeaderPointer Pointer pEntry Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        If (pEntry = 0) Begin
+            Get Fail "WriteHeader" "The entry is 0." to iResult
+            Function_Return iResult
+        End
+        Move (archive_write_header (pArchive, pEntry)) to iResult
+        Get CheckResult iResult "archive_write_header" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Raises the error of a failed write: a negative count is the error code, a smaller count than requested is
+    // reported as ARCHIVE_FATAL. Returns the count.
+    { Visibility = Private }
+    Function CheckWritten BigInt iWritten BigInt iRequested String sOperation Returns BigInt
+        Integer iResult
+
+        If (iWritten < 0) Begin
+            Move (iWritten min ARCHIVE_FAILED) to iResult
+            Get CheckResult iResult sOperation to iResult
+        End
+        Else If (iWritten <> iRequested) Begin
+            Get Fail sOperation "Not all bytes could be written." to iResult
+        End
+        Function_Return iWritten
+    End_Function
+
+    // Writes the data of the current entry (archive_write_data). Returns the number of bytes written (a negative number
+    // is an error code). libarchive does not write more than the size in the header.
+    Function WriteData UChar[] ucData Returns BigInt
+        Pointer pArchive
+        BigInt iWritten iSize
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (SizeOfArray (ucData)) to iSize
+        If (iSize = 0) Begin
+            Function_Return 0
+        End
+        Move (archive_write_data (pArchive, AddressOf (ucData), iSize)) to iWritten
+        Get CheckWritten iWritten iSize "archive_write_data" to iWritten
+        Function_Return iWritten
+    End_Function
+
+    // Writes the bytes of a string as data of the current entry (archive_write_data). A DataFlex string is UTF-8 encoded,
+    // the number of bytes is SizeOfString (sData). Returns the number of bytes written.
+    Function WriteString String sData Returns BigInt
+        Pointer pArchive
+        BigInt iWritten iSize
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (SizeOfString (sData)) to iSize
+        If (iSize = 0) Begin
+            Function_Return 0
+        End
+        Move (archive_write_data (pArchive, AddressOf (sData), iSize)) to iWritten
+        Get CheckWritten iWritten iSize "archive_write_data" to iWritten
+        Function_Return iWritten
+    End_Function
+
+    // Writes iSize bytes at pData as data of the current entry (archive_write_data). Returns the number of bytes written.
+    Function WriteDataPointer Pointer pData BigInt iSize Returns BigInt
+        Pointer pArchive
+        BigInt iWritten
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        If (iSize <= 0) Begin
+            Function_Return 0
+        End
+        Move (archive_write_data (pArchive, pData, iSize)) to iWritten
+        Get CheckWritten iWritten iSize "archive_write_data" to iWritten
+        Function_Return iWritten
+    End_Function
+
+    // Finishes the current entry: pads the data when it is shorter than the size in the header (archive_write_finish_entry).
+    // It is done automatically by the next WriteHeader and by CloseWriter.
+    Function FinishEntry Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_finish_entry (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_finish_entry" to iResult
+        Function_Return iResult
+    End_Function
+
+    // ---- convenience methods ------------------------------------------------------------------------------------
+
+    // Remembers a failure of the wrapper itself (not of libarchive) like CheckResult does and returns ARCHIVE_FAILED.
+    { Visibility = Private }
+    Function Fail String sOperation String sErrorText Returns Integer
+        Set piLastResult to ARCHIVE_FAILED
+        Set psLastError to sErrorText
+        Send OnError ARCHIVE_FAILED sOperation sErrorText
+        Function_Return ARCHIVE_FAILED
+    End_Function
+
+    // Current time as seconds since 1970-01-01 UTC.
+    { Visibility = Private }
+    Function CurrentUnixTime Returns BigInt
+        BigInt iTicks
+        Void_Type iVoid
+
+        Move (archivewriter_GetSystemTimeAsFileTime (AddressOf (iTicks))) to iVoid
+        Function_Return (iTicks / 10000000 - 11644473600)
+    End_Function
+
+    // Size and last write time of a file. Returns False when the file does not exist.
+    { Visibility = Private }
+    Function ReadFileInfo String sFileName BigInt ByRef iSize BigInt ByRef iMTime Integer ByRef iMTimeNano Returns Boolean
+        tArchiveWriterFileInfo Info
+        BigInt iTicks iHigh
+        Integer iOk iVoid
+
+        Move (archivewriter_GetFileAttributesExW (sFileName, 0, AddressOf (Info))) to iOk
+        If (iOk = 0) Begin
+            Function_Return False
+        End
+        Move (MemCopy (AddressOf (iTicks), AddressOf (Info) + 20, 8)) to iVoid
+        Move Info.dwSizeHigh to iHigh
+        Move (iHigh * 4294967296 + Info.dwSizeLow) to iSize
+        Move (iTicks / 10000000 - 11644473600) to iMTime
+        Move (Mod (iTicks, 10000000) * 100) to iMTimeNano
+        Function_Return True
+    End_Function
+
+    // Archive path names use "/" as separator.
+    { Visibility = Private }
+    Function ArchivePath String sPath Returns String
+        Function_Return (Replace ("\", sPath, "/"))
+    End_Function
+
+    // Creates an entry, writes its header and frees it. eFileType is AE_IFREG, AE_IFDIR or AE_IFLNK, sSymlinkTarget
+    // is only used for AE_IFLNK.
+    { Visibility = Private }
+    Function WriteEntryHeader String sArchivePath Integer eFileType BigInt iSize BigInt iMTime Integer iMTimeNano Integer iPermission String sSymlinkTarget Returns Integer
+        Pointer pEntry
+        Integer iResult iOk
+        Void_Type iVoid
+
+        Get ArchivePath sArchivePath to sArchivePath
+        If (sArchivePath = "") Begin
+            Get Fail "WriteHeader" "The archive path name is empty." to iResult
+            Function_Return iResult
+        End
+        Move (archive_entry_new ()) to pEntry
+        // archive_entry_set_pathname_utf8 is not used: the 7zip writer then writes a wrong name. The result of the update
+        // function is 0 for names that cannot be converted to the ANSI code page of the system (Japanese on a Western
+        // system); the entry keeps the name (UTF-8 and UTF-16) nevertheless, so it is not an error.
+        Move (archive_entry_update_pathname_utf8 (pEntry, AddressOf (sArchivePath))) to iOk
+        Move (archive_entry_set_filetype (pEntry, eFileType)) to iVoid
+        Move (archive_entry_set_perm (pEntry, iPermission)) to iVoid
+        Move (archive_entry_set_size (pEntry, iSize)) to iVoid
+        Move (archive_entry_set_mtime (pEntry, iMTime, iMTimeNano)) to iVoid
+        If (eFileType = AE_IFLNK) Begin
+            Move (archive_entry_set_symlink_utf8 (pEntry, AddressOf (sSymlinkTarget))) to iVoid
+        End
+        Get WriteHeaderPointer pEntry to iResult
+        Move (archive_entry_free (pEntry)) to iVoid
+        Function_Return iResult
+    End_Function
+
+    // Writes a complete regular file entry with the data at pData (time stamp: now).
+    { Visibility = Private }
+    Function AddBytes String sArchivePath Pointer pData BigInt iSize Returns Integer
+        Integer iResult iPermission
+        BigInt iWritten iMTime
+
+        Get piFilePermission to iPermission
+        Get CurrentUnixTime to iMTime
+        Get WriteEntryHeader sArchivePath AE_IFREG iSize iMTime 0 iPermission "" to iResult
+        If (iResult < ARCHIVE_WARN) Begin
+            Function_Return iResult
+        End
+        If (iSize > 0) Begin
+            Get WriteDataPointer pData iSize to iWritten
+            If (iWritten <> iSize) Begin
+                Get piLastResult to iResult
+                If (iResult > ARCHIVE_FAILED) Begin
+                    Move ARCHIVE_FATAL to iResult
+                End
+                Function_Return iResult
+            End
+        End
+        Get FinishEntry to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds a file with the bytes of ucData (regular file, permission piFilePermission, time stamp now).
+    Function AddData String sArchivePath UChar[] ucData Returns Integer
+        Integer iResult
+        Pointer pData
+        BigInt iSize
+
+        Move (SizeOfArray (ucData)) to iSize
+        If (iSize > 0) Begin
+            Move (AddressOf (ucData)) to pData
+        End
+        Get AddBytes sArchivePath pData iSize to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds a file with the text sText as UTF-8 (regular file, permission piFilePermission, time stamp now).
+    Function AddText String sArchivePath String sText Returns Integer
+        Integer iResult
+        Pointer pData
+        BigInt iSize
+
+        Move (SizeOfString (sText)) to iSize
+        If (iSize > 0) Begin
+            Move (AddressOf (sText)) to pData
+        End
+        Get AddBytes sArchivePath pData iSize to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds a directory entry (permission piDirectoryPermission, time stamp now). A trailing "/" is added when missing.
+    Function AddDirectory String sArchivePath Returns Integer
+        Integer iResult iPermission
+        BigInt iMTime
+
+        Get ArchivePath sArchivePath to sArchivePath
+        If (sArchivePath <> "" and Right (sArchivePath, 1) <> "/") Begin
+            Move (sArchivePath + "/") to sArchivePath
+        End
+        Get piDirectoryPermission to iPermission
+        Get CurrentUnixTime to iMTime
+        Get WriteEntryHeader sArchivePath AE_IFDIR 0 iMTime 0 iPermission "" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds a symbolic link entry that points to sTarget (permission 0777, time stamp now). The target is stored as given.
+    Function AddSymlink String sArchivePath String sTarget Returns Integer
+        Integer iResult
+        BigInt iMTime
+
+        Get CurrentUnixTime to iMTime
+        Get WriteEntryHeader sArchivePath AE_IFLNK 0 iMTime 0 ARCHIVE_READ_WRITE_EXECUTE_FOR_ALL sTarget to iResult
+        Function_Return iResult
+    End_Function
+
+    // Adds a file from disk: the header gets the size and the last write time of the file, the permission
+    // piFilePermission and type regular file; the content is read in chunks of 1 MB. An empty sArchivePathName uses
+    // the file name without path.
+    Function AddFile String sDiskFileName String sArchivePathName Returns Integer
+        Pointer pArchive
+        Integer iResult iPermission iNano iChannel iRead
+        Boolean bOk
+        BigInt iSize iMTime iTotal iWritten
+        UChar[] ucBuffer
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Get ReadFileInfo sDiskFileName (&iSize) (&iMTime) (&iNano) to bOk
+        If (not (bOk)) Begin
+            Get Fail "AddFile" ("The file does not exist:" * sDiskFileName) to iResult
+            Function_Return iResult
+        End
+        If (sArchivePathName = "") Begin
+            Move (ExtractFileName (sDiskFileName)) to sArchivePathName
+        End
+        Move (Seq_New_Channel ()) to iChannel
+        If (iChannel = DF_SEQ_CHANNEL_NOT_AVAILABLE) Begin
+            Get Fail "AddFile" "No free sequential channel." to iResult
+            Function_Return iResult
+        End
+        Move 0 to iTotal
+        Get piFilePermission to iPermission
+        Get WriteEntryHeader sArchivePathName AE_IFREG iSize iMTime iNano iPermission "" to iResult
+        If (iResult >= ARCHIVE_WARN and iSize > 0) Begin
+            Direct_Input channel iChannel ("BINARY:" + sDiskFileName)
+            While (not (SeqEof) and iResult > ARCHIVE_FAILED)
+                Read_Block channel iChannel ucBuffer 1048576
+                Move (SizeOfArray (ucBuffer)) to iRead
+                If (iRead > 0) Begin
+                    Get WriteDataPointer (AddressOf (ucBuffer)) iRead to iWritten
+                    If (iWritten <> iRead) Begin
+                        Get piLastResult to iResult
+                        If (iResult > ARCHIVE_FAILED) Begin
+                            Move ARCHIVE_FATAL to iResult
+                        End
+                    End
+                    Move (iTotal + iWritten) to iTotal
+                End
+            Loop
+            Close_Input channel iChannel
+            If (iResult > ARCHIVE_FAILED and iTotal <> iSize) Begin
+                Get Fail "AddFile" ("The size of the file changed while it was read:" * sDiskFileName) to iResult
+            End
+        End
+        Send Seq_Release_Channel iChannel
+        If (iResult >= ARCHIVE_WARN) Begin
+            Get FinishEntry to iResult
+        End
+        Function_Return iResult
+    End_Function
+
+    // Adds the content of a folder recursively: a directory entry for every sub folder and a file entry (AddFile) for
+    // every file. The path names are sPrefix + "/" + the path relative to sFolder; with an empty sPrefix the content
+    // of sFolder is added at the top level of the archive. When sPrefix is not empty a directory entry for it is added
+    // first. Directory symbolic links and junctions are not followed. Stops at the first failure and returns its result.
+    Function AddFolderTree String sFolder String sPrefix Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move ARCHIVE_OK to iResult
+        Move (Replace ("/", sFolder, "\")) to sFolder
+        If (Right (sFolder, 1) <> "\") Begin
+            Move (sFolder + "\") to sFolder
+        End
+        Get ArchivePath sPrefix to sPrefix
+        If (Right (sPrefix, 1) = "/") Begin
+            Move (Left (sPrefix, Length (sPrefix) - 1)) to sPrefix
+        End
+        If (sPrefix <> "") Begin
+            Get AddDirectory sPrefix to iResult
+        End
+        If (iResult >= ARCHIVE_WARN) Begin
+            Get AddFolderContent sFolder sPrefix to iResult
+        End
+        Function_Return iResult
+    End_Function
+
+    // sFolder ends with "\", sPrefix has no trailing "/".
+    { Visibility = Private }
+    Function AddFolderContent String sFolder String sPrefix Returns Integer
+        tWin32FindDataW FindData
+        Handle hFind
+        Pointer pName
+        Integer iResult iIndex iCount iVoid iNext
+        Boolean bFolder
+        String sName sArchiveName
+        String[] sNames
+        Boolean[] bFolders
+
+        Move ARCHIVE_OK to iResult
+        // Collect the entries first so that the find handle is closed before the recursion.
+        Move (winFindFirstFileW (sFolder + "*", AddressOf (FindData))) to hFind
+        If (hFind <> INVALID_HANDLE_VALUE) Begin
+            Repeat
+                Move (AddressOf (FindData) + 44) to pName
+                Move (PointerToWString (pName)) to sName
+                If (sName <> "." and sName <> "..") Begin
+                    Move (IsFlagIn (FILE_ATTRIBUTE_DIRECTORY, FindData.dwFileAttributes)) to bFolder
+                    // Do not follow directory symbolic links and junctions (reparse points).
+                    If (not (bFolder and IsFlagIn (FILE_ATTRIBUTE_REPARSE_POINT, FindData.dwFileAttributes))) Begin
+                        Move sName to sNames[-1]
+                        Move bFolder to bFolders[-1]
+                    End
+                End
+                Move (winFindNextFileW (hFind, AddressOf (FindData))) to iNext
+            Until (iNext = 0)
+            Move (winFindClose (hFind)) to iVoid
+        End
+
+        Move (SizeOfArray (sNames)) to iCount
+        For iIndex from 0 to (iCount - 1)
+            If (iResult < ARCHIVE_WARN) Begin
+                Function_Return iResult
+            End
+            Move sNames[iIndex] to sName
+            If (sPrefix <> "") Begin
+                Move (sPrefix + "/" + sName) to sArchiveName
+            End
+            Else Begin
+                Move sName to sArchiveName
+            End
+            If (bFolders[iIndex]) Begin
+                Get AddDirectory sArchiveName to iResult
+                If (iResult >= ARCHIVE_WARN) Begin
+                    Get AddFolderContent (sFolder + sName + "\") sArchiveName to iResult
+                End
+            End
+            Else Begin
+                Get AddFile (sFolder + sName) sArchiveName to iResult
+            End
+        Loop
+        Function_Return iResult
+    End_Function
+
+    // One call helper: creates the archive sArchiveFile with the files and folders in sFiles and frees the writer.
+    // eFormat is an ARCHIVE_FORMAT_* code (for example ARCHIVE_FORMAT_ZIP), eFilter an ARCHIVE_FILTER_* code
+    // (ARCHIVE_FILTER_NONE for no compression filter; zip and 7zip compress on their own). A file in sFiles is stored
+    // under its file name, a folder with its content (AddFolderTree) under the folder name. Returns ARCHIVE_OK or the
+    // first failing result; the writer of this object is replaced by the one of the call and is freed at the end.
+    Function CreateArchive String sArchiveFile String[] sFiles Integer eFormat Integer eFilter Returns Integer
+        Integer iResult iIndex iCount iAttributes
+        String sFile sFolderName
+
+        Send CreateWriter
+        Get SetFormat eFormat to iResult
+        If (iResult > ARCHIVE_FAILED and eFilter <> ARCHIVE_FILTER_NONE) Begin
+            Get AddFilter eFilter to iResult
+        End
+        If (iResult > ARCHIVE_FAILED) Begin
+            Get OpenFile sArchiveFile to iResult
+        End
+        If (iResult > ARCHIVE_FAILED) Begin
+            Move (SizeOfArray (sFiles)) to iCount
+            For iIndex from 0 to (iCount - 1)
+                Move (Trim (sFiles[iIndex])) to sFile
+                Move (GetFileAttributes (sFile)) to iAttributes
+                If (iAttributes <> INVALID_FILE_ATTRIBUTES and IsFlagIn (FILE_ATTRIBUTE_DIRECTORY, iAttributes)) Begin
+                    Move (sFile) to sFolderName
+                    If (Right (sFolderName, 1) = "\" or Right (sFolderName, 1) = "/") Begin
+                        Move (Left (sFolderName, Length (sFolderName) - 1)) to sFolderName
+                    End
+                    Move (ExtractFileName (sFolderName)) to sFolderName
+                    Get AddFolderTree sFile sFolderName to iResult
+                End
+                Else Begin
+                    Get AddFile sFile "" to iResult
+                End
+                If (iResult <= ARCHIVE_FAILED) Begin
+                    Move iCount to iIndex // stop
+                End
+            Loop
+        End
+        If (iResult > ARCHIVE_FAILED) Begin
+            Get CloseWriter to iResult
+        End
+        // After a failure the writer is freed without FailWriter: libarchive closes the output file in that case, a failed
+        // archive would keep the file open until the process ends. The partial archive stays on disk.
+        Send FreeWriter
+        Function_Return iResult
+    End_Function
+End_Class

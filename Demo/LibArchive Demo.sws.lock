@@ -1,0 +1,10 @@
+{
+    "dependencies": {
+        "DataFlex-dev/DFUnit": {
+            "ref": "1.1.0"
+        },
+        "local/DateTime": {},
+        "local/LibArchive": {}
+    },
+    "lockVersion": "1.0.0"
+}

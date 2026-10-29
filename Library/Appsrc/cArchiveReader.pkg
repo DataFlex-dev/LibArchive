@@ -1,0 +1,1743 @@
+﻿Use cArchiveBase.pkg
+Use cArchiveEntry.pkg
+
+// Wrappers around the libarchive read functions (archive_read_*):
+//   cArchiveReaderBase  - entry iteration and data reading that cArchiveReader and cArchiveDiskReader share
+//   cArchiveReader      - reads archives (zip, tar, 7zip, ...) from files, memory, file descriptors and FILE pointers
+//
+// Callbacks: DataFlex cannot create native C callback function pointers. The libarchive functions that need
+// callbacks (archive_read_open, archive_read_open2, archive_read_set_*_callback, archive_read_*_callback_data*,
+// archive_read_set_passphrase_callback, archive_read_extract_set_progress_callback) are declared in
+// ArchiveRead.h.pkg but are NOT exposed by these classes. Use the Open* methods, AddPassphrase and the
+// convenience methods instead.
+
+// Whence values of SeekData (the C constants SEEK_SET, SEEK_CUR and SEEK_END).
+#IFNDEF ARCHIVE_SEEK_SET
+Define ARCHIVE_SEEK_SET for 0 // From the start of the entry data.
+Define ARCHIVE_SEEK_CUR for 1 // From the current position.
+Define ARCHIVE_SEEK_END for 2 // From the end of the entry data.
+#ENDIF
+
+// Summary of one archive entry (or one file of a folder, see cArchiveDiskReader.ListFolder).
+Struct tArchiveEntryInfo
+    String sPathname    // Path name (UTF-8 text, "/" separated in archives).
+    BigInt iSize        // Size of the data in bytes.
+    BigInt iMtime       // Modification time, seconds since 1970-01-01 UTC.
+    Integer eFileType   // AE_IFREG, AE_IFDIR, AE_IFLNK, ...
+    Integer iPerm       // Permission bits (420 = 0644).
+    Boolean bEncrypted  // True when the data or metadata of the entry is encrypted.
+End_Struct
+
+// Windows API used by DataToFile (names are prefixed to avoid clashes with other declarations).
+External_Function ArchiveReaderCreateFile "CreateFileW" kernel32.dll ;
+    WString wsFileName ;
+    UInteger iAccess ;
+    UInteger iShareMode ;
+    Pointer pSecurity ;
+    UInteger iDisposition ;
+    UInteger iFlags ;
+    Handle hTemplate ;
+    Returns Handle
+
+External_Function ArchiveReaderWriteFile "WriteFile" kernel32.dll ;
+    Handle hFile ;
+    Pointer pBuffer ;
+    UInteger iBytes ;
+    Pointer pBytesWritten ;
+    Pointer pOverlapped ;
+    Returns Integer
+
+External_Function ArchiveReaderSetFilePointer "SetFilePointerEx" kernel32.dll ;
+    Handle hFile ;
+    BigInt iDistance ;
+    Pointer pNewPosition ;
+    UInteger iMethod ;
+    Returns Integer
+
+External_Function ArchiveReaderCloseHandle "CloseHandle" kernel32.dll ;
+    Handle hObject ;
+    Returns Integer
+
+// Number of characters (without the terminating zero) of a wide string; used by OpenFiles.
+External_Function ArchiveReaderWideLength "lstrlenW" kernel32.dll ;
+    Pointer pText ;
+    Returns Integer
+
+// ====================================================================================================
+// cArchiveReaderBase
+// ====================================================================================================
+
+// Shared part of cArchiveReader and cArchiveDiskReader: the "current entry" object (phoEntry), header iteration and
+// reading of the entry data. Use one of the subclasses.
+Class cArchiveReaderBase is a cArchiveBase
+    Procedure Construct_Object
+        Forward Send Construct_Object
+
+        // The cArchiveEntry object that wraps the entry NextHeader returned. It borrows the entry: libarchive owns
+        // it and it is only valid until the next header is read or the handle is freed.
+        { DesignTime = False }
+        Property Handle phoEntry 0
+
+        Object oEntry is a cArchiveEntry
+        End_Object
+        Set phoEntry to (oEntry (Self))
+    End_Procedure
+
+    // ---- helpers ------------------------------------------------------------------------------------------------
+
+    // Stores a failure that does not come from libarchive and reports it through OnError. Returns iResult.
+    { Visibility = Private }
+    Function ReportFailure Integer iResult String sOperation String sErrorText Returns Integer
+        Set piLastResult to iResult
+        Set psLastError to sErrorText
+        Send OnError iResult sOperation sErrorText
+        Function_Return iResult
+    End_Function
+
+    // Returns the libarchive handle. Without a handle the failure is reported (OnError) and 0 is returned.
+    { Visibility = Private }
+    Function HandleFor String sOperation Returns Pointer
+        Pointer pArchive
+        Integer iResult
+
+        Get ppArchive to pArchive
+        If (pArchive = 0) Begin
+            Get ReportFailure ARCHIVE_FATAL sOperation "there is no libarchive handle, create or open one first" to iResult
+        End
+        Function_Return pArchive
+    End_Function
+
+    // Forgets the current entry (the entry belongs to the handle and is invalid after the handle is freed).
+    { Visibility = Private }
+    Procedure DetachEntry
+        Handle hoEntry
+        Get phoEntry to hoEntry
+        Get Object_Id of hoEntry to hoEntry
+        If (hoEntry <> 0) Begin
+            Send AttachEntry of hoEntry 0 False
+        End
+    End_Procedure
+
+    Procedure FreeHandle
+        Send DetachEntry
+        Forward Send FreeHandle
+    End_Procedure
+
+    // ---- iteration ----------------------------------------------------------------------------------------------
+
+    // Reads the next entry header (archive_read_next_header). Returns ARCHIVE_OK (or ARCHIVE_WARN) when there is an
+    // entry, ARCHIVE_EOF at the end. The entry is available through phoEntry until the next call. The data of the
+    // previous entry that was not read is skipped.
+    Function NextHeader Returns Integer
+        Pointer pArchive pEntry
+        Integer iResult
+        Handle hoEntry
+
+        Get HandleFor "archive_read_next_header" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Get phoEntry to hoEntry
+        Move 0 to pEntry
+        Move (archive_read_next_header (pArchive, AddressOf (pEntry))) to iResult
+        If (iResult = ARCHIVE_OK or iResult = ARCHIVE_WARN) Begin
+            Send AttachEntry of hoEntry pEntry False
+        End
+        Else Begin
+            Send AttachEntry of hoEntry 0 False
+        End
+        Function_Return (CheckResult (Self, iResult, "archive_read_next_header"))
+    End_Function
+
+    // Summary of the current entry (empty struct when there is none).
+    Function EntryInfo Returns tArchiveEntryInfo
+        tArchiveEntryInfo tInfo
+        Pointer pEntry
+        String sPathname
+        BigInt iSize iMtime
+        Integer eFileType iPerm iEncrypted
+        Handle hoEntry
+
+        Get phoEntry to hoEntry
+        Get ppEntry of hoEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return tInfo
+        End
+        Get psPathname of hoEntry to sPathname
+        Move (archive_entry_size (pEntry)) to iSize
+        Move (archive_entry_mtime (pEntry)) to iMtime
+        Move (archive_entry_filetype (pEntry)) to eFileType
+        Move (archive_entry_perm (pEntry)) to iPerm
+        Move (archive_entry_is_encrypted (pEntry)) to iEncrypted
+        Move sPathname to tInfo.sPathname
+        Move iSize to tInfo.iSize
+        Move iMtime to tInfo.iMtime
+        Move eFileType to tInfo.eFileType
+        Move iPerm to tInfo.iPerm
+        Move (iEncrypted = 1) to tInfo.bEncrypted
+        Function_Return tInfo
+    End_Function
+
+    // ---- entry data ---------------------------------------------------------------------------------------------
+
+    // Reads up to iMaxBytes bytes of the current entry (archive_read_data). The array is empty at the end of the entry
+    // and when the read failed (see piLastResult; with pbRaiseErrors an error is raised).
+    Function ReadData Integer iMaxBytes Returns UChar[]
+        Pointer pArchive
+        BigInt iRead
+        Integer iResult
+        UChar[] ucBuffer ucEmpty
+
+        Get HandleFor "archive_read_data" to pArchive
+        If (pArchive = 0 or iMaxBytes <= 0) Begin
+            Function_Return ucEmpty
+        End
+        Move (ResizeArray (ucBuffer, iMaxBytes)) to ucBuffer
+        Move (archive_read_data (pArchive, AddressOf (ucBuffer), iMaxBytes)) to iRead
+        If (iRead <= 0) Begin
+            If (iRead < 0) Begin
+                Get CheckResult iRead "archive_read_data" to iResult
+            End
+            Function_Return ucEmpty
+        End
+        If (iRead <> iMaxBytes) Begin
+            Move (ResizeArray (ucBuffer, iRead)) to ucBuffer
+        End
+        Function_Return ucBuffer
+    End_Function
+
+    // Reads all remaining data of the current entry into ucData (replacing its content). Returns ARCHIVE_OK or the
+    // failing result (ucData then holds what was read before the failure).
+    Function ReadAllData UChar[] ByRef ucData Returns Integer
+        Pointer pArchive pTarget pEntry
+        BigInt iCapacity iUsed iRead
+        Integer iResult
+        UChar[] ucWork ucEmpty
+        Boolean bMore
+
+        Move ucEmpty to ucData
+        Get HandleFor "archive_read_data" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        // Size the buffer from the entry when its size is known (+1 so the final read returns 0 without growing).
+        Move 65536 to iCapacity
+        Get ppEntry of (phoEntry (Self)) to pEntry
+        If (pEntry <> 0) Begin
+            If (archive_entry_size_is_set (pEntry) = 1) Begin
+                Move (archive_entry_size (pEntry) + 1) to iCapacity
+                // the size comes from the archive: never allocate more than 64 MB up front, the buffer grows while reading
+                If (iCapacity > 67108864) Begin
+                    Move 67108864 to iCapacity
+                End
+            End
+        End
+        Move (ResizeArray (ucWork, iCapacity)) to ucWork
+        Move 0 to iUsed
+        Move ARCHIVE_OK to iResult
+        Move True to bMore
+        While (bMore)
+            If (iUsed >= iCapacity) Begin
+                Move (iCapacity * 2) to iCapacity
+                Move (ResizeArray (ucWork, iCapacity)) to ucWork
+            End
+            Move (AddressOf (ucWork) + iUsed) to pTarget
+            Move (archive_read_data (pArchive, pTarget, (iCapacity - iUsed))) to iRead
+            If (iRead > 0) Begin
+                Move (iUsed + iRead) to iUsed
+            End
+            Else Begin
+                Move False to bMore
+                If (iRead < 0) Begin
+                    Move iRead to iResult
+                End
+            End
+        Loop
+        If (iUsed > 0) Begin
+            Move (ResizeArray (ucWork, iUsed)) to ucData
+        End
+        If (iResult <> ARCHIVE_OK) Begin
+            Get CheckResult iResult "archive_read_data" to iResult
+        End
+        Function_Return iResult
+    End_Function
+
+    // Reads all remaining data of the current entry as a (binary safe) string. Empty on failure.
+    Function ReadDataToString Returns String
+        UChar[] ucData
+        Integer iResult iBytes
+        String sData
+
+        Get ReadAllData (&ucData) to iResult
+        Move (SizeOfArray (ucData)) to iBytes
+        If (iBytes = 0) Begin
+            Function_Return ""
+        End
+        Move (Repeat (Character (0), iBytes)) to sData
+        Move (CopyMemory (AddressOf (sData), AddressOf (ucData), iBytes)) to iResult
+        Function_Return sData
+    End_Function
+
+    // Reads the next data block of the current entry (archive_read_data_block). iOffset receives the offset of the
+    // block within the entry data (blocks of sparse files do not start at the end of the previous block) and ucData the
+    // block bytes. Returns ARCHIVE_OK, ARCHIVE_EOF at the end of the entry or a failure.
+    Function ReadDataBlock BigInt ByRef iOffset UChar[] ByRef ucData Returns Integer
+        Pointer pArchive pBlock
+        BigInt iBlockSize iBlockOffset
+        Integer iResult iCopied
+        UChar[] ucEmpty
+
+        Move ucEmpty to ucData
+        Move 0 to iOffset
+        Get HandleFor "archive_read_data_block" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move 0 to pBlock
+        Move 0 to iBlockSize
+        Move 0 to iBlockOffset
+        Move (archive_read_data_block (pArchive, AddressOf (pBlock), AddressOf (iBlockSize), AddressOf (iBlockOffset))) to iResult
+        If (iResult = ARCHIVE_OK or iResult = ARCHIVE_WARN) Begin
+            Move iBlockOffset to iOffset
+            If (iBlockSize > 0 and pBlock <> 0) Begin
+                Move (ResizeArray (ucData, iBlockSize)) to ucData
+                Move (CopyMemory (AddressOf (ucData), pBlock, iBlockSize)) to iCopied
+            End
+        End
+        Function_Return (CheckResult (Self, iResult, "archive_read_data_block"))
+    End_Function
+
+    // Writes the remaining data of the current entry to a file (created or truncated; the name is a wide string so
+    // Unicode names work). Uses archive_read_data_block and the Windows file API, holes of sparse entries are skipped
+    // with a file pointer move. Returns ARCHIVE_OK or the failing result (ARCHIVE_FAILED when the file cannot be created).
+    Function DataToFile String sFileName Returns Integer
+        Pointer pArchive pBlock
+        BigInt iBlockSize iBlockOffset iPosition
+        Integer iResult iWritten iOk
+        Handle hFile
+        WString wsFileName
+        Boolean bMore
+
+        Get HandleFor "DataToFile" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move sFileName to wsFileName
+        // GENERIC_WRITE, FILE_SHARE_READ, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL
+        Move (ArchiveReaderCreateFile (wsFileName, 1073741824, 1, 0, 2, 128, 0)) to hFile
+        If (hFile = -1) Begin
+            Send SetError 0 ("Cannot create the file" * sFileName)
+            Function_Return (CheckResult (Self, ARCHIVE_FAILED, "DataToFile"))
+        End
+        Move 0 to pBlock
+        Move 0 to iBlockSize
+        Move 0 to iBlockOffset
+        Move 0 to iPosition
+        Move 0 to iWritten
+        Move ARCHIVE_OK to iResult
+        Move True to bMore
+        While (bMore)
+            Move (archive_read_data_block (pArchive, AddressOf (pBlock), AddressOf (iBlockSize), AddressOf (iBlockOffset))) to iResult
+            If (iResult = ARCHIVE_EOF) Begin
+                Move ARCHIVE_OK to iResult
+                Move False to bMore
+            End
+            Else If (iResult < ARCHIVE_WARN) Begin
+                Move False to bMore
+            End
+            Else Begin
+                Move ARCHIVE_OK to iResult
+                If (iBlockOffset <> iPosition) Begin
+                    Move (ArchiveReaderSetFilePointer (hFile, iBlockOffset, 0, 0)) to iOk
+                End
+                If (iBlockSize > 0) Begin
+                    Move (ArchiveReaderWriteFile (hFile, pBlock, iBlockSize, AddressOf (iWritten), 0)) to iOk
+                    If (iOk = 0 or iWritten <> iBlockSize) Begin
+                        Send SetError 0 ("Cannot write to the file" * sFileName)
+                        Move ARCHIVE_FAILED to iResult
+                        Move False to bMore
+                    End
+                End
+                Move (iBlockOffset + iBlockSize) to iPosition
+            End
+        Loop
+        Move (ArchiveReaderCloseHandle (hFile)) to iOk
+        If (iResult <> ARCHIVE_OK) Begin
+            Get CheckResult iResult "DataToFile" to iResult
+        End
+        Function_Return iResult
+    End_Function
+End_Class
+
+// ====================================================================================================
+// cArchiveReader
+// ====================================================================================================
+
+// Reads archives with libarchive (archive_read_new / archive_read_open_* / archive_read_next_header / archive_read_data).
+//
+// Typical use:
+//     Send CreateReaderAll                       // handle with all formats and filters enabled
+//     Get OpenFile "C:\data\backup.zip" 0 to iResult
+//     Get NextHeader to iResult
+//     While (iResult = ARCHIVE_OK)
+//         Get psPathname of (phoEntry (Self)) to sName
+//         Get ReadAllData (&ucData) to iResult   // data of the current entry
+//         Get NextHeader to iResult
+//     Loop
+//     Send FreeReader
+//
+// Enable the formats and filters BEFORE opening (CreateReaderAll, SupportFormat*, SupportFilter*). The convenience
+// methods ListEntries, ExtractAll and ReadEntryData do everything in one call. All methods follow the conventions of
+// cArchiveBase (result codes, pbRaiseErrors). Callback based functions of libarchive are not exposed (see the top of
+// this file).
+Class cArchiveReader is a cArchiveReaderBase
+    Procedure Construct_Object
+        Forward Send Construct_Object
+
+        // Passphrase the convenience methods (OpenArchive, ListEntries, ExtractAll, ReadEntryData) add before they open
+        // the archive. Use AddPassphrase when you open the archive yourself.
+        Property String psPassphrase ""
+
+        // Number of entries ExtractAll extracted with ARCHIVE_OK.
+        { DesignTime = False }
+        Property Integer piExtractedCount 0
+
+        // True after SupportFormatRar5 / SupportFormatAll (libarchive 3.7.7 crashes when rar5 is registered twice).
+        { DesignTime = False }
+        Property Boolean pbRar5Registered False
+        { DesignTime = False }
+        Property Boolean pbAllRegistered False
+        // True once an Open* method was called on the handle. libarchive can only open a handle once (a second open, also
+        // after a failed one, corrupts the heap in 3.7.7), so the Open* methods refuse until CreateReader is called.
+        { DesignTime = False }
+        Property Boolean pbOpenCalled False
+
+        // True: before opening, "hdrcharset=UTF-8" is set for the format readers that know the option (zip, tar, ...).
+        // Default False: with the option libarchive 3.7.7 reports ARCHIVE_WARN for every non ASCII entry name and
+        // returns no name for it (psPathname is empty, the entry cannot be extracted), because it tries to convert the
+        // name to the locale of the process ("C" locale in DataFlex programs). Without the option names are returned
+        // as UTF-8 correctly. ARCHIVE_WARN is never raised as an error by the wrapper.
+        Property Boolean pbUtf8HeaderCharset False
+
+        // The copy of the archive bytes OpenMemory made (libarchive reads from it until the archive is closed) and its size.
+        { DesignTime = False }
+        Property Pointer ppMemory 0
+        { DesignTime = False }
+        Property Integer piMemorySize 0
+    End_Procedure
+
+    // ---- create and free ----------------------------------------------------------------------------------------
+
+    // Frees the previous handle and creates a new reader handle (archive_read_new). No formats or filters are enabled yet.
+    Procedure CreateReader
+        Pointer pArchive
+
+        Send FreeHandle
+        Move (archive_read_new ()) to pArchive
+        Set ppArchive to pArchive
+        Set pbRar5Registered to False
+        Set pbAllRegistered to False
+        Set pbOpenCalled to False
+        Send ClearLastResult
+        If (pArchive = 0) Begin
+            Error DFERR_PROGRAM "archive_read_new failed (out of memory)"
+        End
+    End_Procedure
+
+    // CreateReader followed by SupportFormatAll and SupportFilterAll: reads every archive type libarchive knows
+    // except the raw format.
+    Procedure CreateReaderAll
+        Integer iResult
+
+        Send CreateReader
+        If (HasHandle (Self)) Begin
+            Get SupportFormatAll to iResult
+            Get SupportFilterAll to iResult
+        End
+    End_Procedure
+
+    // Closes the archive (archive_read_close) but keeps the handle, for example to read the error text. FreeReader
+    // (and Destroy) close it implicitly.
+    Procedure CloseReader
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_close" to pArchive
+        If (pArchive <> 0) Begin
+            Move (archive_read_close (pArchive)) to iResult
+            Get CheckResult iResult "archive_read_close" to iResult
+        End
+    End_Procedure
+
+    // Like HandleFor, but also reports a failure when the handle was already used to open an archive.
+    { Visibility = Private }
+    Function HandleForOpen String sOperation Returns Pointer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor sOperation to pArchive
+        If (pArchive <> 0 and pbOpenCalled (Self)) Begin
+            Get ReportFailure ARCHIVE_FATAL sOperation "the handle was already used to open an archive, call CreateReader first" to iResult
+            Function_Return 0
+        End
+        Function_Return pArchive
+    End_Function
+
+    // Frees the memory copy made by OpenMemory.
+    { Visibility = Private }
+    Procedure ReleaseMemory
+        Pointer pMemory
+        Integer iVoid
+
+        Get ppMemory to pMemory
+        If (pMemory <> 0) Begin
+            Move (Free (pMemory)) to iVoid
+        End
+        Set ppMemory to 0
+        Set piMemorySize to 0
+    End_Procedure
+
+    // Closes and frees the handle (archive_read_free), then the memory copy of OpenMemory.
+    Procedure FreeHandle
+        Forward Send FreeHandle
+        Send ReleaseMemory
+    End_Procedure
+
+    // Same as FreeHandle: closes and frees the handle (archive_read_free).
+    Procedure FreeReader
+        Send FreeHandle
+    End_Procedure
+
+    // ---- format support (call before opening) -------------------------------------------------------------------
+
+    // Enables reading of 7-Zip archives (archive_read_support_format_7zip). Needs a seekable source (file or memory).
+    Function SupportFormat7zip Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_format_7zip" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_format_7zip (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_format_7zip"))
+    End_Function
+
+    // Enables reading of ar archives (archive_read_support_format_ar).
+    Function SupportFormatAr Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_format_ar" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_format_ar (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_format_ar"))
+    End_Function
+
+    // Enables reading of Microsoft CAB archives (archive_read_support_format_cab).
+    Function SupportFormatCab Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_format_cab" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_format_cab (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_format_cab"))
+    End_Function
+
+    // Enables reading of cpio archives, all variants (archive_read_support_format_cpio).
+    Function SupportFormatCpio Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_format_cpio" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_format_cpio (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_format_cpio"))
+    End_Function
+
+    // Enables reading of empty (zero byte) archives; they report no entries instead of an error (archive_read_support_format_empty).
+    Function SupportFormatEmpty Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_format_empty" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_format_empty (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_format_empty"))
+    End_Function
+
+    // Enables reading of GNU tar archives and the tar variants it can detect (archive_read_support_format_gnutar).
+    Function SupportFormatGnutar Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_format_gnutar" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_format_gnutar (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_format_gnutar"))
+    End_Function
+
+    // Enables reading of ISO 9660 images including Rock Ridge and Joliet (archive_read_support_format_iso9660).
+    Function SupportFormatIso9660 Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_format_iso9660" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_format_iso9660 (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_format_iso9660"))
+    End_Function
+
+    // Enables reading of LHA/LZH archives (archive_read_support_format_lha).
+    Function SupportFormatLha Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_format_lha" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_format_lha (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_format_lha"))
+    End_Function
+
+    // Enables reading of mtree manifests (archive_read_support_format_mtree).
+    Function SupportFormatMtree Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_format_mtree" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_format_mtree (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_format_mtree"))
+    End_Function
+
+    // Enables reading of RAR archives up to version 4 (archive_read_support_format_rar).
+    Function SupportFormatRar Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_format_rar" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_format_rar (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_format_rar"))
+    End_Function
+
+    // Enables the raw format, which presents any data stream as one entry named "data" (archive_read_support_format_raw).
+    Function SupportFormatRaw Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_format_raw" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_format_raw (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_format_raw"))
+    End_Function
+
+    // Enables reading of tar archives: v7, ustar, pax and GNU variants (archive_read_support_format_tar).
+    Function SupportFormatTar Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_format_tar" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_format_tar (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_format_tar"))
+    End_Function
+
+    // Enables reading of WARC web archives (archive_read_support_format_warc).
+    Function SupportFormatWarc Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_format_warc" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_format_warc (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_format_warc"))
+    End_Function
+
+    // Enables reading of XAR archives (archive_read_support_format_xar).
+    Function SupportFormatXar Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_format_xar" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_format_xar (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_format_xar"))
+    End_Function
+
+    // Enables both the streamable and the seekable zip reader (archive_read_support_format_zip).
+    Function SupportFormatZip Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_format_zip" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_format_zip (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_format_zip"))
+    End_Function
+
+    // Enables the zip reader that reads from the beginning to the end of the stream. It does not handle self extracting zips or zips that were modified in place (archive_read_support_format_zip_streamable).
+    Function SupportFormatZipStreamable Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_format_zip_streamable" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_format_zip_streamable (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_format_zip_streamable"))
+    End_Function
+
+    // Enables the zip reader that starts at the central directory. It needs a seekable source (archive_read_support_format_zip_seekable).
+    Function SupportFormatZipSeekable Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_format_zip_seekable" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_format_zip_seekable (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_format_zip_seekable"))
+    End_Function
+
+    // Enables reading of RAR 5 archives (archive_read_support_format_rar5). libarchive 3.7.7 crashes when this format is
+    // registered twice (also through SupportFormatAll), so the call is skipped (and ARCHIVE_OK returned) when it was
+    // done before on this handle.
+    Function SupportFormatRar5 Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_format_rar5" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        If (pbRar5Registered (Self)) Begin
+            Function_Return ARCHIVE_OK
+        End
+        Move (archive_read_support_format_rar5 (pArchive)) to iResult
+        If (iResult = ARCHIVE_OK) Begin
+            Set pbRar5Registered to True
+        End
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_format_rar5"))
+    End_Function
+
+    // Enables all formats libarchive can read, except raw (archive_read_support_format_all). Calling it twice has no
+    // effect. When SupportFormatRar5 was called before (libarchive 3.7.7 crashes on a second rar5 registration) the other
+    // formats are enabled one by one instead. Returns ARCHIVE_OK or the first result that was not ARCHIVE_OK.
+    Function SupportFormatAll Returns Integer
+        Pointer pArchive
+        Integer iResult iFirst
+
+        Get HandleFor "archive_read_support_format_all" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        If (pbAllRegistered (Self)) Begin
+            Function_Return ARCHIVE_OK
+        End
+        If (pbRar5Registered (Self)) Begin
+            Move ARCHIVE_OK to iFirst
+            Get SupportFormatAr to iResult
+            If (iResult <= ARCHIVE_FAILED and iFirst = ARCHIVE_OK) Begin
+                Move iResult to iFirst
+            End
+            Get SupportFormatCpio to iResult
+            If (iResult <= ARCHIVE_FAILED and iFirst = ARCHIVE_OK) Begin
+                Move iResult to iFirst
+            End
+            Get SupportFormatEmpty to iResult
+            If (iResult <= ARCHIVE_FAILED and iFirst = ARCHIVE_OK) Begin
+                Move iResult to iFirst
+            End
+            Get SupportFormatIso9660 to iResult
+            If (iResult <= ARCHIVE_FAILED and iFirst = ARCHIVE_OK) Begin
+                Move iResult to iFirst
+            End
+            Get SupportFormatLha to iResult
+            If (iResult <= ARCHIVE_FAILED and iFirst = ARCHIVE_OK) Begin
+                Move iResult to iFirst
+            End
+            Get SupportFormatMtree to iResult
+            If (iResult <= ARCHIVE_FAILED and iFirst = ARCHIVE_OK) Begin
+                Move iResult to iFirst
+            End
+            Get SupportFormatTar to iResult
+            If (iResult <= ARCHIVE_FAILED and iFirst = ARCHIVE_OK) Begin
+                Move iResult to iFirst
+            End
+            Get SupportFormatXar to iResult
+            If (iResult <= ARCHIVE_FAILED and iFirst = ARCHIVE_OK) Begin
+                Move iResult to iFirst
+            End
+            Get SupportFormatWarc to iResult
+            If (iResult <= ARCHIVE_FAILED and iFirst = ARCHIVE_OK) Begin
+                Move iResult to iFirst
+            End
+            Get SupportFormat7zip to iResult
+            If (iResult <= ARCHIVE_FAILED and iFirst = ARCHIVE_OK) Begin
+                Move iResult to iFirst
+            End
+            Get SupportFormatCab to iResult
+            If (iResult <= ARCHIVE_FAILED and iFirst = ARCHIVE_OK) Begin
+                Move iResult to iFirst
+            End
+            Get SupportFormatRar to iResult
+            If (iResult <= ARCHIVE_FAILED and iFirst = ARCHIVE_OK) Begin
+                Move iResult to iFirst
+            End
+            Get SupportFormatZip to iResult
+            If (iResult <= ARCHIVE_FAILED and iFirst = ARCHIVE_OK) Begin
+                Move iResult to iFirst
+            End
+            Set pbAllRegistered to True
+            Function_Return iFirst
+        End
+        Move (archive_read_support_format_all (pArchive)) to iResult
+        If (iResult = ARCHIVE_OK) Begin
+            Set pbAllRegistered to True
+            Set pbRar5Registered to True
+        End
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_format_all"))
+    End_Function
+
+
+    // Enables reading of one format by its code, ARCHIVE_FORMAT_* base code such as ARCHIVE_FORMAT_ZIP
+    // (archive_read_support_format_by_code).
+    Function SupportFormatByCode Integer eFormat Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_format_by_code" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        If (eFormat = ARCHIVE_FORMAT_RAR_V5) Begin
+            // goes through SupportFormatRar5 to avoid the double registration crash
+            Get SupportFormatRar5 to iResult
+            Function_Return iResult
+        End
+        Move (archive_read_support_format_by_code (pArchive, eFormat)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_format_by_code"))
+    End_Function
+
+    // Selects the format by its code and bypasses the format detection; use it when the format is known in advance
+    // (archive_read_set_format).
+    Function SetFormat Integer eFormat Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_set_format" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        If (eFormat = ARCHIVE_FORMAT_RAR_V5 and pbRar5Registered (Self)) Begin
+            Function_Return ARCHIVE_OK
+        End
+        Move (archive_read_set_format (pArchive, eFormat)) to iResult
+        If (eFormat = ARCHIVE_FORMAT_RAR_V5 and iResult = ARCHIVE_OK) Begin
+            Set pbRar5Registered to True
+        End
+        Function_Return (CheckResult (Self, iResult, "archive_read_set_format"))
+    End_Function
+
+    // ---- filter support (call before opening) -------------------------------------------------------------------
+
+    // Enables detection of all supported filters (archive_read_support_filter_all).
+    Function SupportFilterAll Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_filter_all" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_filter_all (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_filter_all"))
+    End_Function
+
+    // Enables detection and decompression of bzip2 (archive_read_support_filter_bzip2).
+    Function SupportFilterBzip2 Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_filter_bzip2" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_filter_bzip2 (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_filter_bzip2"))
+    End_Function
+
+    // Enables detection and decompression of Unix compress, .Z (archive_read_support_filter_compress).
+    Function SupportFilterCompress Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_filter_compress" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_filter_compress (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_filter_compress"))
+    End_Function
+
+    // Enables detection and decompression of gzip (archive_read_support_filter_gzip).
+    Function SupportFilterGzip Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_filter_gzip" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_filter_gzip (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_filter_gzip"))
+    End_Function
+
+    // Enables detection of grzip; needs the external grzip program (archive_read_support_filter_grzip).
+    Function SupportFilterGrzip Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_filter_grzip" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_filter_grzip (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_filter_grzip"))
+    End_Function
+
+    // Enables detection of lrzip; needs the external lrzip program (archive_read_support_filter_lrzip).
+    Function SupportFilterLrzip Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_filter_lrzip" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_filter_lrzip (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_filter_lrzip"))
+    End_Function
+
+    // Enables detection and decompression of lz4 (archive_read_support_filter_lz4).
+    Function SupportFilterLz4 Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_filter_lz4" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_filter_lz4 (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_filter_lz4"))
+    End_Function
+
+    // Enables detection and decompression of lzip (archive_read_support_filter_lzip).
+    Function SupportFilterLzip Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_filter_lzip" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_filter_lzip (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_filter_lzip"))
+    End_Function
+
+    // Enables detection and decompression of lzma (archive_read_support_filter_lzma).
+    Function SupportFilterLzma Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_filter_lzma" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_filter_lzma (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_filter_lzma"))
+    End_Function
+
+    // Enables detection of lzop; needs the external lzop program (archive_read_support_filter_lzop).
+    Function SupportFilterLzop Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_filter_lzop" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_filter_lzop (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_filter_lzop"))
+    End_Function
+
+    // Enables the pass-through filter for uncompressed data (archive_read_support_filter_none).
+    Function SupportFilterNone Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_filter_none" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_filter_none (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_filter_none"))
+    End_Function
+
+    // Enables detection of the RPM wrapper around a payload (archive_read_support_filter_rpm).
+    Function SupportFilterRpm Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_filter_rpm" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_filter_rpm (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_filter_rpm"))
+    End_Function
+
+    // Enables detection and decoding of uuencoded data (archive_read_support_filter_uu).
+    Function SupportFilterUu Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_filter_uu" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_filter_uu (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_filter_uu"))
+    End_Function
+
+    // Enables detection and decompression of xz (archive_read_support_filter_xz).
+    Function SupportFilterXz Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_filter_xz" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_filter_xz (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_filter_xz"))
+    End_Function
+
+    // Enables detection and decompression of Zstandard (archive_read_support_filter_zstd).
+    Function SupportFilterZstd Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_filter_zstd" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_filter_zstd (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_filter_zstd"))
+    End_Function
+
+
+    // Enables detection of one filter by its code, ARCHIVE_FILTER_* such as ARCHIVE_FILTER_GZIP
+    // (archive_read_support_filter_by_code).
+    Function SupportFilterByCode Integer eFilter Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_filter_by_code" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_filter_by_code (pArchive, eFilter)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_filter_by_code"))
+    End_Function
+
+    // Enables an external program as a filter that is applied to every input without detection
+    // (archive_read_support_filter_program). The program must be in the PATH.
+    Function SupportFilterProgram String sCommand Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_filter_program" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_filter_program (pArchive, AddressOf (sCommand))) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_filter_program"))
+    End_Function
+
+    // Enables an external program as a filter that is used when the start of the input equals ucSignature
+    // (archive_read_support_filter_program_signature).
+    Function SupportFilterProgramSignature String sCommand UChar[] ucSignature Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_support_filter_program_signature" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_support_filter_program_signature (pArchive, AddressOf (sCommand), AddressOf (ucSignature), SizeOfArray (ucSignature))) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_support_filter_program_signature"))
+    End_Function
+
+    // Called by every Open* method right before libarchive opens the archive: marks the handle as used and applies
+    // pbUtf8HeaderCharset.
+    { Visibility = Private }
+    Procedure BeginOpen
+        Pointer pArchive
+        Integer iResult
+        String sOptions
+        Void_Type iVoid
+
+        Get ppArchive to pArchive
+        Set pbOpenCalled to True
+        If (pArchive <> 0 and pbUtf8HeaderCharset (Self)) Begin
+            // Fails (and is ignored) when no registered reader knows the option.
+            Move "hdrcharset=UTF-8" to sOptions
+            Move (archive_read_set_options (pArchive, AddressOf (sOptions))) to iResult
+            If (iResult <> ARCHIVE_OK) Begin
+                Move (archive_clear_error (pArchive)) to iVoid
+            End
+        End
+    End_Procedure
+
+    // Appends one filter by its code to the pipeline without detection (archive_read_append_filter).
+    Function AppendFilter Integer eFilter Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_append_filter" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        If (eFilter = ARCHIVE_FILTER_COMPRESS) Begin
+            // archive_read_append_filter crashes (access violation) for the compress filter in libarchive 3.7.7, so
+            // the filter is enabled for detection instead.
+            Move (archive_read_support_filter_compress (pArchive)) to iResult
+            Function_Return (CheckResult (Self, iResult, "archive_read_support_filter_compress"))
+        End
+        Move (archive_read_append_filter (pArchive, eFilter)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_append_filter"))
+    End_Function
+
+    // Appends an external decompression program to the pipeline without detection (archive_read_append_filter_program).
+    Function AppendFilterProgram String sCommand Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_append_filter_program" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_append_filter_program (pArchive, AddressOf (sCommand))) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_append_filter_program"))
+    End_Function
+
+    // Appends an external decompression program that is used when the start of the input equals ucSignature
+    // (archive_read_append_filter_program_signature).
+    Function AppendFilterProgramSignature String sCommand UChar[] ucSignature Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_append_filter_program_signature" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_append_filter_program_signature (pArchive, AddressOf (sCommand), AddressOf (ucSignature), SizeOfArray (ucSignature))) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_append_filter_program_signature"))
+    End_Function
+
+    // ---- options and passphrases (call before opening) ------------------------------------------------------------
+
+    // Sets an option for the format readers only (archive_read_set_format_option). sModule "" matches any module.
+    // Returns ARCHIVE_OK, or ARCHIVE_FAILED (an error is raised with pbRaiseErrors) when no module knows the option.
+    Function SetFormatOption String sModule String sOption String sValue Returns Integer
+        Pointer pArchive pModule
+        Integer iResult
+
+        Get HandleFor "archive_read_set_format_option" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move 0 to pModule
+        If (sModule <> "") Begin
+            Move (AddressOf (sModule)) to pModule
+        End
+        Move (archive_read_set_format_option (pArchive, pModule, AddressOf (sOption), AddressOf (sValue))) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_set_format_option"))
+    End_Function
+
+    // Sets an option for the filters only (archive_read_set_filter_option). sModule "" matches any module.
+    Function SetFilterOption String sModule String sOption String sValue Returns Integer
+        Pointer pArchive pModule
+        Integer iResult
+
+        Get HandleFor "archive_read_set_filter_option" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move 0 to pModule
+        If (sModule <> "") Begin
+            Move (AddressOf (sModule)) to pModule
+        End
+        Move (archive_read_set_filter_option (pArchive, pModule, AddressOf (sOption), AddressOf (sValue))) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_set_filter_option"))
+    End_Function
+
+    // Sets an option for the format readers and the filters (archive_read_set_option). sModule "" matches any module.
+    Function SetOption String sModule String sOption String sValue Returns Integer
+        Pointer pArchive pModule
+        Integer iResult
+
+        Get HandleFor "archive_read_set_option" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move 0 to pModule
+        If (sModule <> "") Begin
+            Move (AddressOf (sModule)) to pModule
+        End
+        Move (archive_read_set_option (pArchive, pModule, AddressOf (sOption), AddressOf (sValue))) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_set_option"))
+    End_Function
+
+    // Sets options from a string like "module:option=value,option2,!option3" (archive_read_set_options).
+    Function SetOptions String sOptions Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_set_options" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_set_options (pArchive, AddressOf (sOptions))) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_set_options"))
+    End_Function
+
+    // Adds a passphrase that is tried when decrypting entries; can be called several times (archive_read_add_passphrase).
+    Function AddPassphrase String sPassphrase Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_add_passphrase" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_add_passphrase (pArchive, AddressOf (sPassphrase))) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_add_passphrase"))
+    End_Function
+
+    // ---- open ---------------------------------------------------------------------------------------------------
+
+    // Opens an archive file (archive_read_open_filename_w, so the name can contain any Unicode character). iBlockSize
+    // <= 0 uses 10240. Reading from stdin is not supported (empty name is refused).
+    Function OpenFile String sFileName Integer iBlockSize Returns Integer
+        Pointer pArchive
+        Integer iResult
+        WString wsFileName
+
+        Get HandleForOpen "archive_read_open_filename_w" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        If (sFileName = "") Begin
+            Function_Return (ReportFailure (Self, ARCHIVE_FAILED, "archive_read_open_filename_w", "an empty file name (stdin) is not supported"))
+        End
+        If (iBlockSize <= 0) Begin
+            Move 10240 to iBlockSize
+        End
+        Move sFileName to wsFileName
+        Send BeginOpen
+        Move (archive_read_open_filename_w (pArchive, AddressOf (wsFileName), iBlockSize)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_open_filename_w"))
+    End_Function
+
+    // Opens a multi volume archive, the volumes in the order they must be read (archive_read_open_filenames_w).
+    // iBlockSize <= 0 uses 10240.
+    Function OpenFiles String[] asFileNames Integer iBlockSize Returns Integer
+        Pointer pArchive pName pTarget
+        Integer iResult iCount iIndex iChars iTotal iOffset iBytes iVoid
+        WString wsName
+        UChar[] ucNames ucPointers
+
+        Get HandleForOpen "archive_read_open_filenames_w" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (SizeOfArray (asFileNames)) to iCount
+        If (iCount = 0) Begin
+            Function_Return (ReportFailure (Self, ARCHIVE_FAILED, "archive_read_open_filenames_w", "no file names"))
+        End
+        If (iBlockSize <= 0) Begin
+            Move 10240 to iBlockSize
+        End
+        // Size of the wide strings, each with its terminating zero.
+        Move 0 to iTotal
+        For iIndex from 0 to (iCount - 1)
+            Move asFileNames[iIndex] to wsName
+            Move (ArchiveReaderWideLength (AddressOf (wsName))) to iChars
+            Move (iTotal + (iChars + 1) * 2) to iTotal
+        Loop
+        Move (ResizeArray (ucNames, iTotal)) to ucNames
+        // The pointer table: one 8 byte pointer per name and a terminating 0 pointer.
+        Move (ResizeArray (ucPointers, (iCount + 1) * 8)) to ucPointers
+        Move 0 to iOffset
+        For iIndex from 0 to (iCount - 1)
+            Move asFileNames[iIndex] to wsName
+            Move (ArchiveReaderWideLength (AddressOf (wsName))) to iChars
+            Move ((iChars + 1) * 2) to iBytes
+            Move (AddressOf (ucNames) + iOffset) to pName
+            Move (CopyMemory (pName, AddressOf (wsName), iBytes)) to iVoid
+            Move (AddressOf (ucPointers) + (iIndex * 8)) to pTarget
+            Move (CopyMemory (pTarget, AddressOf (pName), 8)) to iVoid
+            Move (iOffset + iBytes) to iOffset
+        Loop
+        Move 0 to pName
+        Move (AddressOf (ucPointers) + (iCount * 8)) to pTarget
+        Move (CopyMemory (pTarget, AddressOf (pName), 8)) to iVoid
+        Send BeginOpen
+        Move (archive_read_open_filenames_w (pArchive, AddressOf (ucPointers), iBlockSize)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_open_filenames_w"))
+    End_Function
+
+    // Opens an archive that is in memory (archive_read_open_memory). The bytes are copied to a buffer that the object
+    // keeps (ppMemory, piMemorySize) until the handle is freed, so ucBuffer can be changed or freed afterwards.
+    Function OpenMemory UChar[] ByRef ucBuffer Returns Integer
+        Pointer pArchive pMemory
+        Integer iResult iSize iVoid
+
+        Get HandleForOpen "archive_read_open_memory" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Send ReleaseMemory
+        Move (SizeOfArray (ucBuffer)) to iSize
+        Move (Alloc (iSize + 1)) to pMemory
+        If (iSize > 0) Begin
+            Move (CopyMemory (pMemory, AddressOf (ucBuffer), iSize)) to iVoid
+        End
+        Set ppMemory to pMemory
+        Set piMemorySize to iSize
+        Send BeginOpen
+        Move (archive_read_open_memory (pArchive, pMemory, iSize)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_open_memory"))
+    End_Function
+
+    // Like OpenMemory but libarchive receives the data in chunks of iReadSize bytes (archive_read_open_memory2; meant for
+    // testing the readers with small reads).
+    Function OpenMemoryChunked UChar[] ByRef ucBuffer Integer iReadSize Returns Integer
+        Pointer pArchive pMemory
+        Integer iResult iSize iVoid
+
+        Get HandleForOpen "archive_read_open_memory2" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        If (iReadSize <= 0) Begin
+            Function_Return (ReportFailure (Self, ARCHIVE_FAILED, "archive_read_open_memory2", "the read size must be greater than 0"))
+        End
+        Send ReleaseMemory
+        Move (SizeOfArray (ucBuffer)) to iSize
+        Move (Alloc (iSize + 1)) to pMemory
+        If (iSize > 0) Begin
+            Move (CopyMemory (pMemory, AddressOf (ucBuffer), iSize)) to iVoid
+        End
+        Set ppMemory to pMemory
+        Set piMemorySize to iSize
+        Send BeginOpen
+        Move (archive_read_open_memory2 (pArchive, pMemory, iSize, iReadSize)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_open_memory2"))
+    End_Function
+
+    // Opens an archive from a C runtime file descriptor (archive_read_open_fd). The caller keeps ownership of the
+    // descriptor and closes it after the archive was closed. iBlockSize <= 0 uses 10240.
+    Function OpenFd Integer iFileDescriptor Integer iBlockSize Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleForOpen "archive_read_open_fd" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        If (iBlockSize <= 0) Begin
+            Move 10240 to iBlockSize
+        End
+        Send BeginOpen
+        Move (archive_read_open_fd (pArchive, iFileDescriptor, iBlockSize)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_open_fd"))
+    End_Function
+
+    // Opens an archive from a C runtime FILE pointer (archive_read_open_FILE). The caller keeps ownership of the FILE
+    // and closes it after the archive was closed.
+    Function OpenFilePtr Pointer pFile Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleForOpen "archive_read_open_FILE" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Send BeginOpen
+        Move (archive_read_open_FILE_Ptr (pArchive, pFile)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_open_FILE"))
+    End_Function
+
+    // Opens the archive with the callbacks that were set earlier (archive_read_open1). Callbacks cannot be set from
+    // DataFlex, so this fails with ARCHIVE_FATAL ("no reader function"); it is only exposed for completeness.
+    Function Open1 Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleForOpen "archive_read_open1" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Send BeginOpen
+        Move (archive_read_open1 (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_open1"))
+    End_Function
+
+    // ---- header and data ----------------------------------------------------------------------------------------
+
+    // Reads the next entry header into an entry object you own (archive_read_next_header2). hoEntry is a cArchiveEntry;
+    // an entry is created for it when it has none. Unlike NextHeader the entry stays valid after the next header was
+    // read. Returns ARCHIVE_OK, ARCHIVE_WARN, ARCHIVE_EOF or a failure.
+    Function NextHeaderInto Handle hoEntry Returns Integer
+        Pointer pArchive pEntry
+        Integer iResult
+
+        Get HandleFor "archive_read_next_header2" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        If (not (HasEntry (hoEntry))) Begin
+            Send CreateEntry of hoEntry
+        End
+        Get ppEntry of hoEntry to pEntry
+        Move (archive_read_next_header2 (pArchive, pEntry)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_next_header2"))
+    End_Function
+
+    // Byte offset in the uncompressed data where the last read header started (archive_read_header_position).
+    Function HeaderPosition Returns BigInt
+        Pointer pArchive
+
+        Get HandleFor "archive_read_header_position" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_read_header_position (pArchive))
+    End_Function
+
+    // Skips the remaining data of the current entry (archive_read_data_skip).
+    Function SkipData Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_data_skip" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_data_skip (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_data_skip"))
+    End_Function
+
+    // Seeks within the data of the current entry (archive_seek_data); eWhence is ARCHIVE_SEEK_SET, ARCHIVE_SEEK_CUR or
+    // ARCHIVE_SEEK_END. Returns the new offset, or a negative ARCHIVE_* code when the format cannot seek. libarchive 3.7.7
+    // does not seek in the zip, tar, 7zip, cpio, iso9660 and rar5 readers (ARCHIVE_FATAL, the archive is unusable afterwards).
+    Function SeekData BigInt iOffset Integer eWhence Returns BigInt
+        Pointer pArchive
+        BigInt iNewOffset
+        Integer iResult
+
+        Get HandleFor "archive_seek_data" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_seek_data (pArchive, iOffset, eWhence)) to iNewOffset
+        If (iNewOffset < 0) Begin
+            Get CheckResult iNewOffset "archive_seek_data" to iResult
+        End
+        Function_Return iNewOffset
+    End_Function
+
+    // ---- archive information ------------------------------------------------------------------------------------
+
+    // Raw result of archive_read_has_encrypted_entries: 1 when an encrypted entry was found, 0 when none was found
+    // yet, ARCHIVE_READ_FORMAT_ENCRYPTION_DONT_KNOW or ARCHIVE_READ_FORMAT_ENCRYPTION_UNSUPPORTED when unknown.
+    Function EncryptedEntriesState Returns Integer
+        Pointer pArchive
+
+        Get ppArchive to pArchive
+        If (pArchive = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_read_has_encrypted_entries (pArchive))
+    End_Function
+
+    // True when at least one encrypted entry was found among the headers read so far (archive_read_has_encrypted_entries).
+    { MethodType = Property }
+    Function pbHasEncryptedEntries Returns Boolean
+        Integer iState
+        Get EncryptedEntriesState to iState
+        Function_Return (iState = 1)
+    End_Function
+
+    // Bit mask of ARCHIVE_READ_FORMAT_CAPS_* values: what the format reader can tell about encryption
+    // (archive_read_format_capabilities). Valid after the first header was read.
+    { MethodType = Property }
+    Function peFormatCapabilities Returns Integer
+        Pointer pArchive
+
+        Get ppArchive to pArchive
+        If (pArchive = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_read_format_capabilities (pArchive))
+    End_Function
+
+    // ---- extract ------------------------------------------------------------------------------------------------
+
+    // Extracts the current entry (header and data) to disk relative to the current directory, or to the absolute path
+    // of the entry (archive_read_extract). A refused entry (for example "Path contains '..'" with
+    // ARCHIVE_EXTRACT_SECURE_NODOTDOT) returns ARCHIVE_WARN and is not written. iFlags is a combination of ARCHIVE_EXTRACT_* values. To extract elsewhere
+    // change psPathname of phoEntry first.
+    Function ExtractCurrent Integer iFlags Returns Integer
+        Pointer pArchive pEntry
+        Integer iResult
+
+        Get HandleFor "archive_read_extract" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Get ppEntry of (phoEntry (Self)) to pEntry
+        If (pEntry = 0) Begin
+            Function_Return (ReportFailure (Self, ARCHIVE_FAILED, "archive_read_extract", "there is no current entry"))
+        End
+        Move (archive_read_extract (pArchive, pEntry, iFlags)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_extract"))
+    End_Function
+
+    // Extracts the current entry through an archive_write_disk handle (archive_read_extract2). hoDiskWriter is a
+    // wrapper object with the write disk handle in ppArchive (cArchiveDiskWriter).
+    Function ExtractCurrentTo Handle hoDiskWriter Returns Integer
+        Pointer pArchive pEntry pDisk
+        Integer iResult
+
+        Get HandleFor "archive_read_extract2" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Get ppEntry of (phoEntry (Self)) to pEntry
+        If (pEntry = 0) Begin
+            Function_Return (ReportFailure (Self, ARCHIVE_FAILED, "archive_read_extract2", "there is no current entry"))
+        End
+        Get ppArchive of hoDiskWriter to pDisk
+        If (pDisk = 0) Begin
+            Function_Return (ReportFailure (Self, ARCHIVE_FAILED, "archive_read_extract2", "the disk writer has no handle"))
+        End
+        Move (archive_read_extract2 (pArchive, pEntry, pDisk)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_extract2"))
+    End_Function
+
+    // Records the device and inode of a file that extraction must not overwrite, normally the archive being read
+    // (archive_read_extract_set_skip_file). Applies to ExtractCurrent, which then returns ARCHIVE_WARN ("Refusing to
+    // overwrite archive") for an entry that would replace that file.
+    Procedure SetExtractSkipFile BigInt iDevice BigInt iInode
+        Pointer pArchive
+        Void_Type iVoid
+
+        Get HandleFor "archive_read_extract_set_skip_file" to pArchive
+        If (pArchive <> 0) Begin
+            Move (archive_read_extract_set_skip_file (pArchive, iDevice, iInode)) to iVoid
+        End
+    End_Procedure
+
+    // ---- convenience: one call per task ---------------------------------------------------------------------------
+
+    // Creates a new handle with all formats and filters, adds psPassphrase (when set) and opens the archive file.
+    // Returns the result of OpenFile; on failure the handle is kept so the error text can be read.
+    Function OpenArchive String sFileName Returns Integer
+        Integer iResult
+        String sPassphrase
+
+        Send CreateReaderAll
+        If (not (HasHandle (Self))) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Get psPassphrase to sPassphrase
+        If (sPassphrase <> "") Begin
+            Get AddPassphrase sPassphrase to iResult
+        End
+        Get OpenFile sFileName 0 to iResult
+        Function_Return iResult
+    End_Function
+
+    // Lists the entries of an archive file: opens it (OpenArchive), reads all headers, closes and frees the handle.
+    // The array is empty when the archive cannot be opened. Uses (and frees) the handle of this object.
+    Function ListEntries String sFileName Returns tArchiveEntryInfo[]
+        tArchiveEntryInfo[] aEntries
+        tArchiveEntryInfo tInfo
+        Integer iResult iCount
+
+        Get OpenArchive sFileName to iResult
+        If (iResult <> ARCHIVE_OK) Begin
+            Send FreeHandle
+            Function_Return aEntries
+        End
+        Move 0 to iCount
+        Get NextHeader to iResult
+        While (iResult = ARCHIVE_OK or iResult = ARCHIVE_WARN)
+            Get EntryInfo to tInfo
+            Move tInfo to aEntries[iCount]
+            Increment iCount
+            Get NextHeader to iResult
+        Loop
+        Send FreeHandle
+        Function_Return aEntries
+    End_Function
+
+    // Extracts all entries of an archive file below sTargetFolder (created when missing) through an archive_write_disk
+    // handle with iFlags (ARCHIVE_EXTRACT_* values; ARCHIVE_EXTRACT_TIME ior ARCHIVE_EXTRACT_PERM ior
+    // ARCHIVE_EXTRACT_SECURE_NODOTDOT ior ARCHIVE_EXTRACT_SECURE_SYMLINKS is a sensible choice for untrusted archives).
+    // Returns ARCHIVE_OK, or the first result that was not ARCHIVE_OK (the remaining entries are still extracted unless
+    // the failure was ARCHIVE_FATAL). libarchive reports entries it refuses (path with "..", absolute path, ...)
+    // as ARCHIVE_WARN and does not write them. piExtractedCount holds the number of entries that were extracted with
+    // ARCHIVE_OK. Uses (and frees) the handle of this object.
+    Function ExtractAll String sArchiveFile String sTargetFolder Integer iFlags Returns Integer
+        Pointer pArchive pDisk pEntry pText
+        Integer iResult iExtract iFirst iVoid
+        Handle hoEntry
+        String sFolder sName sLink sNew
+        Boolean bOk
+
+        Set piExtractedCount to 0
+        Move sTargetFolder to sFolder
+        While (sFolder <> "" and (Right (sFolder, 1) = "\" or Right (sFolder, 1) = "/"))
+            Move (Left (sFolder, Length (sFolder) - 1)) to sFolder
+        Loop
+        If (sFolder <> "" and not (IsDirectory (sFolder + "\"))) Begin
+            Move (CreateDirectoryRecursive (sFolder + "\")) to bOk
+            If (not (bOk)) Begin
+                Function_Return (ReportFailure (Self, ARCHIVE_FAILED, "ExtractAll", "cannot create the folder" * sFolder))
+            End
+        End
+        Get OpenArchive sArchiveFile to iResult
+        If (iResult <> ARCHIVE_OK) Begin
+            Send FreeHandle
+            Function_Return iResult
+        End
+        Get ppArchive to pArchive
+        Get phoEntry to hoEntry
+        Move (archive_write_disk_new ()) to pDisk
+        Move (archive_write_disk_set_options (pDisk, iFlags)) to iResult
+        Move (archive_write_disk_set_standard_lookup (pDisk)) to iResult
+        Move ARCHIVE_OK to iFirst
+        Get NextHeader to iResult
+        While (iResult = ARCHIVE_OK or iResult = ARCHIVE_WARN)
+            Get ppEntry of hoEntry to pEntry
+            If (sFolder <> "") Begin
+                // Move the entry below the target folder (also the target of a hard link).
+                Get psPathname of hoEntry to sName
+                Move (sFolder + "/" + sName) to sNew
+                Move (archive_entry_update_pathname_utf8 (pEntry, AddressOf (sNew))) to iExtract
+                Move (archive_entry_hardlink_utf8 (pEntry)) to pText
+                If (pText <> 0) Begin
+                    Move (PointerToString (pText)) to sLink
+                    Move (sFolder + "/" + sLink) to sNew
+                    Move (archive_entry_update_hardlink_utf8 (pEntry, AddressOf (sNew))) to iExtract
+                End
+            End
+            Move (archive_read_extract2 (pArchive, pEntry, pDisk)) to iExtract
+            Get CheckResult iExtract "archive_read_extract2" to iExtract
+            If (iExtract = ARCHIVE_OK) Begin
+                Set piExtractedCount to (piExtractedCount (Self) + 1)
+            End
+            If (iExtract < ARCHIVE_OK and iFirst = ARCHIVE_OK) Begin
+                Move iExtract to iFirst
+            End
+            If (iExtract = ARCHIVE_FATAL) Begin
+                Move ARCHIVE_EOF to iResult
+            End
+            Else Begin
+                Get NextHeader to iResult
+            End
+        Loop
+        If (iResult < ARCHIVE_OK and iFirst = ARCHIVE_OK) Begin
+            Move iResult to iFirst
+        End
+        Move (archive_write_close (pDisk)) to iResult
+        If (iResult < ARCHIVE_OK and iFirst = ARCHIVE_OK) Begin
+            Move iResult to iFirst
+        End
+        Move (archive_write_free (pDisk)) to iResult
+        Send FreeHandle
+        Function_Return iFirst
+    End_Function
+
+    // Reads the data of one entry of an archive file into ucData: opens the archive (OpenArchive), searches the first
+    // entry whose path name equals sPathname (exact comparison, "/" separators), reads its data and frees the handle.
+    // Returns False when the archive cannot be opened, the entry does not exist or its data cannot be read (ucData is
+    // empty then). Uses (and frees) the handle of this object.
+    Function ReadEntryData String sArchiveFile String sPathname UChar[] ByRef ucData Returns Boolean
+        Integer iResult
+        String sName
+        Boolean bFound bOk
+        UChar[] ucEmpty
+
+        Move ucEmpty to ucData
+        Get OpenArchive sArchiveFile to iResult
+        If (iResult <> ARCHIVE_OK) Begin
+            Send FreeHandle
+            Function_Return False
+        End
+        Move False to bFound
+        Move False to bOk
+        Get NextHeader to iResult
+        While (iResult = ARCHIVE_OK or iResult = ARCHIVE_WARN)
+            Get psPathname of (phoEntry (Self)) to sName
+            If (sName = sPathname) Begin
+                Move True to bFound
+                Get ReadAllData (&ucData) to iResult
+                Move (iResult = ARCHIVE_OK) to bOk
+                Move ARCHIVE_EOF to iResult
+            End
+            Else Begin
+                Get NextHeader to iResult
+            End
+        Loop
+        Send FreeHandle
+        Function_Return (bFound and bOk)
+    End_Function
+End_Class

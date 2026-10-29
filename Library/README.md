@@ -12,3 +12,7 @@ This directory should only include the library.
 1. Clone the repository.
 2. Navigate to the project directory.
 3. Start developing your DataFlex library
+
+## Documentation
+
+See `../Help/README.md` for the documentation of all classes, methods, external functions and constants.

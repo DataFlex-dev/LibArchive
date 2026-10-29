@@ -1,0 +1,2512 @@
+﻿Use Archive.h.pkg
+
+// The C runtime free function. archive_entry_acl_to_text and archive_entry_acl_to_text_w return malloc'ed memory that
+// the caller has to release. archive.dll uses the universal C runtime, so ucrtbase.dll frees it.
+External_Function archive_wrapper_crt_free "free" ucrtbase.dll ;
+    Pointer pMemory ;
+    Returns Void_Type
+
+// Windows API functions used to turn the ANSI code page names libarchive returns for ACL entries into DataFlex strings.
+External_Function archive_wrapper_MultiByteToWideChar "MultiByteToWideChar" kernel32.dll ;
+    UInteger iCodePage ;
+    UInteger iFlags ;
+    Pointer pMultiByte ;
+    Integer iMultiByteLength ;
+    Pointer pWideChar ;
+    Integer iWideCharLength ;
+    Returns Integer
+
+External_Function archive_wrapper_lstrlenA "lstrlenA" kernel32.dll ;
+    Pointer pText ;
+    Returns Integer
+
+// One ACL entry as returned by cArchiveEntry.AclNext. eType is ARCHIVE_ENTRY_ACL_TYPE_* (0 means "no more entries"),
+// iPermset the permission bits (ARCHIVE_ENTRY_ACL_*), eTag the tag (ARCHIVE_ENTRY_ACL_USER, _GROUP, ...), iQualifier the
+// numeric user or group id and sName the user or group name.
+Struct tArchiveEntryAcl
+    Integer eType
+    Integer iPermset
+    Integer eTag
+    Integer iQualifier
+    String sName
+End_Struct
+
+// One extended attribute as returned by cArchiveEntry.XattrNext (sName is empty when there are no more attributes).
+Struct tArchiveEntryXattr
+    String sName
+    UChar[] ucValue
+End_Struct
+
+// One data region of a sparse file as returned by cArchiveEntry.SparseNext (iLength is -1 when there are no more regions).
+Struct tArchiveEntrySparse
+    BigInt iOffset
+    BigInt iLength
+End_Struct
+
+// Wrapper around a libarchive "struct archive_entry": the metadata of one archive member.
+// An entry is either owned (created by CreateEntry, CreateEntryForArchive or CloneEntry, freed by FreeEntry / when the
+// object is destroyed) or borrowed (AttachEntry with bOwns False, for example the entry that archive_read_next_header
+// returned; libarchive owns it and it is only valid until the next header is read).
+//
+// Getters of an object without an entry return 0, False or an empty string; setters and methods do nothing (methods that
+// return a libarchive result report ARCHIVE_FAILED). See Help\Classes\cArchiveEntry.md for the full reference.
+Class cArchiveEntry is a cObject
+
+    Procedure Construct_Object
+        Forward Send Construct_Object
+
+        // The libarchive entry (struct archive_entry *). 0 when there is none.
+        { DesignTime = False }
+        Property Pointer ppEntry 0
+        // True when this object frees the entry (archive_entry_free).
+        { DesignTime = False }
+        Property Boolean pbOwnsEntry False
+        // True: a libarchive result of ARCHIVE_FAILED or worse (ACL and xattr methods) raises a DataFlex error.
+        Property Boolean pbRaiseErrors True
+
+        // False when the last UTF-8 name setter (psPathname, psHardlink, psSymlink, psUname, psGname, psLink) stored valid text
+        // that could not be converted to the ANSI code page without loss (libarchive keeps the UTF-8 text anyway). Treat it as
+        // read only.
+        { DesignTime = False }
+        Property Boolean pbLastTextLossless True
+    End_Procedure
+
+    Procedure Destroy_Object
+        Send FreeEntry
+        Forward Send Destroy_Object
+    End_Procedure
+
+    // ---- helpers ------------------------------------------------------------------------------------------------
+
+    // True when the text is valid UTF-8 (MultiByteToWideChar with MB_ERR_INVALID_CHARS). The UTF-8 name setters call this
+    // before they call libarchive: invalid text is rejected with a DataFlex error, libarchive never sees it.
+    Function IsValidUtf8 String sText Returns Boolean
+        Integer iLength
+
+        If (sText = "") Begin
+            Function_Return True
+        End
+        // code page 65001 is CP_UTF8, flag 8 is MB_ERR_INVALID_CHARS; a length of -1 means zero terminated
+        Move (archive_wrapper_MultiByteToWideChar (65001, 8, AddressOf (sText), -1, 0, 0)) to iLength
+        Function_Return (iLength > 0)
+    End_Function
+
+    // Converts a zero terminated string pointer returned by libarchive to a DataFlex string. 0 gives "".
+    Function PointerText Pointer pText Returns String
+        If (pText = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerToString (pText))
+    End_Function
+
+    // Converts a zero terminated string pointer in the ANSI code page of the program (what libarchive returns for ACL user
+    // and group names) to a DataFlex string. 0 gives "".
+    Function AnsiPointerText Pointer pText Returns String
+        Integer iLength iWide
+        UChar[] ucWide
+
+        If (pText = 0) Begin
+            Function_Return ""
+        End
+        Move (archive_wrapper_lstrlenA (pText)) to iLength
+        If (iLength = 0) Begin
+            Function_Return ""
+        End
+        Move (ResizeArray (ucWide, (iLength + 1) * 2)) to ucWide
+        // code page 0 is CP_ACP
+        Move (archive_wrapper_MultiByteToWideChar (0, 0, pText, iLength, AddressOf (ucWide), iLength)) to iWide
+        If (iWide = 0) Begin
+            Function_Return (PointerToString (pText))
+        End
+        Function_Return (PointerToWString (AddressOf (ucWide)))
+    End_Function
+
+    // Converts a zero terminated wide string pointer returned by libarchive to a DataFlex string. 0 gives "".
+    Function PointerWideText Pointer pText Returns String
+        If (pText = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerToWString (pText))
+    End_Function
+
+    // Passes a libarchive result on; ARCHIVE_FAILED or worse raises a DataFlex error when pbRaiseErrors is True.
+    Function CheckResult Integer iResult String sOperation Returns Integer
+        If (iResult <= ARCHIVE_FAILED and pbRaiseErrors (Self)) Begin
+            Error DFERR_PROGRAM (SFormat ("%1 failed (%2)", sOperation, String (iResult)))
+        End
+        Function_Return iResult
+    End_Function
+
+    // ---- life cycle ---------------------------------------------------------------------------------------------
+
+    // True when the object wraps an entry.
+    Function HasEntry Returns Boolean
+        Function_Return (ppEntry (Self) <> 0)
+    End_Function
+
+    // Frees the current entry (when owned) and creates a new empty owned entry (archive_entry_new).
+    Procedure CreateEntry
+        Pointer pEntry
+        Send FreeEntry
+        Move (archive_entry_new ()) to pEntry
+        Set ppEntry to pEntry
+        Set pbOwnsEntry to True
+    End_Procedure
+
+    // Like CreateEntry, but the entry takes its character set conversion settings from a libarchive handle
+    // (archive_entry_new2). pArchive is the ppArchive of a wrapper object or 0 (same as CreateEntry).
+    Procedure CreateEntryForArchive Pointer pArchive
+        Pointer pEntry
+        Send FreeEntry
+        Move (archive_entry_new2 (pArchive)) to pEntry
+        Set ppEntry to pEntry
+        Set pbOwnsEntry to True
+    End_Procedure
+
+    // Frees the current entry (when owned) and wraps an existing entry. When bOwns is True the object frees it.
+    Procedure AttachEntry Pointer pEntry Boolean bOwns
+        Send FreeEntry
+        Set ppEntry to pEntry
+        Set pbOwnsEntry to bOwns
+    End_Procedure
+
+    // Frees the entry when it is owned and forgets it.
+    Procedure FreeEntry
+        Pointer pEntry
+        Void_Type iVoid
+
+        Get ppEntry to pEntry
+        If (pEntry <> 0 and pbOwnsEntry (Self)) Begin
+            Move (archive_entry_free (pEntry)) to iVoid
+        End
+        Set ppEntry to 0
+        Set pbOwnsEntry to False
+    End_Procedure
+
+    // Resets every field of the entry to its default (archive_entry_clear). The entry stays attached.
+    Procedure Clear
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_clear (pEntry)) to pEntry
+        End
+    End_Procedure
+
+    // Creates a deep copy of the entry (archive_entry_clone) in a NEW cArchiveEntry object that owns the copy. The new
+    // object is a sibling of this one (same parent); the caller destroys it (Send Destroy of the handle) when done.
+    // Returns 0 when this object has no entry.
+    Function CloneEntry Returns Handle
+        Pointer pEntry pClone
+        Handle hoParent hoClone
+
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Move (archive_entry_clone (pEntry)) to pClone
+        If (pClone = 0) Begin
+            Error DFERR_PROGRAM "archive_entry_clone failed (out of memory)"
+            Function_Return 0
+        End
+        Get Parent to hoParent
+        Get Create of hoParent U_cArchiveEntry to hoClone
+        Send AttachEntry of hoClone pClone True
+        Function_Return hoClone
+    End_Function
+
+    // ---- names -------------------------------------------------------------------------------------------------
+    // Path name, hard link, symbolic link, user name and group name have the same accessors:
+    //   psX          UTF-8 text (archive_entry_X_utf8). The setter uses archive_entry_update_X_utf8. It raises a DataFlex
+    //                error only when the text is not valid UTF-8 (libarchive is not called then). Valid text that can not be
+    //                converted to the ANSI code page without loss (for example Japanese text on a Western Windows) is
+    //                stored as it is; pbLastTextLossless tells whether the last setter call converted without loss.
+    //                Setting an empty string removes the name.
+    //   psXLocale    narrow text through archive_entry_X / archive_entry_set_X: the bytes of the DataFlex string (UTF-8) are
+    //                passed and returned unchanged, libarchive interprets them in the ANSI code page. Only ASCII text is
+    //                portable; use psX or psXWide for everything else.
+    //   psXWide      wide (UTF-16) text (archive_entry_X_w / archive_entry_copy_X_w); lossless for every character.
+    //   SetXUtf8     archive_entry_set_X_utf8 (no validity report; psX is the checked variant).
+    //   CopyXLocale  archive_entry_copy_X (same as setting psXLocale).
+
+    // Path name as UTF-8 text (archive_entry_pathname_utf8 / archive_entry_update_pathname_utf8). Empty when not set.
+    { MethodType = Property }
+    Function psPathname Returns String
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerText (Self, archive_entry_pathname_utf8 (pEntry)))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set psPathname String sValue
+        Pointer pEntry
+        Integer iResult
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_set_pathname_utf8 (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                If (not (IsValidUtf8 (Self, sValue))) Begin
+                    Error DFERR_PROGRAM "Could not set the path name: the text is not valid UTF-8"
+                End
+                Else Begin
+                    Move (archive_entry_update_pathname_utf8 (pEntry, AddressOf (sValue))) to iResult
+                    Set pbLastTextLossless to (iResult <> 0)
+                End
+            End
+        End
+    End_Procedure
+
+    // Path name in the current ANSI code page (archive_entry_pathname / archive_entry_set_pathname).
+    { MethodType = Property }
+    Function psPathnameLocale Returns String
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerText (Self, archive_entry_pathname (pEntry)))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set psPathnameLocale String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_set_pathname (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move (archive_entry_set_pathname (pEntry, AddressOf (sValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // Path name as wide (UTF-16) text (archive_entry_pathname_w / archive_entry_copy_pathname_w).
+    { MethodType = Property }
+    Function psPathnameWide Returns String
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerWideText (Self, archive_entry_pathname_w (pEntry)))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set psPathnameWide String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        WString wsValue
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_copy_pathname_w (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move sValue to wsValue
+                Move (archive_entry_copy_pathname_w (pEntry, AddressOf (wsValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // Sets the path name from UTF-8 text without a validity report (archive_entry_set_pathname_utf8). Empty removes it.
+    Procedure SetPathnameUtf8 String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_set_pathname_utf8 (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // Copies the path name from text in the current ANSI code page (archive_entry_copy_pathname). Empty removes it.
+    Procedure CopyPathnameLocale String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_copy_pathname (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move (archive_entry_copy_pathname (pEntry, AddressOf (sValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // Hard link target as UTF-8 text (archive_entry_hardlink_utf8 / archive_entry_update_hardlink_utf8). Empty when not set.
+    { MethodType = Property }
+    Function psHardlink Returns String
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerText (Self, archive_entry_hardlink_utf8 (pEntry)))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set psHardlink String sValue
+        Pointer pEntry
+        Integer iResult
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_set_hardlink_utf8 (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                If (not (IsValidUtf8 (Self, sValue))) Begin
+                    Error DFERR_PROGRAM "Could not set the hard link target: the text is not valid UTF-8"
+                End
+                Else Begin
+                    Move (archive_entry_update_hardlink_utf8 (pEntry, AddressOf (sValue))) to iResult
+                    Set pbLastTextLossless to (iResult <> 0)
+                End
+            End
+        End
+    End_Procedure
+
+    // Hard link target in the current ANSI code page (archive_entry_hardlink / archive_entry_set_hardlink).
+    { MethodType = Property }
+    Function psHardlinkLocale Returns String
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerText (Self, archive_entry_hardlink (pEntry)))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set psHardlinkLocale String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_set_hardlink (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move (archive_entry_set_hardlink (pEntry, AddressOf (sValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // Hard link target as wide (UTF-16) text (archive_entry_hardlink_w / archive_entry_copy_hardlink_w).
+    { MethodType = Property }
+    Function psHardlinkWide Returns String
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerWideText (Self, archive_entry_hardlink_w (pEntry)))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set psHardlinkWide String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        WString wsValue
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_copy_hardlink_w (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move sValue to wsValue
+                Move (archive_entry_copy_hardlink_w (pEntry, AddressOf (wsValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // Sets the hard link target from UTF-8 text without a validity report (archive_entry_set_hardlink_utf8). Empty removes it.
+    Procedure SetHardlinkUtf8 String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_set_hardlink_utf8 (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move (archive_entry_set_hardlink_utf8 (pEntry, AddressOf (sValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // Copies the hard link target from text in the current ANSI code page (archive_entry_copy_hardlink). Empty removes it.
+    Procedure CopyHardlinkLocale String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_copy_hardlink (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move (archive_entry_copy_hardlink (pEntry, AddressOf (sValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // Symbolic link target as UTF-8 text (archive_entry_symlink_utf8 / archive_entry_update_symlink_utf8). Empty when not set.
+    { MethodType = Property }
+    Function psSymlink Returns String
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerText (Self, archive_entry_symlink_utf8 (pEntry)))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set psSymlink String sValue
+        Pointer pEntry
+        Integer iResult
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_set_symlink_utf8 (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                If (not (IsValidUtf8 (Self, sValue))) Begin
+                    Error DFERR_PROGRAM "Could not set the symbolic link target: the text is not valid UTF-8"
+                End
+                Else Begin
+                    Move (archive_entry_update_symlink_utf8 (pEntry, AddressOf (sValue))) to iResult
+                    Set pbLastTextLossless to (iResult <> 0)
+                End
+            End
+        End
+    End_Procedure
+
+    // Symbolic link target in the current ANSI code page (archive_entry_symlink / archive_entry_set_symlink).
+    { MethodType = Property }
+    Function psSymlinkLocale Returns String
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerText (Self, archive_entry_symlink (pEntry)))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set psSymlinkLocale String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_set_symlink (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move (archive_entry_set_symlink (pEntry, AddressOf (sValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // Symbolic link target as wide (UTF-16) text (archive_entry_symlink_w / archive_entry_copy_symlink_w).
+    { MethodType = Property }
+    Function psSymlinkWide Returns String
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerWideText (Self, archive_entry_symlink_w (pEntry)))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set psSymlinkWide String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        WString wsValue
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_copy_symlink_w (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move sValue to wsValue
+                Move (archive_entry_copy_symlink_w (pEntry, AddressOf (wsValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // Sets the symbolic link target from UTF-8 text without a validity report (archive_entry_set_symlink_utf8). Empty removes it.
+    Procedure SetSymlinkUtf8 String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_set_symlink_utf8 (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move (archive_entry_set_symlink_utf8 (pEntry, AddressOf (sValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // Copies the symbolic link target from text in the current ANSI code page (archive_entry_copy_symlink). Empty removes it.
+    Procedure CopySymlinkLocale String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_copy_symlink (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move (archive_entry_copy_symlink (pEntry, AddressOf (sValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // User (owner) name as UTF-8 text (archive_entry_uname_utf8 / archive_entry_update_uname_utf8). Empty when not set.
+    { MethodType = Property }
+    Function psUname Returns String
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerText (Self, archive_entry_uname_utf8 (pEntry)))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set psUname String sValue
+        Pointer pEntry
+        Integer iResult
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_set_uname_utf8 (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                If (not (IsValidUtf8 (Self, sValue))) Begin
+                    Error DFERR_PROGRAM "Could not set the user name: the text is not valid UTF-8"
+                End
+                Else Begin
+                    Move (archive_entry_update_uname_utf8 (pEntry, AddressOf (sValue))) to iResult
+                    Set pbLastTextLossless to (iResult <> 0)
+                End
+            End
+        End
+    End_Procedure
+
+    // User (owner) name in the current ANSI code page (archive_entry_uname / archive_entry_set_uname).
+    { MethodType = Property }
+    Function psUnameLocale Returns String
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerText (Self, archive_entry_uname (pEntry)))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set psUnameLocale String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_set_uname (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move (archive_entry_set_uname (pEntry, AddressOf (sValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // User (owner) name as wide (UTF-16) text (archive_entry_uname_w / archive_entry_copy_uname_w).
+    { MethodType = Property }
+    Function psUnameWide Returns String
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerWideText (Self, archive_entry_uname_w (pEntry)))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set psUnameWide String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        WString wsValue
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_copy_uname_w (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move sValue to wsValue
+                Move (archive_entry_copy_uname_w (pEntry, AddressOf (wsValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // Sets the user name from UTF-8 text without a validity report (archive_entry_set_uname_utf8). Empty removes it.
+    Procedure SetUnameUtf8 String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_set_uname_utf8 (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move (archive_entry_set_uname_utf8 (pEntry, AddressOf (sValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // Copies the user name from text in the current ANSI code page (archive_entry_copy_uname). Empty removes it.
+    Procedure CopyUnameLocale String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_copy_uname (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move (archive_entry_copy_uname (pEntry, AddressOf (sValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // Group (owner) name as UTF-8 text (archive_entry_gname_utf8 / archive_entry_update_gname_utf8). Empty when not set.
+    { MethodType = Property }
+    Function psGname Returns String
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerText (Self, archive_entry_gname_utf8 (pEntry)))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set psGname String sValue
+        Pointer pEntry
+        Integer iResult
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_set_gname_utf8 (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                If (not (IsValidUtf8 (Self, sValue))) Begin
+                    Error DFERR_PROGRAM "Could not set the group name: the text is not valid UTF-8"
+                End
+                Else Begin
+                    Move (archive_entry_update_gname_utf8 (pEntry, AddressOf (sValue))) to iResult
+                    Set pbLastTextLossless to (iResult <> 0)
+                End
+            End
+        End
+    End_Procedure
+
+    // Group (owner) name in the current ANSI code page (archive_entry_gname / archive_entry_set_gname).
+    { MethodType = Property }
+    Function psGnameLocale Returns String
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerText (Self, archive_entry_gname (pEntry)))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set psGnameLocale String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_set_gname (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move (archive_entry_set_gname (pEntry, AddressOf (sValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // Group (owner) name as wide (UTF-16) text (archive_entry_gname_w / archive_entry_copy_gname_w).
+    { MethodType = Property }
+    Function psGnameWide Returns String
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerWideText (Self, archive_entry_gname_w (pEntry)))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set psGnameWide String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        WString wsValue
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_copy_gname_w (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move sValue to wsValue
+                Move (archive_entry_copy_gname_w (pEntry, AddressOf (wsValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // Sets the group name from UTF-8 text without a validity report (archive_entry_set_gname_utf8). Empty removes it.
+    Procedure SetGnameUtf8 String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_set_gname_utf8 (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move (archive_entry_set_gname_utf8 (pEntry, AddressOf (sValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // Copies the group name from text in the current ANSI code page (archive_entry_copy_gname). Empty removes it.
+    Procedure CopyGnameLocale String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_copy_gname (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move (archive_entry_copy_gname (pEntry, AddressOf (sValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // True when the hard link target is set (archive_entry_hardlink_is_set).
+    { MethodType = Property }
+    Function pbHardlinkIsSet Returns Boolean
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return False
+        End
+        Function_Return (archive_entry_hardlink_is_set (pEntry) <> 0)
+    End_Function
+
+    // Type of the symbolic link target: AE_SYMLINK_TYPE_UNDEFINED, AE_SYMLINK_TYPE_FILE or AE_SYMLINK_TYPE_DIRECTORY (archive_entry_symlink_type / archive_entry_set_symlink_type).
+    { MethodType = Property }
+    Function peSymlinkType Returns Integer
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_symlink_type (pEntry))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set peSymlinkType Integer iValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_symlink_type (pEntry, iValue)) to iVoid
+        End
+    End_Procedure
+
+    // Removes the hard link target (archive_entry_set_hardlink_utf8 with NULL).
+    Procedure ClearHardlink
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_hardlink_utf8 (pEntry, 0)) to iVoid
+        End
+    End_Procedure
+
+    // Removes the symbolic link target (archive_entry_set_symlink_utf8 with NULL).
+    Procedure ClearSymlink
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_symlink_utf8 (pEntry, 0)) to iVoid
+        End
+    End_Procedure
+
+    // Source path: the path of the file on disk the entry was created from (archive_read_disk_entry_from_file reads it).
+    // Wide text (archive_entry_sourcepath_w / archive_entry_copy_sourcepath_w); there is no UTF-8 variant in libarchive.
+    // Setting an empty string removes it.
+    // Source path as wide text.
+    { MethodType = Property }
+    Function psSourcePath Returns String
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerWideText (Self, archive_entry_sourcepath_w (pEntry)))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set psSourcePath String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        WString wsValue
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_copy_sourcepath_w (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move sValue to wsValue
+                Move (archive_entry_copy_sourcepath_w (pEntry, AddressOf (wsValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // Source path in the current ANSI code page (archive_entry_sourcepath / archive_entry_copy_sourcepath).
+    { MethodType = Property }
+    Function psSourcePathLocale Returns String
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerText (Self, archive_entry_sourcepath (pEntry)))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set psSourcePathLocale String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_copy_sourcepath (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move (archive_entry_copy_sourcepath (pEntry, AddressOf (sValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // ---- link target of the kind that is currently set -----------------------------------------------------------
+
+    // Link target: the hard link target when the entry has one, otherwise the symbolic link target. Hard link and symbolic
+    // link share one storage in libarchive: an entry has either one or the other. Setting uses archive_entry_update_link_utf8
+    // (keeps the kind that is currently set; an entry that has neither becomes a hard link unless SetLinkToSymlink was
+    // called) and raises a DataFlex error only when the text is not valid UTF-8 (nothing is stored then).
+    { MethodType = Property }
+    Function psLink Returns String
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ""
+        End
+        If (archive_entry_hardlink_is_set (pEntry) <> 0) Begin
+            Function_Return (PointerText (Self, archive_entry_hardlink_utf8 (pEntry)))
+        End
+        Function_Return (PointerText (Self, archive_entry_symlink_utf8 (pEntry)))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set psLink String sValue
+        Pointer pEntry
+        Integer iResult
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_set_link_utf8 (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                If (not (IsValidUtf8 (Self, sValue))) Begin
+                    Error DFERR_PROGRAM "Could not set the link target: the text is not valid UTF-8"
+                End
+                Else Begin
+                    Move (archive_entry_update_link_utf8 (pEntry, AddressOf (sValue))) to iResult
+                    Set pbLastTextLossless to (iResult <> 0)
+                End
+            End
+        End
+    End_Procedure
+
+    // Sets the link target from text in the current ANSI code page (archive_entry_set_link).
+    Procedure SetLinkLocale String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_set_link (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move (archive_entry_set_link (pEntry, AddressOf (sValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // Sets the link target from UTF-8 text without a validity report (archive_entry_set_link_utf8).
+    Procedure SetLinkUtf8 String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_set_link_utf8 (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move (archive_entry_set_link_utf8 (pEntry, AddressOf (sValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // Copies the link target from text in the current ANSI code page (archive_entry_copy_link).
+    Procedure CopyLinkLocale String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_copy_link (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move (archive_entry_copy_link (pEntry, AddressOf (sValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // Copies the link target from wide text (archive_entry_copy_link_w).
+    Procedure CopyLinkWide String sValue
+        Pointer pEntry
+        Void_Type iVoid
+        WString wsValue
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If (sValue = "") Begin
+                Move (archive_entry_copy_link_w (pEntry, 0)) to iVoid
+            End
+            Else Begin
+                Move sValue to wsValue
+                Move (archive_entry_copy_link_w (pEntry, AddressOf (wsValue))) to iVoid
+            End
+        End
+    End_Procedure
+
+    // Declares that the link target set with psLink / SetLink* is a hard link (archive_entry_set_link_to_hardlink).
+    Procedure SetLinkToHardlink
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_link_to_hardlink (pEntry)) to iVoid
+        End
+    End_Procedure
+
+    // Declares that the link target set with psLink / SetLink* is a symbolic link (archive_entry_set_link_to_symlink).
+    Procedure SetLinkToSymlink
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_link_to_symlink (pEntry)) to iVoid
+        End
+    End_Procedure
+
+    // ---- times -------------------------------------------------------------------------------------------------
+    // Seconds are Unix time (seconds since 1970-01-01 UTC, BigInt), the nanosecond part is 0..999999999. Setting
+    // piXtime or piXtimeNsec alone keeps the other part and marks the time as set; SetXtime sets both.
+
+    // Seconds of the access time (archive_entry_atime / archive_entry_set_atime).
+    { MethodType = Property }
+    Function piAtime Returns BigInt
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_atime (pEntry))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piAtime BigInt iSeconds
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_atime (pEntry, iSeconds, archive_entry_atime_nsec (pEntry))) to iVoid
+        End
+    End_Procedure
+
+    // Nanosecond part of the access time (archive_entry_atime_nsec / archive_entry_set_atime).
+    { MethodType = Property }
+    Function piAtimeNsec Returns Integer
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_atime_nsec (pEntry))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piAtimeNsec Integer iNanoSeconds
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_atime (pEntry, archive_entry_atime (pEntry), iNanoSeconds)) to iVoid
+        End
+    End_Procedure
+
+    // True when the access time is set (archive_entry_atime_is_set).
+    { MethodType = Property }
+    Function pbAtimeIsSet Returns Boolean
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return False
+        End
+        Function_Return (archive_entry_atime_is_set (pEntry) <> 0)
+    End_Function
+
+    // Sets seconds and nanoseconds of the access time (archive_entry_set_atime).
+    Procedure SetAtime BigInt iSeconds Integer iNanoSeconds
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_atime (pEntry, iSeconds, iNanoSeconds)) to iVoid
+        End
+    End_Procedure
+
+    // Marks the access time as not set (archive_entry_unset_atime).
+    Procedure UnsetAtime
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_unset_atime (pEntry)) to iVoid
+        End
+    End_Procedure
+
+    // Seconds of the creation (birth) time (archive_entry_birthtime / archive_entry_set_birthtime).
+    { MethodType = Property }
+    Function piBirthtime Returns BigInt
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_birthtime (pEntry))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piBirthtime BigInt iSeconds
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_birthtime (pEntry, iSeconds, archive_entry_birthtime_nsec (pEntry))) to iVoid
+        End
+    End_Procedure
+
+    // Nanosecond part of the creation (birth) time (archive_entry_birthtime_nsec / archive_entry_set_birthtime).
+    { MethodType = Property }
+    Function piBirthtimeNsec Returns Integer
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_birthtime_nsec (pEntry))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piBirthtimeNsec Integer iNanoSeconds
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_birthtime (pEntry, archive_entry_birthtime (pEntry), iNanoSeconds)) to iVoid
+        End
+    End_Procedure
+
+    // True when the creation (birth) time is set (archive_entry_birthtime_is_set).
+    { MethodType = Property }
+    Function pbBirthtimeIsSet Returns Boolean
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return False
+        End
+        Function_Return (archive_entry_birthtime_is_set (pEntry) <> 0)
+    End_Function
+
+    // Sets seconds and nanoseconds of the creation (birth) time (archive_entry_set_birthtime).
+    Procedure SetBirthtime BigInt iSeconds Integer iNanoSeconds
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_birthtime (pEntry, iSeconds, iNanoSeconds)) to iVoid
+        End
+    End_Procedure
+
+    // Marks the creation (birth) time as not set (archive_entry_unset_birthtime).
+    Procedure UnsetBirthtime
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_unset_birthtime (pEntry)) to iVoid
+        End
+    End_Procedure
+
+    // Seconds of the inode change time (archive_entry_ctime / archive_entry_set_ctime).
+    { MethodType = Property }
+    Function piCtime Returns BigInt
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_ctime (pEntry))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piCtime BigInt iSeconds
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_ctime (pEntry, iSeconds, archive_entry_ctime_nsec (pEntry))) to iVoid
+        End
+    End_Procedure
+
+    // Nanosecond part of the inode change time (archive_entry_ctime_nsec / archive_entry_set_ctime).
+    { MethodType = Property }
+    Function piCtimeNsec Returns Integer
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_ctime_nsec (pEntry))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piCtimeNsec Integer iNanoSeconds
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_ctime (pEntry, archive_entry_ctime (pEntry), iNanoSeconds)) to iVoid
+        End
+    End_Procedure
+
+    // True when the inode change time is set (archive_entry_ctime_is_set).
+    { MethodType = Property }
+    Function pbCtimeIsSet Returns Boolean
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return False
+        End
+        Function_Return (archive_entry_ctime_is_set (pEntry) <> 0)
+    End_Function
+
+    // Sets seconds and nanoseconds of the inode change time (archive_entry_set_ctime).
+    Procedure SetCtime BigInt iSeconds Integer iNanoSeconds
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_ctime (pEntry, iSeconds, iNanoSeconds)) to iVoid
+        End
+    End_Procedure
+
+    // Marks the inode change time as not set (archive_entry_unset_ctime).
+    Procedure UnsetCtime
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_unset_ctime (pEntry)) to iVoid
+        End
+    End_Procedure
+
+    // Seconds of the modification time (archive_entry_mtime / archive_entry_set_mtime).
+    { MethodType = Property }
+    Function piMtime Returns BigInt
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_mtime (pEntry))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piMtime BigInt iSeconds
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_mtime (pEntry, iSeconds, archive_entry_mtime_nsec (pEntry))) to iVoid
+        End
+    End_Procedure
+
+    // Nanosecond part of the modification time (archive_entry_mtime_nsec / archive_entry_set_mtime).
+    { MethodType = Property }
+    Function piMtimeNsec Returns Integer
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_mtime_nsec (pEntry))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piMtimeNsec Integer iNanoSeconds
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_mtime (pEntry, archive_entry_mtime (pEntry), iNanoSeconds)) to iVoid
+        End
+    End_Procedure
+
+    // True when the modification time is set (archive_entry_mtime_is_set).
+    { MethodType = Property }
+    Function pbMtimeIsSet Returns Boolean
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return False
+        End
+        Function_Return (archive_entry_mtime_is_set (pEntry) <> 0)
+    End_Function
+
+    // Sets seconds and nanoseconds of the modification time (archive_entry_set_mtime).
+    Procedure SetMtime BigInt iSeconds Integer iNanoSeconds
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_mtime (pEntry, iSeconds, iNanoSeconds)) to iVoid
+        End
+    End_Procedure
+
+    // Marks the modification time as not set (archive_entry_unset_mtime).
+    Procedure UnsetMtime
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_unset_mtime (pEntry)) to iVoid
+        End
+    End_Procedure
+
+    // ---- device, inode, link count -------------------------------------------------------------------------------
+
+    // Device number of the file (archive_entry_dev / archive_entry_set_dev).
+    { MethodType = Property }
+    Function piDev Returns UInteger
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_dev (pEntry))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piDev UInteger iValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_dev (pEntry, iValue)) to iVoid
+        End
+    End_Procedure
+
+    // True when the device number is set (archive_entry_dev_is_set).
+    { MethodType = Property }
+    Function pbDevIsSet Returns Boolean
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return False
+        End
+        Function_Return (archive_entry_dev_is_set (pEntry) <> 0)
+    End_Function
+
+    // Major part of the device number (archive_entry_devmajor / archive_entry_set_devmajor).
+    { MethodType = Property }
+    Function piDevMajor Returns UInteger
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_devmajor (pEntry))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piDevMajor UInteger iValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_devmajor (pEntry, iValue)) to iVoid
+        End
+    End_Procedure
+
+    // Minor part of the device number (archive_entry_devminor / archive_entry_set_devminor).
+    { MethodType = Property }
+    Function piDevMinor Returns UInteger
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_devminor (pEntry))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piDevMinor UInteger iValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_devminor (pEntry, iValue)) to iVoid
+        End
+    End_Procedure
+
+    // Inode number as a 64 bit value (archive_entry_ino64 / archive_entry_set_ino64).
+    { MethodType = Property }
+    Function piIno Returns BigInt
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_ino64 (pEntry))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piIno BigInt iValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_ino64 (pEntry, iValue)) to iVoid
+        End
+    End_Procedure
+
+    // Inode number through the older functions (archive_entry_ino / archive_entry_set_ino); prefer piIno.
+    { MethodType = Property }
+    Function piInoLegacy Returns BigInt
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_ino (pEntry))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piInoLegacy BigInt iValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_ino (pEntry, iValue)) to iVoid
+        End
+    End_Procedure
+
+    // True when the inode number is set (archive_entry_ino_is_set).
+    { MethodType = Property }
+    Function pbInoIsSet Returns Boolean
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return False
+        End
+        Function_Return (archive_entry_ino_is_set (pEntry) <> 0)
+    End_Function
+
+    // Number of hard links to the file (archive_entry_nlink / archive_entry_set_nlink).
+    { MethodType = Property }
+    Function piNlink Returns UInteger
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_nlink (pEntry))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piNlink UInteger iValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_nlink (pEntry, iValue)) to iVoid
+        End
+    End_Procedure
+
+    // Device number of a character or block device entry (archive_entry_rdev / archive_entry_set_rdev).
+    { MethodType = Property }
+    Function piRdev Returns UInteger
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_rdev (pEntry))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piRdev UInteger iValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_rdev (pEntry, iValue)) to iVoid
+        End
+    End_Procedure
+
+    // True when the rdev number is set (archive_entry_rdev_is_set).
+    { MethodType = Property }
+    Function pbRdevIsSet Returns Boolean
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return False
+        End
+        Function_Return (archive_entry_rdev_is_set (pEntry) <> 0)
+    End_Function
+
+    // Major part of the rdev number (archive_entry_rdevmajor / archive_entry_set_rdevmajor).
+    { MethodType = Property }
+    Function piRdevMajor Returns UInteger
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_rdevmajor (pEntry))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piRdevMajor UInteger iValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_rdevmajor (pEntry, iValue)) to iVoid
+        End
+    End_Procedure
+
+    // Minor part of the rdev number (archive_entry_rdevminor / archive_entry_set_rdevminor).
+    { MethodType = Property }
+    Function piRdevMinor Returns UInteger
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_rdevminor (pEntry))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piRdevMinor UInteger iValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_rdevminor (pEntry, iValue)) to iVoid
+        End
+    End_Procedure
+
+    // ---- type, mode, size, owner -------------------------------------------------------------------------------
+
+    // File type bits of the mode: AE_IFREG, AE_IFDIR, AE_IFLNK, ... (archive_entry_filetype / archive_entry_set_filetype).
+    { MethodType = Property }
+    Function peFileType Returns Integer
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_filetype (pEntry))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set peFileType Integer iValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_filetype (pEntry, iValue)) to iVoid
+        End
+    End_Procedure
+
+    // True when the file type is set (archive_entry_filetype_is_set).
+    { MethodType = Property }
+    Function pbFileTypeIsSet Returns Boolean
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return False
+        End
+        Function_Return (archive_entry_filetype_is_set (pEntry) <> 0)
+    End_Function
+
+    // Complete mode: file type bits and permission bits (archive_entry_mode / archive_entry_set_mode).
+    { MethodType = Property }
+    Function piMode Returns Integer
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_mode (pEntry))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piMode Integer iValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_mode (pEntry, iValue)) to iVoid
+        End
+    End_Procedure
+
+    // Permission bits of the mode, for example 420 = octal 0644 (archive_entry_perm / archive_entry_set_perm).
+    { MethodType = Property }
+    Function piPerm Returns Integer
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_perm (pEntry))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piPerm Integer iValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_perm (pEntry, iValue)) to iVoid
+        End
+    End_Procedure
+
+    // True when the permission is set (archive_entry_perm_is_set).
+    { MethodType = Property }
+    Function pbPermIsSet Returns Boolean
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return False
+        End
+        Function_Return (archive_entry_perm_is_set (pEntry) <> 0)
+    End_Function
+
+    // Mode as text like "-rw-r--r-- " (archive_entry_strmode).
+    { MethodType = Property }
+    Function psStrMode Returns String
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerText (Self, archive_entry_strmode (pEntry)))
+    End_Function
+
+    // Size of the entry data in bytes (archive_entry_size / archive_entry_set_size).
+    { MethodType = Property }
+    Function piSize Returns BigInt
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_size (pEntry))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piSize BigInt iValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_size (pEntry, iValue)) to iVoid
+        End
+    End_Procedure
+
+    // True when the size is set (archive_entry_size_is_set).
+    { MethodType = Property }
+    Function pbSizeIsSet Returns Boolean
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return False
+        End
+        Function_Return (archive_entry_size_is_set (pEntry) <> 0)
+    End_Function
+
+    // Marks the size as not set (archive_entry_unset_size).
+    Procedure UnsetSize
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_unset_size (pEntry)) to iVoid
+        End
+    End_Procedure
+
+    // User id of the owner (archive_entry_uid / archive_entry_set_uid).
+    { MethodType = Property }
+    Function piUid Returns BigInt
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_uid (pEntry))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piUid BigInt iValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_uid (pEntry, iValue)) to iVoid
+        End
+    End_Procedure
+
+    // True when the user id is set (archive_entry_uid_is_set).
+    { MethodType = Property }
+    Function pbUidIsSet Returns Boolean
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return False
+        End
+        Function_Return (archive_entry_uid_is_set (pEntry) <> 0)
+    End_Function
+
+    // Group id of the owner (archive_entry_gid / archive_entry_set_gid).
+    { MethodType = Property }
+    Function piGid Returns BigInt
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_gid (pEntry))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piGid BigInt iValue
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_gid (pEntry, iValue)) to iVoid
+        End
+    End_Procedure
+
+    // True when the group id is set (archive_entry_gid_is_set).
+    { MethodType = Property }
+    Function pbGidIsSet Returns Boolean
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return False
+        End
+        Function_Return (archive_entry_gid_is_set (pEntry) <> 0)
+    End_Function
+
+    // True when the data of the entry is encrypted (archive_entry_is_data_encrypted / archive_entry_set_is_data_encrypted).
+    { MethodType = Property }
+    Function pbDataEncrypted Returns Boolean
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return False
+        End
+        Function_Return (archive_entry_is_data_encrypted (pEntry) <> 0)
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set pbDataEncrypted Boolean iValue
+        Pointer pEntry
+        Void_Type iVoid
+        Integer iFlag
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If iValue Begin
+                Move 1 to iFlag
+            End
+            Else Begin
+                Move 0 to iFlag
+            End
+            Move (archive_entry_set_is_data_encrypted (pEntry, iFlag)) to iVoid
+        End
+    End_Procedure
+
+    // True when the metadata (name, times, ...) of the entry is encrypted (archive_entry_is_metadata_encrypted / archive_entry_set_is_metadata_encrypted).
+    { MethodType = Property }
+    Function pbMetadataEncrypted Returns Boolean
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return False
+        End
+        Function_Return (archive_entry_is_metadata_encrypted (pEntry) <> 0)
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set pbMetadataEncrypted Boolean iValue
+        Pointer pEntry
+        Void_Type iVoid
+        Integer iFlag
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            If iValue Begin
+                Move 1 to iFlag
+            End
+            Else Begin
+                Move 0 to iFlag
+            End
+            Move (archive_entry_set_is_metadata_encrypted (pEntry, iFlag)) to iVoid
+        End
+    End_Procedure
+
+    // True when the data or the metadata of the entry is encrypted, read only (archive_entry_is_encrypted).
+    { MethodType = Property }
+    Function pbEncrypted Returns Boolean
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return False
+        End
+        Function_Return (archive_entry_is_encrypted (pEntry) <> 0)
+    End_Function
+
+    // ---- file flags --------------------------------------------------------------------------------------------
+
+    // Bits of the file flags that are set (archive_entry_fflags / archive_entry_set_fflags). The setter keeps the clear bits.
+    { MethodType = Property }
+    Function piFFlagsSet Returns UInteger
+        Pointer pEntry
+        UInteger iSet iClear
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Move (archive_entry_fflags (pEntry, AddressOf (iSet), AddressOf (iClear))) to iVoid
+        Function_Return iSet
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piFFlagsSet UInteger iSet
+        Pointer pEntry
+        UInteger iOldSet iClear
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_fflags (pEntry, AddressOf (iOldSet), AddressOf (iClear))) to iVoid
+            Move (archive_entry_set_fflags (pEntry, iSet, iClear)) to iVoid
+        End
+    End_Procedure
+
+    // Bits of the file flags that are cleared (archive_entry_fflags / archive_entry_set_fflags). The setter keeps the set bits.
+    { MethodType = Property }
+    Function piFFlagsClear Returns UInteger
+        Pointer pEntry
+        UInteger iSet iClear
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Move (archive_entry_fflags (pEntry, AddressOf (iSet), AddressOf (iClear))) to iVoid
+        Function_Return iClear
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piFFlagsClear UInteger iClear
+        Pointer pEntry
+        UInteger iSet iOldClear
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_fflags (pEntry, AddressOf (iSet), AddressOf (iOldClear))) to iVoid
+            Move (archive_entry_set_fflags (pEntry, iSet, iClear)) to iVoid
+        End
+    End_Procedure
+
+    // Sets the file flags to set and to clear in one call (archive_entry_set_fflags).
+    Procedure SetFFlags UInteger iSet UInteger iClear
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_set_fflags (pEntry, iSet, iClear)) to iVoid
+        End
+    End_Procedure
+
+    // File flags as text like "nodump,uappnd" (archive_entry_fflags_text). Empty when not set. The setter parses the text
+    // (CopyFFlagsText) and raises a DataFlex error naming the first invalid token; an empty string clears the flags.
+    { MethodType = Property }
+    Function psFFlagsText Returns String
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerText (Self, archive_entry_fflags_text (pEntry)))
+    End_Function
+
+    // Sets the file flags from text (archive_entry_copy_fflags_text). Returns the first invalid token, or "" when the
+    // whole text was valid (valid tokens are applied either way). An empty text clears the flags.
+    Function CopyFFlagsText String sFlags Returns String
+        Pointer pEntry pBad
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ""
+        End
+        If (sFlags = "") Begin
+            Move (archive_entry_set_fflags (pEntry, 0, 0)) to iVoid
+            Function_Return ""
+        End
+        Move (archive_entry_copy_fflags_text (pEntry, AddressOf (sFlags))) to pBad
+        Function_Return (PointerText (Self, pBad))
+    End_Function
+
+    // Like CopyFFlagsText, but only the first iLength bytes of the text are used (archive_entry_copy_fflags_text_len).
+    Function CopyFFlagsTextLen String sFlags Integer iLength Returns String
+        Pointer pEntry pBad
+        Get ppEntry to pEntry
+        If (pEntry = 0 or sFlags = "") Begin
+            Function_Return ""
+        End
+        Move (archive_entry_copy_fflags_text_len (pEntry, AddressOf (sFlags), iLength)) to pBad
+        Function_Return (PointerText (Self, pBad))
+    End_Function
+
+    // Like CopyFFlagsText with wide text (archive_entry_copy_fflags_text_w).
+    Function CopyFFlagsTextWide String sFlags Returns String
+        Pointer pEntry pBad
+        WString wsFlags
+        Get ppEntry to pEntry
+        If (pEntry = 0 or sFlags = "") Begin
+            Function_Return ""
+        End
+        Move sFlags to wsFlags
+        Move (archive_entry_copy_fflags_text_w (pEntry, AddressOf (wsFlags))) to pBad
+        Function_Return (PointerWideText (Self, pBad))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set psFFlagsText String sFlags
+        String sBad
+        Get CopyFFlagsText sFlags to sBad
+        If (sBad <> "") Begin
+            Error DFERR_PROGRAM ("Invalid file flag:" * sBad)
+        End
+    End_Procedure
+
+    // ---- stat and platform data --------------------------------------------------------------------------------
+
+    // Pointer to a C runtime struct stat filled from the entry (archive_entry_stat). The memory is owned by the entry and is
+    // only valid until the entry is changed. Its layout is that of the C runtime archive.dll was built with.
+    Function StatPointer Returns Pointer
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_stat (pEntry))
+    End_Function
+
+    // Copies the fields of a C runtime struct stat into the entry (archive_entry_copy_stat), for example the pointer
+    // returned by StatPointer of another entry.
+    Procedure CopyStat Pointer pStat
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0 and pStat <> 0) Begin
+            Move (archive_entry_copy_stat (pEntry, pStat)) to iVoid
+        End
+    End_Procedure
+
+    // Copies the fields of a Windows BY_HANDLE_FILE_INFORMATION structure into the entry (archive_entry_copy_bhfi).
+    Procedure CopyBhfi Pointer pFileInfo
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0 and pFileInfo <> 0) Begin
+            Move (archive_entry_copy_bhfi (pEntry, pFileInfo)) to iVoid
+        End
+    End_Procedure
+
+    // The Mac OS AppleDouble metadata blob of the entry as bytes (archive_entry_mac_metadata). Empty array when there is none.
+    Function MacMetadata Returns UChar[]
+        Pointer pEntry pData
+        BigInt iSize
+        Integer iLength
+        Boolean bOk
+        UChar[] ucData
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ucData
+        End
+        Move (archive_entry_mac_metadata (pEntry, AddressOf (iSize))) to pData
+        If (pData = 0 or iSize <= 0) Begin
+            Function_Return ucData
+        End
+        Move iSize to iLength
+        Move (ResizeArray (ucData, iLength)) to ucData
+        Move (MemCopy (AddressOf (ucData), pData, iLength)) to bOk
+        Function_Return ucData
+    End_Function
+
+    // Stores a Mac OS AppleDouble metadata blob in the entry (archive_entry_copy_mac_metadata). An empty array removes it.
+    Procedure SetMacMetadata UChar[] ucData
+        Pointer pEntry
+        Integer iLength
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Procedure_Return
+        End
+        Move (SizeOfArray (ucData)) to iLength
+        If (iLength = 0) Begin
+            Move (archive_entry_copy_mac_metadata (pEntry, 0, 0)) to iVoid
+        End
+        Else Begin
+            Move (archive_entry_copy_mac_metadata (pEntry, AddressOf (ucData), iLength)) to iVoid
+        End
+    End_Procedure
+
+    // Byte length of a digest type (ARCHIVE_ENTRY_DIGEST_*): MD5 16, RMD160 20, SHA1 20, SHA256 32, SHA384 48, SHA512 64. 0 for unknown types.
+    Function DigestLength Integer eType Returns Integer
+        Case Begin
+            Case (eType = ARCHIVE_ENTRY_DIGEST_MD5)    Function_Return 16
+            Case (eType = ARCHIVE_ENTRY_DIGEST_RMD160) Function_Return 20
+            Case (eType = ARCHIVE_ENTRY_DIGEST_SHA1)   Function_Return 20
+            Case (eType = ARCHIVE_ENTRY_DIGEST_SHA256) Function_Return 32
+            Case (eType = ARCHIVE_ENTRY_DIGEST_SHA384) Function_Return 48
+            Case (eType = ARCHIVE_ENTRY_DIGEST_SHA512) Function_Return 64
+        Case End
+        Function_Return 0
+    End_Function
+
+    // The digest the archive format provided for the entry (archive_entry_digest) as lower case hexadecimal text, for
+    // example 32 characters for ARCHIVE_ENTRY_DIGEST_MD5. Empty when the entry has no such digest (only some formats, e.g.
+    // mtree and xar, provide digests): libarchive always returns the digest bytes and zero filled bytes mean "not set".
+    Function Digest Integer eType Returns String
+        Pointer pEntry pDigest
+        Integer iLength iIndex iByte iHigh iLow
+        Boolean bOk bNonZero
+        UChar[] ucDigest
+        String sHex sDigits
+
+        Get ppEntry to pEntry
+        Get DigestLength eType to iLength
+        If (pEntry = 0 or iLength = 0) Begin
+            Function_Return ""
+        End
+        Move (archive_entry_digest (pEntry, eType)) to pDigest
+        If (pDigest = 0) Begin
+            Function_Return ""
+        End
+        Move (ResizeArray (ucDigest, iLength)) to ucDigest
+        Move (MemCopy (AddressOf (ucDigest), pDigest, iLength)) to bOk
+        Move "0123456789abcdef" to sDigits
+        Move "" to sHex
+        Move False to bNonZero
+        For iIndex from 0 to (iLength - 1)
+            Move ucDigest[iIndex] to iByte
+            If (iByte <> 0) Begin
+                Move True to bNonZero
+            End
+            Move (Mod (iByte, 16)) to iLow
+            Move ((iByte - iLow) / 16) to iHigh
+            Move (sHex + Mid (sDigits, 1, iHigh + 1) + Mid (sDigits, 1, iLow + 1)) to sHex
+        Loop
+        If (not (bNonZero)) Begin
+            Function_Return ""
+        End
+        Function_Return sHex
+    End_Function
+
+    // ---- ACL ----------------------------------------------------------------------------------------------------
+    // ACL types are ARCHIVE_ENTRY_ACL_TYPE_* (ACCESS, DEFAULT for POSIX.1e; ALLOW, DENY, AUDIT, ALARM for NFSv4), tags
+    // ARCHIVE_ENTRY_ACL_USER / _USER_OBJ / _GROUP / _GROUP_OBJ / _MASK / _OTHER / _EVERYONE, permissions
+    // ARCHIVE_ENTRY_ACL_* bits. For POSIX.1e the owner, group and other entries of an access ACL are stored in the mode of the
+    // entry (piMode) and only reported by AclReset/AclNext/AclCount/AclToText when the ACL has extended entries; they come
+    // first (owner, group, other), followed by the extended entries (user, group, mask) in the order they were added.
+    // libarchive keeps the names of ACL entries in the ANSI code page: AclNext converts them to DataFlex strings, AclAddEntry
+    // takes the bytes of its name as they are (ASCII names only), AclAddEntryWide takes any text.
+
+    // Pointer to the opaque ACL object of the entry (archive_entry_acl). Nothing a client can do with it; provided for completeness.
+    Function AclPointer Returns Pointer
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_acl (pEntry))
+    End_Function
+
+    // Removes all ACL entries (archive_entry_acl_clear).
+    Procedure AclClear
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_acl_clear (pEntry)) to iVoid
+        End
+    End_Procedure
+
+    // Adds an ACL entry (archive_entry_acl_add_entry). sName is the user or group name ("" for none). Returns ARCHIVE_OK or
+    // ARCHIVE_FAILED (invalid type or tag; raises an error when pbRaiseErrors).
+    Function AclAddEntry Integer eType Integer iPermset Integer eTag Integer iQualifier String sName Returns Integer
+        Pointer pEntry pName
+        Integer iResult
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Get CheckResult ARCHIVE_FAILED "archive_entry_acl_add_entry (no entry)" to iResult
+            Function_Return iResult
+        End
+        If (sName = "") Begin
+            Move 0 to pName
+        End
+        Else Begin
+            Move (AddressOf (sName)) to pName
+        End
+        Move (archive_entry_acl_add_entry (pEntry, eType, iPermset, eTag, iQualifier, pName)) to iResult
+        Get CheckResult iResult "archive_entry_acl_add_entry" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Like AclAddEntry with a wide user or group name (archive_entry_acl_add_entry_w).
+    Function AclAddEntryWide Integer eType Integer iPermset Integer eTag Integer iQualifier String sName Returns Integer
+        Pointer pEntry pName
+        Integer iResult
+        WString wsName
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Get CheckResult ARCHIVE_FAILED "archive_entry_acl_add_entry_w (no entry)" to iResult
+            Function_Return iResult
+        End
+        If (sName = "") Begin
+            Move 0 to pName
+        End
+        Else Begin
+            Move sName to wsName
+            Move (AddressOf (wsName)) to pName
+        End
+        Move (archive_entry_acl_add_entry_w (pEntry, eType, iPermset, eTag, iQualifier, pName)) to iResult
+        Get CheckResult iResult "archive_entry_acl_add_entry_w" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Starts an enumeration of the ACL entries of the wanted types (a combination of ARCHIVE_ENTRY_ACL_TYPE_*) and returns
+    // the number of entries (archive_entry_acl_reset).
+    Function AclReset Integer iWantType Returns Integer
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_acl_reset (pEntry, iWantType))
+    End_Function
+
+    // Returns the next ACL entry of the enumeration started with AclReset (archive_entry_acl_next). eType of the result is 0
+    // when there are no more entries.
+    Function AclNext Integer iWantType Returns tArchiveEntryAcl
+        Pointer pEntry pName
+        Integer iResult iType iPermset iTag iQualifier
+        tArchiveEntryAcl stAcl
+
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return stAcl
+        End
+        Move (archive_entry_acl_next (pEntry, iWantType, AddressOf (iType), AddressOf (iPermset), AddressOf (iTag), AddressOf (iQualifier), AddressOf (pName))) to iResult
+        If (iResult = ARCHIVE_OK) Begin
+            Move iType to stAcl.eType
+            Move iPermset to stAcl.iPermset
+            Move iTag to stAcl.eTag
+            Move iQualifier to stAcl.iQualifier
+            Move (AnsiPointerText (Self, pName)) to stAcl.sName
+        End
+        Function_Return stAcl
+    End_Function
+
+    // All ACL entries of the wanted types as an array (AclReset followed by AclNext until the end).
+    Function AclEntries Integer iWantType Returns tArchiveEntryAcl[]
+        Integer iCount iIndex
+        tArchiveEntryAcl stAcl
+        tArchiveEntryAcl[] astAcl
+
+        Get AclReset iWantType to iCount
+        For iIndex from 1 to iCount
+            Get AclNext iWantType to stAcl
+            If (stAcl.eType = 0) Begin
+                Function_Return astAcl
+            End
+            Move stAcl to astAcl[SizeOfArray (astAcl)]
+        Loop
+        Function_Return astAcl
+    End_Function
+
+    // Number of ACL entries of the wanted types (archive_entry_acl_count).
+    Function AclCount Integer iWantType Returns Integer
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_acl_count (pEntry, iWantType))
+    End_Function
+
+    // Bit mask of the ARCHIVE_ENTRY_ACL_TYPE_* values present in the entry (archive_entry_acl_types). 0 when there is no ACL.
+    Function AclTypes Returns Integer
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_acl_types (pEntry))
+    End_Function
+
+    // Text form of the ACL (archive_entry_acl_to_text). iFlags combines the wanted types (ARCHIVE_ENTRY_ACL_TYPE_ACCESS,
+    // _DEFAULT, _NFS4, ...) with ARCHIVE_ENTRY_ACL_STYLE_* flags. Empty when there is nothing to output. The memory libarchive
+    // allocates for the text is released here.
+    Function AclToText Integer iFlags Returns String
+        Pointer pEntry pText
+        String sText
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ""
+        End
+        Move (archive_entry_acl_to_text (pEntry, 0, iFlags)) to pText
+        If (pText = 0) Begin
+            Function_Return ""
+        End
+        Move (PointerToString (pText)) to sText
+        Move (archive_wrapper_crt_free (pText)) to iVoid
+        Function_Return sText
+    End_Function
+
+    // Wide text variant of AclToText (archive_entry_acl_to_text_w).
+    Function AclToTextWide Integer iFlags Returns String
+        Pointer pEntry pText
+        String sText
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ""
+        End
+        Move (archive_entry_acl_to_text_w (pEntry, 0, iFlags)) to pText
+        If (pText = 0) Begin
+            Function_Return ""
+        End
+        Move (PointerToWString (pText)) to sText
+        Move (archive_wrapper_crt_free (pText)) to iVoid
+        Function_Return sText
+    End_Function
+
+    // Text form of the ACL of the deprecated archive_entry_acl_text (text owned by the entry). Prefer AclToText.
+    Function AclTextLegacy Integer iFlags Returns String
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerText (Self, archive_entry_acl_text (pEntry, iFlags)))
+    End_Function
+
+    // Wide text variant of AclTextLegacy (archive_entry_acl_text_w).
+    Function AclTextLegacyWide Integer iFlags Returns String
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerWideText (Self, archive_entry_acl_text_w (pEntry, iFlags)))
+    End_Function
+
+    // Parses ACL text (archive_entry_acl_from_text) of the type eType (ARCHIVE_ENTRY_ACL_TYPE_ACCESS, _DEFAULT or _NFS4)
+    // and adds the entries to the ACL; entries that are already there stay (call AclClear first to replace the ACL).
+    // Returns ARCHIVE_OK, ARCHIVE_WARN (some entries were not understood) or ARCHIVE_FAILED (raises an error when
+    // pbRaiseErrors).
+    Function AclFromText String sText Integer eType Returns Integer
+        Pointer pEntry
+        Integer iResult
+        Get ppEntry to pEntry
+        If (pEntry = 0 or sText = "") Begin
+            Get CheckResult ARCHIVE_FAILED "archive_entry_acl_from_text (no entry or text)" to iResult
+            Function_Return iResult
+        End
+        Move (archive_entry_acl_from_text (pEntry, AddressOf (sText), eType)) to iResult
+        Get CheckResult iResult "archive_entry_acl_from_text" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Wide text variant of AclFromText (archive_entry_acl_from_text_w).
+    Function AclFromTextWide String sText Integer eType Returns Integer
+        Pointer pEntry
+        Integer iResult
+        WString wsText
+        Get ppEntry to pEntry
+        If (pEntry = 0 or sText = "") Begin
+            Get CheckResult ARCHIVE_FAILED "archive_entry_acl_from_text_w (no entry or text)" to iResult
+            Function_Return iResult
+        End
+        Move sText to wsText
+        Move (archive_entry_acl_from_text_w (pEntry, AddressOf (wsText), eType)) to iResult
+        Get CheckResult iResult "archive_entry_acl_from_text_w" to iResult
+        Function_Return iResult
+    End_Function
+
+    // ---- extended attributes -----------------------------------------------------------------------------------
+
+    // Removes all extended attributes (archive_entry_xattr_clear).
+    Procedure XattrClear
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_xattr_clear (pEntry)) to iVoid
+        End
+    End_Procedure
+
+    // Adds an extended attribute; name and value are copied (archive_entry_xattr_add_entry).
+    Procedure XattrAdd String sName UChar[] ucValue
+        Pointer pEntry
+        Integer iLength
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Procedure_Return
+        End
+        Move (SizeOfArray (ucValue)) to iLength
+        If (iLength = 0) Begin
+            Move (archive_entry_xattr_add_entry (pEntry, AddressOf (sName), 0, 0)) to iVoid
+        End
+        Else Begin
+            Move (archive_entry_xattr_add_entry (pEntry, AddressOf (sName), AddressOf (ucValue), iLength)) to iVoid
+        End
+    End_Procedure
+
+    // Adds an extended attribute whose value is the bytes of a string (archive_entry_xattr_add_entry).
+    Procedure XattrAddText String sName String sValue
+        Pointer pEntry
+        Integer iLength
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Procedure_Return
+        End
+        Move (SizeOfString (sValue)) to iLength
+        If (iLength = 0) Begin
+            Move (archive_entry_xattr_add_entry (pEntry, AddressOf (sName), 0, 0)) to iVoid
+        End
+        Else Begin
+            Move (archive_entry_xattr_add_entry (pEntry, AddressOf (sName), AddressOf (sValue), iLength)) to iVoid
+        End
+    End_Procedure
+
+    // Number of extended attributes (archive_entry_xattr_count).
+    Function XattrCount Returns Integer
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_xattr_count (pEntry))
+    End_Function
+
+    // Starts an enumeration of the extended attributes and returns their number (archive_entry_xattr_reset).
+    Function XattrReset Returns Integer
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_xattr_reset (pEntry))
+    End_Function
+
+    // Returns the next extended attribute of the enumeration started with XattrReset (archive_entry_xattr_next). sName of
+    // the result is empty when there are no more attributes.
+    Function XattrNext Returns tArchiveEntryXattr
+        Pointer pEntry pName pValue
+        Integer iResult iLength
+        Boolean bOk
+        BigInt iSize
+        tArchiveEntryXattr stXattr
+
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return stXattr
+        End
+        Move (archive_entry_xattr_next (pEntry, AddressOf (pName), AddressOf (pValue), AddressOf (iSize))) to iResult
+        If (iResult = ARCHIVE_OK and pName <> 0) Begin
+            Move (PointerToString (pName)) to stXattr.sName
+            Move iSize to iLength
+            If (iLength > 0 and pValue <> 0) Begin
+                Move (ResizeArray (stXattr.ucValue, iLength)) to stXattr.ucValue
+                Move (MemCopy (AddressOf (stXattr.ucValue), pValue, iLength)) to bOk
+            End
+        End
+        Function_Return stXattr
+    End_Function
+
+    // All extended attributes as an array (XattrReset followed by XattrNext until the end).
+    Function XattrEntries Returns tArchiveEntryXattr[]
+        Integer iCount iIndex
+        tArchiveEntryXattr stXattr
+        tArchiveEntryXattr[] astXattr
+
+        Get XattrReset to iCount
+        For iIndex from 1 to iCount
+            Get XattrNext to stXattr
+            If (stXattr.sName = "") Begin
+                Function_Return astXattr
+            End
+            Move stXattr to astXattr[SizeOfArray (astXattr)]
+        Loop
+        Function_Return astXattr
+    End_Function
+
+    // ---- sparse regions ----------------------------------------------------------------------------------------
+
+    // Removes all sparse regions (archive_entry_sparse_clear).
+    Procedure SparseClear
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_sparse_clear (pEntry)) to iVoid
+        End
+    End_Procedure
+
+    // Adds a sparse region (data block) with offset and length (archive_entry_sparse_add_entry).
+    Procedure SparseAdd BigInt iOffset BigInt iLength
+        Pointer pEntry
+        Void_Type iVoid
+        Get ppEntry to pEntry
+        If (pEntry <> 0) Begin
+            Move (archive_entry_sparse_add_entry (pEntry, iOffset, iLength)) to iVoid
+        End
+    End_Procedure
+
+    // Number of sparse regions (archive_entry_sparse_count).
+    Function SparseCount Returns Integer
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_sparse_count (pEntry))
+    End_Function
+
+    // Starts an enumeration of the sparse regions and returns their number (archive_entry_sparse_reset).
+    Function SparseReset Returns Integer
+        Pointer pEntry
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_entry_sparse_reset (pEntry))
+    End_Function
+
+    // Returns the next sparse region of the enumeration started with SparseReset (archive_entry_sparse_next). iLength of the
+    // result is -1 when there are no more regions.
+    Function SparseNext Returns tArchiveEntrySparse
+        Pointer pEntry
+        Integer iResult
+        BigInt iOffset iLength
+        tArchiveEntrySparse stSparse
+
+        Move -1 to stSparse.iLength
+        Get ppEntry to pEntry
+        If (pEntry = 0) Begin
+            Function_Return stSparse
+        End
+        Move (archive_entry_sparse_next (pEntry, AddressOf (iOffset), AddressOf (iLength))) to iResult
+        If (iResult = ARCHIVE_OK) Begin
+            Move iOffset to stSparse.iOffset
+            Move iLength to stSparse.iLength
+        End
+        Function_Return stSparse
+    End_Function
+
+    // All sparse regions as an array (SparseReset followed by SparseNext until the end).
+    Function SparseEntries Returns tArchiveEntrySparse[]
+        Integer iCount iIndex
+        tArchiveEntrySparse stSparse
+        tArchiveEntrySparse[] astSparse
+
+        Get SparseReset to iCount
+        For iIndex from 1 to iCount
+            Get SparseNext to stSparse
+            If (stSparse.iLength < 0) Begin
+                Function_Return astSparse
+            End
+            Move stSparse to astSparse[SizeOfArray (astSparse)]
+        Loop
+        Function_Return astSparse
+    End_Function
+End_Class

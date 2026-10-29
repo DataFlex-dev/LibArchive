@@ -1,0 +1,188 @@
+﻿Use Archive.h.pkg
+Use cArchiveEntry.pkg
+
+// Wrapper around a libarchive "struct archive_entry_linkresolver": decides, while archive entries are written, which
+// files are hard links of each other (same device and inode, link count greater than 1) according to the rules of the
+// archive format, so that the data of a hard linked file is written only once.
+//
+// Usage: CreateResolver, SetStrategy with the format of the archive that is written, then pass every entry through
+// Linkify before writing it, finally write the remaining entries with Flush. FreeResolver (or destroying the object)
+// releases the resolver.
+//
+// Ownership: Linkify TAKES OVER the entry of its input object (the object is emptied) and hands every resulting entry
+// to the cArchiveEntry objects the caller provides, which own them (pbOwnsEntry True). Entries libarchive keeps for a
+// later link (cpio formats) are owned by the resolver and returned by a later Linkify / Flush call; entries it never got
+// back are freed by FreeResolver. libarchive can not call back into DataFlex, there are no callbacks in this class.
+// See Help\Classes\cArchiveLinkResolver.md.
+Class cArchiveLinkResolver is a cObject
+    Procedure Construct_Object
+        Forward Send Construct_Object
+
+        // The libarchive resolver (struct archive_entry_linkresolver *). 0 when there is none.
+        { DesignTime = False }
+        Property Pointer ppResolver 0
+    End_Procedure
+
+    Procedure Destroy_Object
+        Send FreeResolver
+        Forward Send Destroy_Object
+    End_Procedure
+
+    // True when the object has a resolver.
+    Function HasResolver Returns Boolean
+        Function_Return (ppResolver (Self) <> 0)
+    End_Function
+
+    // Frees the current resolver and creates a new one (archive_entry_linkresolver_new).
+    Procedure CreateResolver
+        Pointer pResolver
+
+        Send FreeResolver
+        Move (archive_entry_linkresolver_new ()) to pResolver
+        If (pResolver = 0) Begin
+            Error DFERR_PROGRAM "archive_entry_linkresolver_new failed (out of memory)"
+            Procedure_Return
+        End
+        Set ppResolver to pResolver
+    End_Procedure
+
+    // Frees the resolver (archive_entry_linkresolver_free) and the entries it still holds. Safe without a resolver.
+    // libarchive 3.7.7 frees entries that are still deferred (SVR4 cpio strategy) twice when the resolver is freed, so
+    // the deferred entries are taken out and freed here first. Entries returned by PartialLinks are not affected.
+    Procedure FreeResolver
+        Pointer pResolver pEntry pSparse
+        Void_Type iVoid
+
+        Get ppResolver to pResolver
+        If (pResolver <> 0) Begin
+            Move 0 to pEntry
+            Move (archive_entry_linkify (pResolver, AddressOf (pEntry), AddressOf (pSparse))) to iVoid
+            While (pEntry <> 0)
+                Move (archive_entry_free (pEntry)) to iVoid
+                Move 0 to pEntry
+                Move (archive_entry_linkify (pResolver, AddressOf (pEntry), AddressOf (pSparse))) to iVoid
+            Loop
+            Move (archive_entry_linkresolver_free (pResolver)) to iVoid
+            Set ppResolver to 0
+        End
+    End_Procedure
+
+    // Selects the hard link strategy of an archive format (archive_entry_linkresolver_set_strategy). eFormat is an
+    // ARCHIVE_FORMAT_* code: tar, shar, xar and iso9660 make later links refer to the first file; the SVR4 cpio formats
+    // keep entries back until the last link; other formats leave the entries unchanged. Creates the resolver when needed.
+    Procedure SetStrategy Integer eFormat
+        Pointer pResolver
+        Void_Type iVoid
+
+        Get ppResolver to pResolver
+        If (pResolver = 0) Begin
+            Send CreateResolver
+            Get ppResolver to pResolver
+        End
+        If (pResolver <> 0) Begin
+            Move (archive_entry_linkresolver_set_strategy (pResolver, eFormat)) to iVoid
+        End
+    End_Procedure
+
+    // Passes the entry of hoEntry through the resolver (archive_entry_linkify) and returns how many entries have to be
+    // written now: 0, 1 or 2. The first one is stored in hoOutEntry, the second (cpio: the last link, carrying the data)
+    // in hoSparseEntry; both are cArchiveEntry objects of the caller that own what they receive (their previous entry
+    // is freed). hoSparseEntry may be 0 when no second entry is expected (it is freed when one arrives).
+    //
+    // The entry of hoEntry belongs to the resolver afterwards: the object is emptied. A borrowed entry (AttachEntry with
+    // bOwns False, e.g. from a reader) is cloned first, the original stays valid. hoEntry = 0 flushes: the resolver
+    // returns one entry it deferred (call it until it returns 0, see Flush).
+    Function Linkify Handle hoEntry Handle hoOutEntry Handle hoSparseEntry Returns Integer
+        Pointer pResolver pEntry pSparse
+        Integer iCount
+        Void_Type iVoid
+
+        Get ppResolver to pResolver
+        If (pResolver = 0) Begin
+            Error DFERR_PROGRAM "The link resolver has not been created (CreateResolver / SetStrategy)"
+            Function_Return 0
+        End
+        Move 0 to pEntry
+        Move 0 to pSparse
+        If (hoEntry <> 0) Begin
+            Get ppEntry of hoEntry to pEntry
+            If (pEntry <> 0) Begin
+                If (pbOwnsEntry (hoEntry)) Begin
+                    // The resolver takes over the entry.
+                    Set ppEntry of hoEntry to 0
+                    Set pbOwnsEntry of hoEntry to False
+                End
+                Else Begin
+                    Move (archive_entry_clone (pEntry)) to pEntry
+                End
+            End
+        End
+        Move (archive_entry_linkify (pResolver, AddressOf (pEntry), AddressOf (pSparse))) to iVoid
+        Move 0 to iCount
+        If (pEntry <> 0) Begin
+            Increment iCount
+            If (hoOutEntry <> 0) Begin
+                Send AttachEntry of hoOutEntry pEntry True
+            End
+            Else Begin
+                Move (archive_entry_free (pEntry)) to iVoid
+            End
+        End
+        Else If (hoOutEntry <> 0) Begin
+            Send FreeEntry of hoOutEntry
+        End
+        If (pSparse <> 0) Begin
+            Increment iCount
+            If (hoSparseEntry <> 0) Begin
+                Send AttachEntry of hoSparseEntry pSparse True
+            End
+            Else Begin
+                Move (archive_entry_free (pSparse)) to iVoid
+            End
+        End
+        Else If (hoSparseEntry <> 0) Begin
+            Send FreeEntry of hoSparseEntry
+        End
+        Function_Return iCount
+    End_Function
+
+    // Retrieves one entry the resolver deferred (the same as Linkify with hoEntry = 0). Returns True and fills hoOutEntry
+    // (owned by it) while there is one; call it repeatedly after the last real entry until it returns False.
+    Function Flush Handle hoOutEntry Returns Boolean
+        Integer iCount
+
+        Get Linkify 0 hoOutEntry 0 to iCount
+        Function_Return (iCount > 0)
+    End_Function
+
+    // Retrieves the next entry of a file whose links were not all seen (archive_entry_partial_links). Returns True and
+    // fills hoOutEntry (owned by it); iLinks receives the number of links that were never seen. Call it repeatedly until it
+    // returns False. Call it after all entries went through Linkify and Flush.
+    Function PartialLinks Handle hoOutEntry Integer ByRef iLinks Returns Boolean
+        Pointer pResolver pEntry
+        UInteger iCount
+        Void_Type iVoid
+
+        Get ppResolver to pResolver
+        Move 0 to iLinks
+        If (pResolver = 0) Begin
+            Function_Return False
+        End
+        Move 0 to iCount
+        Move (archive_entry_partial_links (pResolver, AddressOf (iCount))) to pEntry
+        Move iCount to iLinks
+        If (pEntry = 0) Begin
+            If (hoOutEntry <> 0) Begin
+                Send FreeEntry of hoOutEntry
+            End
+            Function_Return False
+        End
+        If (hoOutEntry <> 0) Begin
+            Send AttachEntry of hoOutEntry pEntry True
+        End
+        Else Begin
+            Move (archive_entry_free (pEntry)) to iVoid
+        End
+        Function_Return True
+    End_Function
+End_Class

@@ -1,0 +1,350 @@
+﻿Use cArchiveReader.pkg
+
+// Wrapper around the libarchive "read disk" functions (archive_read_disk_*): reads files and folders of the local
+// file system as archive entries (metadata and data), for example to find out what an archive written from a folder
+// would contain. Needs cArchiveReader.pkg for the shared entry iteration and data reading (cArchiveReaderBase) and the
+// struct tArchiveEntryInfo.
+//
+// Callbacks: DataFlex cannot create native C callback function pointers, so archive_read_disk_set_uname_lookup,
+// archive_read_disk_set_gname_lookup and archive_read_disk_set_metadata_filter_callback are declared in
+// ArchiveReadDisk.h.pkg but not exposed. SetMatching passes no callback (entries are excluded by the archive_match object).
+
+// Values of peSymlinkMode: how symbolic links are handled while traversing.
+Define ARCHIVE_SYMLINK_PHYSICAL for 0 // Never follow symbolic links (default).
+Define ARCHIVE_SYMLINK_LOGICAL  for 1 // Always follow symbolic links.
+Define ARCHIVE_SYMLINK_HYBRID   for 2 // Follow the symbolic links given on the command line (the traversal root) only.
+
+// Reads files and folders from the local file system.
+//
+// Typical use (list a folder tree):
+//     Send CreateDiskReader
+//     Get OpenDisk "C:\data" to iResult
+//     Get NextHeader to iResult
+//     While (iResult = ARCHIVE_OK)
+//         Get psPathname of (phoEntry (Self)) to sName
+//         If (CanDescend (Self)) Begin
+//             Get Descend to iResult        // enter the folder, otherwise it is skipped
+//         End
+//         Get NextHeader to iResult
+//     Loop
+//     Send FreeHandle
+//
+// ListFolder does this in one call. The behavior properties can be set before or after CreateDiskReader.
+Class cArchiveDiskReader is a cArchiveReaderBase
+    Procedure Construct_Object
+        Forward Send Construct_Object
+
+        // ARCHIVE_READDISK_* flags (archive_read_disk_set_behavior): restore atime, honor nodump, do not traverse mount
+        // points, do not read xattrs / ACLs / file flags / sparse information.
+        Property Integer piBehaviorFlags 0
+        // ARCHIVE_SYMLINK_PHYSICAL (default), ARCHIVE_SYMLINK_LOGICAL or ARCHIVE_SYMLINK_HYBRID
+        // (archive_read_disk_set_symlink_physical / _logical / _hybrid).
+        Property Integer peSymlinkMode ARCHIVE_SYMLINK_PHYSICAL
+    End_Procedure
+
+    // Pushes the behavior properties to a (new) handle.
+    { Visibility = Private }
+    Procedure ApplySettings
+        Pointer pArchive
+        Integer iResult iMode iFlags
+
+        Get ppArchive to pArchive
+        If (pArchive = 0) Begin
+            Procedure_Return
+        End
+        Get piBehaviorFlags to iFlags
+        If (iFlags <> 0) Begin
+            Move (archive_read_disk_set_behavior (pArchive, iFlags)) to iResult
+            Get CheckResult iResult "archive_read_disk_set_behavior" to iResult
+        End
+        Get peSymlinkMode to iMode
+        If (iMode = ARCHIVE_SYMLINK_LOGICAL) Begin
+            Move (archive_read_disk_set_symlink_logical (pArchive)) to iResult
+        End
+        Else If (iMode = ARCHIVE_SYMLINK_HYBRID) Begin
+            Move (archive_read_disk_set_symlink_hybrid (pArchive)) to iResult
+        End
+        Else Begin
+            Move (archive_read_disk_set_symlink_physical (pArchive)) to iResult
+        End
+        Get CheckResult iResult "archive_read_disk_set_symlink" to iResult
+    End_Procedure
+
+    Procedure Set piBehaviorFlags Integer iFlags
+        Pointer pArchive
+        Integer iResult
+
+        Forward Set piBehaviorFlags to iFlags
+        Get ppArchive to pArchive
+        If (pArchive <> 0) Begin
+            Move (archive_read_disk_set_behavior (pArchive, iFlags)) to iResult
+            Get CheckResult iResult "archive_read_disk_set_behavior" to iResult
+        End
+    End_Procedure
+
+    Procedure Set peSymlinkMode Integer eMode
+        Forward Set peSymlinkMode to eMode
+        Send ApplySettings
+    End_Procedure
+
+    // True when the access time of the visited files is restored (ARCHIVE_READDISK_RESTORE_ATIME in piBehaviorFlags).
+    // Setting True uses archive_read_disk_set_atime_restored; setting False clears the flag.
+    { MethodType = Property }
+    Function pbAtimeRestored Returns Boolean
+        Integer iFlags
+        Get piBehaviorFlags to iFlags
+        Function_Return ((iFlags iand ARCHIVE_READDISK_RESTORE_ATIME) <> 0)
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set pbAtimeRestored Boolean bRestore
+        Pointer pArchive
+        Integer iResult iFlags
+
+        Get piBehaviorFlags to iFlags
+        If (bRestore) Begin
+            Get ppArchive to pArchive
+            If (pArchive <> 0) Begin
+                Move (archive_read_disk_set_atime_restored (pArchive)) to iResult
+                Get CheckResult iResult "archive_read_disk_set_atime_restored" to iResult
+            End
+            Set piBehaviorFlags to (iFlags ior ARCHIVE_READDISK_RESTORE_ATIME)
+        End
+        Else Begin
+            Set piBehaviorFlags to (iFlags - (iFlags iand ARCHIVE_READDISK_RESTORE_ATIME))
+        End
+    End_Procedure
+
+    // ---- create and open ----------------------------------------------------------------------------------------
+
+    // Frees the previous handle and creates a read disk handle (archive_read_disk_new). piBehaviorFlags and
+    // peSymlinkMode are applied to it.
+    Procedure CreateDiskReader
+        Pointer pArchive
+
+        Send FreeHandle
+        Move (archive_read_disk_new ()) to pArchive
+        Set ppArchive to pArchive
+        Send ClearLastResult
+        If (pArchive = 0) Begin
+            Error DFERR_PROGRAM "archive_read_disk_new failed (out of memory)"
+        End
+        Else Begin
+            Send ApplySettings
+        End
+    End_Procedure
+
+    // Closes the traversal (archive_read_close) but keeps the handle and its settings, so OpenDisk can start another.
+    Procedure CloseDiskReader
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_close" to pArchive
+        If (pArchive <> 0) Begin
+            Move (archive_read_close (pArchive)) to iResult
+            Get CheckResult iResult "archive_read_close" to iResult
+        End
+    End_Procedure
+
+    // Starts a traversal of a file or folder (archive_read_disk_open_w, wide path). The first entry NextHeader
+    // returns is sPath itself. Errors (for example a missing path) are reported by NextHeader. Trailing backslashes
+    // and slashes are removed (libarchive cannot visit "C:\folder\"), except for a drive root like "C:\".
+    Function OpenDisk String sPath Returns Integer
+        Pointer pArchive
+        Integer iResult
+        WString wsPath
+
+        Get HandleFor "archive_read_disk_open_w" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        While (Length (sPath) > 3 and (Right (sPath, 1) = "\" or Right (sPath, 1) = "/"))
+            Move (Left (sPath, Length (sPath) - 1)) to sPath
+        Loop
+        Move sPath to wsPath
+        Move (archive_read_disk_open_w (pArchive, AddressOf (wsPath))) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_disk_open_w"))
+    End_Function
+
+    // ---- traversal ----------------------------------------------------------------------------------------------
+
+    // Requests that the folder NextHeader returned last is entered; the next NextHeader returns its content
+    // (archive_read_disk_descend). Without it the folder is skipped. Ignored for entries that are not folders.
+    Function Descend Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_disk_descend" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_disk_descend (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_disk_descend"))
+    End_Function
+
+    // True when the current entry is a folder that Descend can enter (archive_read_disk_can_descend).
+    Function CanDescend Returns Boolean
+        Pointer pArchive
+
+        Get ppArchive to pArchive
+        If (pArchive = 0) Begin
+            Function_Return False
+        End
+        Function_Return (archive_read_disk_can_descend (pArchive) = 1)
+    End_Function
+
+    // Fills an entry with the metadata of a file (archive_read_disk_entry_from_file with no file descriptor and no stat
+    // buffer). hoEntry is a cArchiveEntry (an entry is created when it has none); its path name and source path are set
+    // to sFileName first. Does not need an open traversal.
+    Function EntryFromFile Handle hoEntry String sFileName Returns Integer
+        Pointer pArchive pEntry
+        Integer iResult
+        Void_Type iVoid
+        WString wsFileName
+
+        Get HandleFor "archive_read_disk_entry_from_file" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        If (not (HasEntry (hoEntry))) Begin
+            Send CreateEntry of hoEntry
+        End
+        Get ppEntry of hoEntry to pEntry
+        Move (archive_entry_update_pathname_utf8 (pEntry, AddressOf (sFileName))) to iResult
+        Move sFileName to wsFileName
+        Move (archive_entry_copy_sourcepath_w (pEntry, AddressOf (wsFileName))) to iVoid
+        Move (archive_read_disk_entry_from_file (pArchive, pEntry, -1, 0)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_disk_entry_from_file"))
+    End_Function
+
+    // ---- matching and lookups -----------------------------------------------------------------------------------
+
+    // Lets an archive_match object (cArchiveMatch) decide which entries are skipped (archive_read_disk_set_matching,
+    // without callback). hoMatch is a wrapper object with the match handle in ppArchive; 0 removes the matching.
+    Function SetMatching Handle hoMatch Returns Integer
+        Pointer pArchive pMatch
+        Integer iResult
+
+        Get HandleFor "archive_read_disk_set_matching" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move 0 to pMatch
+        If (hoMatch <> 0) Begin
+            Get ppArchive of hoMatch to pMatch
+        End
+        Move (archive_read_disk_set_matching (pArchive, pMatch, 0, 0)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_disk_set_matching"))
+    End_Function
+
+    // Installs the standard user and group name lookup (archive_read_disk_set_standard_lookup). Windows has no such
+    // lookup: libarchive returns ARCHIVE_FATAL ("Standard lookups not available on Windows"), which is raised as an
+    // error with pbRaiseErrors, and UserName / GroupName always return "".
+    Function SetStandardLookup Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get HandleFor "archive_read_disk_set_standard_lookup" to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_read_disk_set_standard_lookup (pArchive)) to iResult
+        Function_Return (CheckResult (Self, iResult, "archive_read_disk_set_standard_lookup"))
+    End_Function
+
+    // User name for a user id with the installed lookup (archive_read_disk_uname). Empty when unknown (Windows has no
+    // numeric user ids, so it is empty there).
+    Function UserName BigInt iUserId Returns String
+        Pointer pArchive
+
+        Get ppArchive to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerText (Self, archive_read_disk_uname (pArchive, iUserId)))
+    End_Function
+
+    // Group name for a group id with the installed lookup (archive_read_disk_gname). Empty when unknown.
+    Function GroupName BigInt iGroupId Returns String
+        Pointer pArchive
+
+        Get ppArchive to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerText (Self, archive_read_disk_gname (pArchive, iGroupId)))
+    End_Function
+
+    // ---- file system of the current entry (valid after NextHeader) -----------------------------------------------
+
+    // Id of the file system the current entry lives on (archive_read_disk_current_filesystem); negative when unknown.
+    { MethodType = Property }
+    Function piCurrentFilesystemId Returns Integer
+        Pointer pArchive
+
+        Get ppArchive to pArchive
+        If (pArchive = 0) Begin
+            Function_Return -1
+        End
+        Function_Return (archive_read_disk_current_filesystem (pArchive))
+    End_Function
+
+    // True when the current file system is synthetic, like proc (archive_read_disk_current_filesystem_is_synthetic).
+    // False when it is not or unknown (no error is raised).
+    { MethodType = Property }
+    Function pbCurrentFilesystemIsSynthetic Returns Boolean
+        Pointer pArchive
+
+        Get ppArchive to pArchive
+        If (pArchive = 0) Begin
+            Function_Return False
+        End
+        Function_Return (archive_read_disk_current_filesystem_is_synthetic (pArchive) = 1)
+    End_Function
+
+    // True when the current file system is remote (archive_read_disk_current_filesystem_is_remote). False when it is not
+    // or unknown (no error is raised).
+    { MethodType = Property }
+    Function pbCurrentFilesystemIsRemote Returns Boolean
+        Pointer pArchive
+
+        Get ppArchive to pArchive
+        If (pArchive = 0) Begin
+            Function_Return False
+        End
+        Function_Return (archive_read_disk_current_filesystem_is_remote (pArchive) = 1)
+    End_Function
+
+    // ---- convenience --------------------------------------------------------------------------------------------
+
+    // Lists a folder tree recursively: the folder itself, then every file and sub folder below it. Uses the handle of
+    // this object (a handle is created when there is none, settings and matching of an existing handle are kept) and
+    // closes the traversal afterwards. Path names are as libarchive builds them from sFolder. The array is empty
+    // when the folder does not exist.
+    Function ListFolder String sFolder Returns tArchiveEntryInfo[]
+        tArchiveEntryInfo[] aEntries
+        tArchiveEntryInfo tInfo
+        Integer iResult iCount
+
+        If (not (HasHandle (Self))) Begin
+            Send CreateDiskReader
+        End
+        Get OpenDisk sFolder to iResult
+        If (iResult <> ARCHIVE_OK) Begin
+            Function_Return aEntries
+        End
+        Move 0 to iCount
+        Get NextHeader to iResult
+        While (iResult = ARCHIVE_OK or iResult = ARCHIVE_WARN)
+            Get EntryInfo to tInfo
+            Move tInfo to aEntries[iCount]
+            Increment iCount
+            If (CanDescend (Self)) Begin
+                Get Descend to iResult
+            End
+            Get NextHeader to iResult
+        Loop
+        Send CloseDiskReader
+        Function_Return aEntries
+    End_Function
+End_Class
