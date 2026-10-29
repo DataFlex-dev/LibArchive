@@ -4,7 +4,7 @@ DataFlex 26 wrapper for [libarchive](https://github.com/libarchive/libarchive), 
 
 ## Safe ZIP inspection and extraction
 
-`cArchiveReader.pkg` exposes two operations:
+`cArchiveReader` also exposes two ZIP operations:
 
 - `InspectZipArchive` validates the ZIP end record and bounded central directory, then reads entry metadata without extracting entry bodies.
 - `ExtractZipArchive` always performs that preflight first, then reopens the ZIP and streams every regular file through application-enforced byte limits.
@@ -49,7 +49,7 @@ Only unfiltered, single-volume, non-ZIP64 seekable ZIP input with stored or defl
 
 ## Tests
 
-The dedicated `ArchiveReaderTests` project in `Library\LibArchive.sws` uses DFUnit for test discovery, reporting, assertions, and process exit codes. The PowerShell entry point generates adversarial ZIP fixtures, builds the DF26 project, runs it in console mode, and removes its disposable data:
+The DFUnit suite `Demo\AppSrc\LibArchiveTests.src` holds the wrapper tests and the `ZipReader` fixture (the ZIP security checks, listed below). `Demo\Tests\RunArchiveReaderTests.ps1` generates the adversarial ZIP fixtures under `Demo\Programs\TestTemp\ArchiveReaderTests`, builds `LibArchiveTests.src`, runs the whole suite and deletes the fixtures:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Demo\Tests\RunArchiveReaderTests.ps1
@@ -59,7 +59,7 @@ The suite covers compressed and uncompressed ZIP bombs, overlapping compressed-d
 
 ## Platform and native dependencies
 
-The runtime library source no longer imports `Kernel32.dll`. File and directory discovery uses DataFlex filesystem primitives, timestamps come from libarchive's disk reader, and extraction uses libarchive's disk writer. The Windows-only `DateAndTime` submodule is therefore no longer a runtime dependency.
+`cFilesArchiver`, `ArchivePath.pkg` and the ZIP inspection/extraction methods of `cArchiveReader` call no Windows API: they use DataFlex filesystem operations, libarchive's disk reader for timestamps and libarchive's disk writer for extraction, so the Windows-only `DateAndTime` submodule is no longer needed. The wrapper classes still declare `kernel32.dll` functions (`cArchiveEntry`, `cArchiveWriter`, and `cArchiveReader.DataToFile`/`OpenFiles`).
 
 Native libarchive itself is still an external platform dependency. `Archive.h.pkg` currently names it `archive.dll`, and this repository only includes and tests the Windows x64 binary set. A non-Windows deployment must supply a compatible native libarchive build and adapt that library-name binding to the target DataFlex runtime's shared-library convention.
 

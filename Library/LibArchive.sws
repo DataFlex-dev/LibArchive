@@ -1,9 +1,35 @@
 {
-    "dependencies": [
-        "AppSrc/Libraries/DateAndTime/Library/DateTime.sws"
-    ],
+    "description": "DataFlex wrapper for libarchive: read and write zip, 7zip, tar, cpio, ISO and more archives, with compression filters, encryption, ACLs and extended attributes",
     "df": 26.0,
+    "package": {
+        "icon": "libarchive.png",
+        "includeFiles": [
+            "CHANGELOG.md",
+            "README.md",
+            "THIRD-PARTY-NOTICES.md",
+            "Programs/archive.dll",
+            "Programs/bz2.dll",
+            "Programs/libcrypto-3-x64.dll",
+            "Programs/liblzma.dll",
+            "Programs/lz4.dll",
+            "Programs/zlib1.dll",
+            "Programs/zstd.dll"
+        ],
+        "install": [
+            "Programs/archive.dll",
+            "Programs/bz2.dll",
+            "Programs/libcrypto-3-x64.dll",
+            "Programs/liblzma.dll",
+            "Programs/lz4.dll",
+            "Programs/zlib1.dll",
+            "Programs/zstd.dll"
+        ],
+        "license": "BSD-3-Clause",
+        "licenseFile": "LICENSE",
+        "version": "1.0.1"
+    },
     "studio": {
         "DefaultFormHeight": 12
-    }
+    },
+    "workspaceName": "LibArchive"
 }

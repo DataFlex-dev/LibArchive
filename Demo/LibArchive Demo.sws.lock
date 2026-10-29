@@ -3,8 +3,9 @@
         "DataFlex-dev/DFUnit": {
             "ref": "1.1.0"
         },
-        "local/DateTime": {},
-        "local/LibArchive": {}
+        "DataFlex-dev/LibArchive": {
+            "ref": "1.0.1"
+        }
     },
     "lockVersion": "1.0.0"
 }
