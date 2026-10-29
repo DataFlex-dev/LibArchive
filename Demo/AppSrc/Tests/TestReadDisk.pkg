@@ -1,0 +1,491 @@
+﻿// Tests for the functions that read files and folders of the local file system as archive entries
+// (ArchiveReadDisk.h.pkg). The tests create a small folder tree below the temp folder:
+//     disktree\a.txt (5 bytes), disktree\sub\b.txt (6 bytes), disktree\sub\c.txt (7 bytes), disktree\empty\ (folder)
+// Callbacks cannot be created from DataFlex, so the callback taking functions are only called with 0 (NULL).
+External_Function Disk_CreateDirectoryW "CreateDirectoryW" kernel32.dll ;
+    Pointer pPath ;
+    Pointer pSecurity ;
+    Returns Integer
+
+External_Function Disk_RemoveDirectoryW "RemoveDirectoryW" kernel32.dll ;
+    Pointer pPath ;
+    Returns Integer
+
+External_Function Disk_DeleteFileW "DeleteFileW" kernel32.dll ;
+    Pointer pPath ;
+    Returns Integer
+
+External_Function Disk_CreateFileW "CreateFileW" kernel32.dll ;
+    Pointer pPath ;
+    UInteger iAccess ;
+    UInteger iShare ;
+    Pointer pSecurity ;
+    UInteger iCreation ;
+    UInteger iFlags ;
+    Pointer pTemplate ;
+    Returns BigInt
+
+External_Function Disk_WriteFile "WriteFile" kernel32.dll ;
+    BigInt hFile ;
+    Pointer pBuffer ;
+    UInteger iBytes ;
+    Pointer pWritten ;
+    Pointer pOverlapped ;
+    Returns Integer
+
+External_Function Disk_CloseHandle "CloseHandle" kernel32.dll ;
+    BigInt hObject ;
+    Returns Integer
+
+External_Function Disk_CrtOpen "_open" ucrtbase.dll ;
+    Pointer pPath ;
+    Integer iFlags ;
+    Integer iMode ;
+    Returns Integer
+
+External_Function Disk_CrtClose "_close" ucrtbase.dll ;
+    Integer iFd ;
+    Returns Integer
+
+Object oReadDiskTests is a cArchiveTestFixture
+    Set psTestFixtureName to "ReadDisk"
+
+    // ---- helpers -------------------------------------------------------------------------------------------------
+
+    // Root of the test tree with forward slashes and without trailing slash (the way libarchive reports it).
+    Function TreeRoot Returns String
+        String sRoot
+        Get TempFolder to sRoot
+        Move (Replaces ("\", sRoot, "/") + "disktree") to sRoot
+        Function_Return sRoot
+    End_Function
+
+    Procedure CreateFolder String sPath
+        WString wsPath
+        Integer iResult
+        Move sPath to wsPath
+        Move (Disk_CreateDirectoryW (AddressOf (wsPath), 0)) to iResult
+    End_Procedure
+
+    Procedure RemoveFolder String sPath
+        WString wsPath
+        Integer iResult
+        Move sPath to wsPath
+        Move (Disk_RemoveDirectoryW (AddressOf (wsPath))) to iResult
+    End_Procedure
+
+    Procedure DeleteTextFile String sPath
+        WString wsPath
+        Integer iResult
+        Move sPath to wsPath
+        Move (Disk_DeleteFileW (AddressOf (wsPath))) to iResult
+    End_Procedure
+
+    Procedure CreateTextFile String sPath String sContent
+        WString wsPath
+        BigInt hFile
+        Integer iResult iWritten
+
+        Move sPath to wsPath
+        Move (Disk_CreateFileW (AddressOf (wsPath), 1073741824, 0, 0, 2, 128, 0)) to hFile
+        If (hFile <> -1) Begin
+            Move (Disk_WriteFile (hFile, AddressOf (sContent), SizeOfString (sContent), AddressOf (iWritten), 0)) to iResult
+            Move (Disk_CloseHandle (hFile)) to iResult
+        End
+    End_Procedure
+
+    Procedure CreateTree
+        String sRoot
+        Get TreeRoot to sRoot
+        Send RemoveTree
+        Send CreateFolder sRoot
+        Send CreateTextFile (sRoot + "/a.txt") "alpha"
+        Send CreateFolder (sRoot + "/sub")
+        Send CreateTextFile (sRoot + "/sub/b.txt") "bravo!"
+        Send CreateTextFile (sRoot + "/sub/c.txt") "charlie"
+        Send CreateFolder (sRoot + "/empty")
+    End_Procedure
+
+    Procedure RemoveTree
+        String sRoot
+        Get TreeRoot to sRoot
+        Send DeleteTextFile (sRoot + "/a.txt")
+        Send DeleteTextFile (sRoot + "/sub/b.txt")
+        Send DeleteTextFile (sRoot + "/sub/c.txt")
+        Send RemoveFolder (sRoot + "/sub")
+        Send RemoveFolder (sRoot + "/empty")
+        Send RemoveFolder sRoot
+    End_Procedure
+
+    // Path of an entry (UTF-8, from the wide name) without the root, with forward slashes. The root itself is "".
+    Function RelativeName Pointer pEntry String sRoot Returns String
+        Pointer pText
+        WString wsName
+        String sName
+
+        Move (archive_entry_pathname_w (pEntry)) to pText
+        If (pText = 0) Begin
+            Function_Return "?"
+        End
+        Move (PointerToWString (pText)) to wsName
+        Move wsName to sName
+        Move (Replaces ("\", sName, "/")) to sName
+        If (Left (sName, Length (sRoot)) <> sRoot) Begin
+            Function_Return ("?" + sName)
+        End
+        Move (Mid (sName, Length (sName) - Length (sRoot), Length (sRoot) + 1)) to sName
+        If (Left (sName, 1) = "/") Begin
+            Move (Mid (sName, Length (sName) - 1, 2)) to sName
+        End
+        Function_Return sName
+    End_Function
+
+    // Walks the tree below sRoot (descending into all folders) with the opened reader and returns the names
+    // (relative, separated and surrounded by "|") of all entries in the order they were returned.
+    // The data of the files is read and checked on the way.
+    Function Traverse Pointer pArchive String sRoot Returns String
+        Pointer pEntry
+        Integer iResult iType
+        String sNames sName sData
+
+        Move "|" to sNames
+        Move (archive_read_next_header (pArchive, AddressOf (pEntry))) to iResult
+        While (iResult = ARCHIVE_OK)
+            Get RelativeName pEntry sRoot to sName
+            Move (sNames + sName + "|") to sNames
+            Move (archive_entry_filetype (pEntry)) to iType
+            If (iType = AE_IFDIR) Begin
+                Send AssertIAreEqual 1 (archive_read_disk_can_descend (pArchive)) (sName * "folder can be descended")
+                Move (archive_read_disk_descend (pArchive)) to iResult
+                Send AssertIAreEqual ARCHIVE_OK iResult (sName * "descend")
+            End
+            Else Begin
+                Send AssertIAreEqual 0 (archive_read_disk_can_descend (pArchive)) (sName * "file cannot be descended")
+                Send AssertIAreEqual AE_IFREG iType (sName * "file type")
+                Get ReadDiskData pArchive to sData
+                If (sName = "a.txt") Begin
+                    Send AssertSAreEqual "alpha" sData "data of a.txt"
+                    Send AssertBIAreEqual 5 (archive_entry_size (pEntry)) "size of a.txt"
+                End
+                If (sName = "sub/b.txt") Begin
+                    Send AssertSAreEqual "bravo!" sData "data of b.txt"
+                    Send AssertBIAreEqual 6 (archive_entry_size (pEntry)) "size of b.txt"
+                End
+                If (sName = "sub/c.txt") Begin
+                    Send AssertSAreEqual "charlie" sData "data of c.txt"
+                    Send AssertBIAreEqual 7 (archive_entry_size (pEntry)) "size of c.txt"
+                End
+            End
+            Move (archive_read_next_header (pArchive, AddressOf (pEntry))) to iResult
+        Loop
+        Send AssertIAreEqual ARCHIVE_EOF iResult "end of the traversal"
+        Function_Return sNames
+    End_Function
+
+    // Number of entries in a name list as returned by Traverse (the archive_file_count of a disk reader stays 0).
+    Function EntryCount String sNames Returns Integer
+        Function_Return (Length (sNames) - Length (Replaces ("|", sNames, "")) - 1)
+    End_Function
+
+    // Reads the data of the current file entry of a disk reader.
+    Function ReadDiskData Pointer pArchive Returns String
+        UChar[] ucBuffer
+        BigInt iRead
+        Integer iIndex
+        String sResult
+
+        Move "" to sResult
+        Move (ResizeArray (ucBuffer, 100)) to ucBuffer
+        Move (archive_read_data (pArchive, AddressOf (ucBuffer), 100)) to iRead
+        While (iRead > 0)
+            For iIndex from 0 to (iRead - 1)
+                Move (sResult + Character (ucBuffer[iIndex])) to sResult
+            Loop
+            Move (archive_read_data (pArchive, AddressOf (ucBuffer), 100)) to iRead
+        Loop
+        Function_Return sResult
+    End_Function
+
+    // ---- traversal -----------------------------------------------------------------------------------------------
+
+    // Without descend only the starting folder is returned.
+    Object oNoDescendTest is a cTest
+        Procedure Test
+            Pointer pArchive pEntry
+            Integer iResult
+            String sRoot sName
+
+            Delegate Send CreateTree
+            Delegate Get TreeRoot to sRoot
+            Move (archive_read_disk_new ()) to pArchive
+            Send Assert (pArchive <> 0) "new disk reader"
+            Move (archive_read_disk_open (pArchive, AddressOf (sRoot))) to iResult
+            Delegate Send AssertArchiveOk iResult pArchive "open"
+            Move (archive_read_next_header (pArchive, AddressOf (pEntry))) to iResult
+            Delegate Send AssertArchiveOk iResult pArchive "first header"
+            Delegate Get RelativeName pEntry sRoot to sName
+            Send AssertSAreEqual "" sName "the first entry is the root"
+            Send AssertIAreEqual AE_IFDIR (archive_entry_filetype (pEntry)) "root is a folder"
+            Send AssertIAreEqual 1 (archive_read_disk_can_descend (pArchive)) "the root can be descended"
+            Move (archive_read_next_header (pArchive, AddressOf (pEntry))) to iResult
+            Send AssertIAreEqual ARCHIVE_EOF iResult "no more entries without descend"
+            Move (archive_read_free (pArchive)) to iResult
+            Delegate Send RemoveTree
+        End_Procedure
+    End_Object
+
+    Object oTraverseTest is a cTest
+        Procedure Test
+            Pointer pArchive
+            Integer iResult iCount
+            String sRoot sNames
+
+            Delegate Send CreateTree
+            Delegate Get TreeRoot to sRoot
+            Move (archive_read_disk_new ()) to pArchive
+            Move (archive_read_disk_open (pArchive, AddressOf (sRoot))) to iResult
+            Delegate Send AssertArchiveOk iResult pArchive "open"
+            Delegate Get Traverse pArchive sRoot to sNames
+            Send Assert (Pos ("||", sNames) = 1) "the root has the name empty"
+            Send Assert (Pos ("|a.txt|", sNames) > 0) ("a.txt found in" * sNames)
+            Send Assert (Pos ("|sub|", sNames) > 0) "sub found"
+            Send Assert (Pos ("|sub/b.txt|", sNames) > 0) "sub/b.txt found"
+            Send Assert (Pos ("|sub/c.txt|", sNames) > 0) "sub/c.txt found"
+            Send Assert (Pos ("|empty|", sNames) > 0) "empty found"
+            Delegate Get EntryCount sNames to iCount
+            Send AssertIAreEqual 6 iCount "6 entries"
+            Move (archive_read_free (pArchive)) to iResult
+            Delegate Send RemoveTree
+        End_Procedure
+    End_Object
+
+    // open_w with a folder and a file that have non-ASCII names.
+    Object oOpenWideTest is a cTest
+        Procedure Test
+            Pointer pArchive
+            Integer iResult iCount
+            String sRoot sNames
+            WString wsRoot
+
+            Delegate Get TempFolder to sRoot
+            Move (Replaces ("\", sRoot, "/") + "ünï-disk") to sRoot
+            Delegate Send RemoveFolder sRoot
+            Delegate Send CreateFolder sRoot
+            Delegate Send CreateTextFile (sRoot + "/fïle.txt") "wide"
+
+            Move sRoot to wsRoot
+            Move (archive_read_disk_new ()) to pArchive
+            Move (archive_read_disk_open_w (pArchive, AddressOf (wsRoot))) to iResult
+            Delegate Send AssertArchiveOk iResult pArchive "open_w"
+            Delegate Get Traverse pArchive sRoot to sNames
+            Send AssertSAreEqual "||fïle.txt|" sNames "entries below the folder with the unicode name"
+            Move (archive_read_free (pArchive)) to iResult
+
+            Delegate Send DeleteTextFile (sRoot + "/fïle.txt")
+            Delegate Send RemoveFolder sRoot
+        End_Procedure
+    End_Object
+
+    Object oOpenMissingPathTest is a cTest
+        Procedure Test
+            Pointer pArchive pEntry
+            Integer iResult
+            String sMissing
+
+            Delegate Get TempFile "no-such-folder" to sMissing
+            Move (archive_read_disk_new ()) to pArchive
+            Move (archive_read_disk_open (pArchive, AddressOf (sMissing))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open of a missing path is delayed"
+            Move (archive_read_next_header (pArchive, AddressOf (pEntry))) to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "next_header of a missing path fails"
+            Move (archive_read_free (pArchive)) to iResult
+        End_Procedure
+    End_Object
+
+    // ---- entry_from_file -----------------------------------------------------------------------------------------
+
+    Object oEntryFromFileTest is a cTest
+        Procedure Test
+            Pointer pArchive pEntry
+            Integer iResult iFd
+            String sRoot sPath
+            Void_Type iVoid
+
+            Delegate Send CreateTree
+            Delegate Get TreeRoot to sRoot
+            Move (archive_read_disk_new ()) to pArchive
+            Move (archive_entry_new ()) to pEntry
+
+            // file, without descriptor and stat
+            Move (sRoot + "/a.txt") to sPath
+            Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sPath))) to iVoid
+            Move (archive_read_disk_entry_from_file (pArchive, pEntry, -1, 0)) to iResult
+            Delegate Send AssertArchiveOk iResult pArchive "entry_from_file a.txt"
+            Send AssertBIAreEqual 5 (archive_entry_size (pEntry)) "size from disk"
+            Send AssertIAreEqual AE_IFREG (archive_entry_filetype (pEntry)) "type from disk"
+            Send Assert (archive_entry_mtime (pEntry) > 1600000000) "mtime from disk"
+            Send Assert (archive_entry_perm (pEntry) <> 0) "permissions from disk"
+
+            // the same with an open file descriptor
+            Move (archive_entry_clear (pEntry)) to pEntry
+            Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sPath))) to iVoid
+            Move (Disk_CrtOpen (AddressOf (sPath), 32768, 0)) to iFd
+            Send Assert (iFd >= 0) "descriptor"
+            Move (archive_read_disk_entry_from_file (pArchive, pEntry, iFd, 0)) to iResult
+            Delegate Send AssertArchiveOk iResult pArchive "entry_from_file with descriptor"
+            Send AssertBIAreEqual 5 (archive_entry_size (pEntry)) "size from disk with descriptor"
+            Move (Disk_CrtClose (iFd)) to iResult
+
+            // folder
+            Move (archive_entry_clear (pEntry)) to pEntry
+            Move (sRoot + "/sub") to sPath
+            Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sPath))) to iVoid
+            Move (archive_read_disk_entry_from_file (pArchive, pEntry, -1, 0)) to iResult
+            Delegate Send AssertArchiveOk iResult pArchive "entry_from_file sub"
+            Send AssertIAreEqual AE_IFDIR (archive_entry_filetype (pEntry)) "folder type from disk"
+
+            // a file that does not exist
+            Move (archive_entry_clear (pEntry)) to pEntry
+            Move (sRoot + "/missing.txt") to sPath
+            Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sPath))) to iVoid
+            Move (archive_read_disk_entry_from_file (pArchive, pEntry, -1, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "entry_from_file of a missing file"
+
+            Move (archive_entry_free (pEntry)) to iVoid
+            Move (archive_read_free (pArchive)) to iResult
+            Delegate Send RemoveTree
+        End_Procedure
+    End_Object
+
+    // ---- behavior and lookups ------------------------------------------------------------------------------------
+
+    Object oBehaviorTest is a cTest
+        Procedure Test
+            Pointer pArchive
+            Integer iResult iCount
+            String sRoot sNames
+
+            Delegate Send CreateTree
+            Delegate Get TreeRoot to sRoot
+            Move (archive_read_disk_new ()) to pArchive
+
+            Move (archive_read_disk_set_behavior (pArchive, (ARCHIVE_READDISK_NO_XATTR ior ARCHIVE_READDISK_NO_ACL ior ARCHIVE_READDISK_NO_FFLAGS ior ARCHIVE_READDISK_NO_SPARSE))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "set_behavior"
+            Move (archive_read_disk_set_atime_restored (pArchive)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "set_atime_restored"
+            Move (archive_read_disk_set_symlink_logical (pArchive)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "set_symlink_logical"
+            Move (archive_read_disk_set_symlink_physical (pArchive)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "set_symlink_physical"
+            Move (archive_read_disk_set_symlink_hybrid (pArchive)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "set_symlink_hybrid"
+
+            // The reader still walks the tree with these settings.
+            Move (archive_read_disk_open (pArchive, AddressOf (sRoot))) to iResult
+            Delegate Send AssertArchiveOk iResult pArchive "open"
+            Delegate Get Traverse pArchive sRoot to sNames
+            Delegate Get EntryCount sNames to iCount
+            Send AssertIAreEqual 6 iCount "6 entries with the settings"
+            Move (archive_read_free (pArchive)) to iResult
+            Delegate Send RemoveTree
+        End_Procedure
+    End_Object
+
+    Object oLookupTest is a cTest
+        Procedure Test
+            Pointer pArchive pText
+            Integer iResult
+
+            Move (archive_read_disk_new ()) to pArchive
+            Move (archive_read_disk_set_standard_lookup (pArchive)) to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "set_standard_lookup (not available on Windows)"
+            Move (archive_read_disk_uname (pArchive, 0)) to pText
+            Send AssertPAreEqual 0 pText "uname of user 0 with the standard lookup"
+            Move (archive_read_disk_gname (pArchive, 0)) to pText
+            Send AssertPAreEqual 0 pText "gname of group 0 with the standard lookup"
+
+            // Callbacks cannot be created from DataFlex: 0 removes the lookup.
+            Move (archive_read_disk_set_uname_lookup (pArchive, 0, 0, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "set_uname_lookup 0"
+            Move (archive_read_disk_set_gname_lookup (pArchive, 0, 0, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "set_gname_lookup 0"
+            Move (archive_read_disk_uname (pArchive, 1000)) to pText
+            Send AssertPAreEqual 0 pText "uname without lookup"
+            Move (archive_read_disk_gname (pArchive, 1000)) to pText
+            Send AssertPAreEqual 0 pText "gname without lookup"
+            Move (archive_read_free (pArchive)) to iResult
+        End_Procedure
+    End_Object
+
+    Object oFileSystemInfoTest is a cTest
+        Procedure Test
+            Pointer pArchive pEntry
+            Integer iResult
+            String sRoot
+
+            Delegate Send CreateTree
+            Delegate Get TreeRoot to sRoot
+            Move (archive_read_disk_new ()) to pArchive
+            Move (archive_read_disk_open (pArchive, AddressOf (sRoot))) to iResult
+            Move (archive_read_next_header (pArchive, AddressOf (pEntry))) to iResult
+            Delegate Send AssertArchiveOk iResult pArchive "first header"
+            Send AssertIAreEqual 0 (archive_read_disk_current_filesystem (pArchive)) "current filesystem id"
+            Send AssertIAreEqual -1 (archive_read_disk_current_filesystem_is_synthetic (pArchive)) "synthetic file system information is not available on Windows"
+            Send AssertIAreEqual 0 (archive_read_disk_current_filesystem_is_remote (pArchive)) "temp folder is not on a remote file system"
+            Move (archive_read_free (pArchive)) to iResult
+            Delegate Send RemoveTree
+        End_Procedure
+    End_Object
+
+    // ---- matching and filter callbacks ---------------------------------------------------------------------------
+
+    Object oMatchingTest is a cTest
+        Procedure Test
+            Pointer pArchive pMatch
+            Integer iResult iCount
+            String sRoot sNames sPattern
+
+            Delegate Send CreateTree
+            Delegate Get TreeRoot to sRoot
+            Move "*b.txt" to sPattern
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_exclude_pattern (pMatch, AddressOf (sPattern))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "exclude pattern"
+
+            Move (archive_read_disk_new ()) to pArchive
+            Move (archive_read_disk_set_matching (pArchive, pMatch, 0, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "set_matching"
+            Move (archive_read_disk_open (pArchive, AddressOf (sRoot))) to iResult
+            Delegate Send AssertArchiveOk iResult pArchive "open"
+            Delegate Get Traverse pArchive sRoot to sNames
+            Send AssertIAreEqual 0 (Pos ("b.txt", sNames)) "b.txt is excluded"
+            Send Assert (Pos ("|sub/c.txt|", sNames) > 0) "c.txt is still returned"
+            Delegate Get EntryCount sNames to iCount
+            Send AssertIAreEqual 5 iCount "5 entries"
+            Move (archive_read_free (pArchive)) to iResult
+            Move (archive_match_free (pMatch)) to iResult
+            Delegate Send RemoveTree
+        End_Procedure
+    End_Object
+
+    Object oMetadataFilterCallbackTest is a cTest
+        Procedure Test
+            Pointer pArchive
+            Integer iResult iCount
+            String sRoot sNames
+
+            Delegate Send CreateTree
+            Delegate Get TreeRoot to sRoot
+            Move (archive_read_disk_new ()) to pArchive
+            Move (archive_read_disk_set_metadata_filter_callback (pArchive, 0, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "set_metadata_filter_callback 0"
+            Move (archive_read_disk_open (pArchive, AddressOf (sRoot))) to iResult
+            Delegate Send AssertArchiveOk iResult pArchive "open"
+            Delegate Get Traverse pArchive sRoot to sNames
+            Delegate Get EntryCount sNames to iCount
+            Send AssertIAreEqual 6 iCount "no filter: all 6 entries"
+            Move (archive_read_free (pArchive)) to iResult
+            Delegate Send RemoveTree
+        End_Procedure
+    End_Object
+End_Object

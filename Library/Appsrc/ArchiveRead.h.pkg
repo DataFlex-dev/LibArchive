@@ -1,0 +1,784 @@
+﻿// Functions to read archives (archive_read_*).
+
+// ====================================================================================================
+// Create and free
+// ====================================================================================================
+
+/*-
+ * Basic outline for reading an archive:
+ *   1) Ask archive_read_new for an archive reader object.
+ *   2) Update any global properties as appropriate.
+ *      In particular, you'll certainly want to call appropriate
+ *      archive_read_support_XXX functions.
+ *   3) Call archive_read_open_XXX to open the archive
+ *   4) Repeatedly call archive_read_next_header to get information about
+ *      successive archive entries.  Call archive_read_data to extract
+ *      data for entries of interest.
+ *   5) Call archive_read_free to end processing.
+
+archive_read_new() is a Function in the libarchive library that allocates and initializes a new archive Object for reading.
+
+According to the libarchive documentation, this function returns a pointer to a newly created struct archive object. This object is then used for subsequent operations related to reading an archive, such as setting options, adding format and filter support, and actually reading the archive.
+
+Here's a breakdown of what archive_read_new() does:
+
+Allocation: It allocates memory for a new struct archive structure.
+Initialization: It initializes the internal state of this newly allocated structure, preparing it for reading operations.
+After calling archive_read_new(), you would typically proceed by:
+
+Setting options using functions like archive_read_set_options().
+Enabling support for specific archive formats using functions like archive_read_support_format_all() or archive_read_support_format_tar().
+Enabling support for compression filters using functions like archive_read_support_filter_all() or archive_read_support_filter_gzip().
+Setting the file or data source to read from using functions like archive_read_open_filename() or archive_read_open_memory().
+Finally, you would use functions like archive_read_next_header() and archive_read_data() to iterate through and extract the contents of the archive. Don't forget to call archive_read_free() when you are finished with the archive object to release the allocated memory.
+
+In summary, archive_read_new() is the first essential step when you want to read an archive using the libarchive library, as it provides you with the necessary archive reading context.
+*/
+/*
+Note: A reader has 16 slots for format readers and 16 for filter readers; registering more on one handle
+crashes.
+*/
+External_Function archive_read_new "archive_read_new" archive.dll ;
+    Returns Pointer
+
+/* Closes the archive and releases most resources. archive_read_free calls it for you. */
+External_Function archive_read_close "archive_read_close" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Closes the archive (when still open), releases all resources and invalidates the handle. */
+External_Function archive_read_free "archive_read_free" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+// ====================================================================================================
+// Format support
+// ====================================================================================================
+
+/* Enables reading of 7-Zip archives. */
+External_Function archive_read_support_format_7zip "archive_read_support_format_7zip" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/*
+archive_read_support_format_all(struct archive *) is a function in the libarchive library that enables support for reading all archive formats currently supported by the library.
+
+According to the manual pages, calling this function allows libarchive to automatically detect and handle various archive formats when reading an archive.
+
+Here's a list of archive formats that libarchive can typically read (this list might vary slightly depending on the libarchive version):
+
+7-zip
+Ar (including GNU/SysV and BSD extensions)
+CAB
+Cpio (and its variants like odc and newc)
+ISO9660 (including Rock Ridge and Joliet extensions)
+LHA/LZH
+Mtree
+RAR (and most RAR5)
+Shar
+Tar (including old-style, ustar, pax, and GNU extensions)
+WARC
+XAR
+Zip
+Calling archive_read_support_format_all() generally includes support for all of these formats, except for the "raw" format, which treats any data stream as a single-entry archive. The "raw" format is not enabled by archive_read_support_format_all() to avoid potential misinterpretation of damaged archives.
+
+Therefore, when you call archive_read_support_format_all(), you are telling libarchive to be ready to handle and automatically detect any of these supported archive formats when you attempt to read an archive.
+*/
+External_Function archive_read_support_format_all "archive_read_support_format_all" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables reading of ar archives. */
+External_Function archive_read_support_format_ar "archive_read_support_format_ar" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/*
+used for reading and writing streaming archives in various formats (like tar, zip, etc.). This specific function allows you to enable support for a particular archive format by specifying its format code.
+
+eFormatcode: is an integer constant representing the format (e.g., ARCHIVE_FORMAT_TAR, ARCHIVE_FORMAT_ZIP).
+*/
+External_Function archive_read_support_format_by_code "archive_read_support_format_by_code" archive.dll ;
+    Pointer pArchive ;
+    Integer iFormatCode ;
+    Returns Integer
+
+/* Enables reading of Microsoft CAB archives. */
+External_Function archive_read_support_format_cab "archive_read_support_format_cab" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables reading of cpio archives (all variants). */
+External_Function archive_read_support_format_cpio "archive_read_support_format_cpio" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables reading of empty (zero byte) archives; they report no entries instead of an error. */
+External_Function archive_read_support_format_empty "archive_read_support_format_empty" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables reading of GNU tar archives (and the tar variants it can detect). */
+External_Function archive_read_support_format_gnutar "archive_read_support_format_gnutar" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables reading of ISO 9660 images (including Rock Ridge and Joliet). */
+External_Function archive_read_support_format_iso9660 "archive_read_support_format_iso9660" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables reading of LHA/LZH archives. */
+External_Function archive_read_support_format_lha "archive_read_support_format_lha" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables reading of mtree manifests. */
+External_Function archive_read_support_format_mtree "archive_read_support_format_mtree" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables reading of RAR archives (up to version 4). */
+External_Function archive_read_support_format_rar "archive_read_support_format_rar" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables reading of RAR 5 archives. */
+/*
+Note: Registering the rar5 reader twice on one handle (also via archive_read_support_format_all after it)
+crashes libarchive 3.7.7.
+*/
+External_Function archive_read_support_format_rar5 "archive_read_support_format_rar5" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables the raw format, which presents any data stream as a single-entry archive. */
+External_Function archive_read_support_format_raw "archive_read_support_format_raw" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables reading of tar archives (v7, ustar, pax and GNU variants). */
+External_Function archive_read_support_format_tar "archive_read_support_format_tar" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables reading of WARC web archives. */
+External_Function archive_read_support_format_warc "archive_read_support_format_warc" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables reading of XAR archives. */
+/*
+Note: This archive.dll has no XAR support: the function returns ARCHIVE_WARN ("Xar not supported on this
+platform").
+*/
+External_Function archive_read_support_format_xar "archive_read_support_format_xar" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+// archive_read_support_format_zip() enables both streamable and seekable zip readers.
+External_Function archive_read_support_format_zip "archive_read_support_format_zip" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/*
+    Reads Zip archives as stream from beginning to end. Doesn't
+    correctly handle SFX ZIP files or ZIP archives that have been modified in-place.
+*/
+External_Function archive_read_support_format_zip_streamable "archive_read_support_format_zip_streamable" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Reads starting from central directory; requires seekable input. */
+External_Function archive_read_support_format_zip_seekable "archive_read_support_format_zip_seekable" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/*
+    Functions to manually set the format and filters to be used. This is
+    useful to bypass the bidding process when the format and filters to use
+    is known in advance.
+*/
+External_Function archive_read_set_format "archive_read_set_format" archive.dll ;
+    Pointer pArchive ;
+    Integer iFormatCode ;
+    Returns Integer
+
+// ====================================================================================================
+// Filter support
+// ====================================================================================================
+
+/* Enables detection of all supported filters (compression and encoding). */
+External_Function archive_read_support_filter_all "archive_read_support_filter_all" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables detection of one filter identified by its code (ARCHIVE_FILTER_*). */
+External_Function archive_read_support_filter_by_code "archive_read_support_filter_by_code" archive.dll ;
+    Pointer pArchive ;
+    Integer iFilterCode ;
+    Returns Integer
+
+/* Enables detection and decompression of bzip2. */
+External_Function archive_read_support_filter_bzip2 "archive_read_support_filter_bzip2" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables detection and decompression of Unix compress (.Z). */
+External_Function archive_read_support_filter_compress "archive_read_support_filter_compress" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables detection and decompression of gzip. */
+External_Function archive_read_support_filter_gzip "archive_read_support_filter_gzip" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables detection of grzip; needs the external grzip program. */
+External_Function archive_read_support_filter_grzip "archive_read_support_filter_grzip" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables detection of lrzip; needs the external lrzip program. */
+External_Function archive_read_support_filter_lrzip "archive_read_support_filter_lrzip" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables detection and decompression of lz4. */
+External_Function archive_read_support_filter_lz4 "archive_read_support_filter_lz4" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables detection and decompression of lzip. */
+External_Function archive_read_support_filter_lzip "archive_read_support_filter_lzip" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables detection and decompression of lzma. */
+External_Function archive_read_support_filter_lzma "archive_read_support_filter_lzma" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables detection of lzop; needs the external lzop program. */
+External_Function archive_read_support_filter_lzop "archive_read_support_filter_lzop" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables the pass-through filter for uncompressed data. */
+External_Function archive_read_support_filter_none "archive_read_support_filter_none" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables an external program as a filter that is applied to every input (no detection). */
+External_Function archive_read_support_filter_program "archive_read_support_filter_program" archive.dll ;
+    Pointer pArchive ;
+    Pointer pCommand ;
+    Returns Integer
+
+/*
+This function is lower-level and typically used when you need custom filter handling.
+
+If you're just working with common formats, archive_read_support_filter_all() is usually sufficient.
+
+Make sure the external program is available in the system's PATH.
+
+    pCmd: Command to run the external decompression program.
+    pSignature: Byte pattern to match against the beginning of the archive stream.
+    iSignatureLength: Length of the signature in bytes.
+*/
+External_Function archive_read_support_filter_program_signature "archive_read_support_filter_program_signature" archive.dll ;
+    Pointer pArchive ;
+    Pointer pCommand ;
+    Pointer pSignature ;
+    Longptr iSignatureLength ;
+    Returns Integer
+
+/* Enables detection of the RPM wrapper around a payload. */
+External_Function archive_read_support_filter_rpm "archive_read_support_filter_rpm" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables detection and decoding of uuencoded data. */
+External_Function archive_read_support_filter_uu "archive_read_support_filter_uu" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables detection and decompression of xz. */
+External_Function archive_read_support_filter_xz "archive_read_support_filter_xz" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Enables detection and decompression of Zstandard. */
+External_Function archive_read_support_filter_zstd "archive_read_support_filter_zstd" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/*
+used to enable support for a specific decompression filter when reading an archive. This allows you to manually add support for filters like gzip, bzip2, xz, etc., rather than relying on automatic detection.
+    eFiltercode: An integer constant representing the filter type, such as:
+        ARCHIVE_FILTER_GZIP
+        ARCHIVE_FILTER_BZIP2
+        ARCHIVE_FILTER_XZ
+        ARCHIVE_FILTER_NONE
+*/
+/*
+Note: archive_read_append_filter (ARCHIVE_FILTER_COMPRESS) crashes with an access violation in libarchive
+3.7.7; use archive_read_support_filter_compress instead. A missing external program (FILTER_PROGRAM) is not
+reported here.
+*/
+External_Function archive_read_append_filter "archive_read_append_filter" archive.dll ;
+    Pointer pArchive ;
+    Integer iFilterCode ;
+    Returns Integer
+
+/*
+allows you to specify an external decompression program to use as a filter when reading an archive. This is useful when libarchive doesn't natively support a particular compression format, but you have a command-line tool that can decompress it.
+    pCmd: The name of the external decompression program (e.g., "xz", "gzip", "bzip2").
+*/
+/* Note: With a program that does not exist libarchive returns ARCHIVE_FATAL immediately. */
+External_Function archive_read_append_filter_program "archive_read_append_filter_program" archive.dll ;
+    Pointer pArchive ;
+    Pointer pCommand ;
+    Returns Integer
+
+/*
+This function is similar to archive_read_append_filter_program()
+    pCmd: Name of the external decompression program (e.g., "gzip", "xz").
+    pSignature: A pointer to a byte sequence that identifies the filter (e.g., magic bytes).
+    iSignatureLength: Length of the signature in bytes.
+*/
+/* Note: With a program that does not exist libarchive returns ARCHIVE_FATAL immediately. */
+External_Function archive_read_append_filter_program_signature "archive_read_append_filter_program_signature" archive.dll ;
+    Pointer pArchive ;
+    Pointer pCommand ;
+    Pointer pSignature ;
+    Longptr iSignatureLength ;
+    Returns Integer
+
+// ====================================================================================================
+// Callbacks and client data
+// ====================================================================================================
+
+/*
+Sets the open callback (int (*)(archive*, void*)). Needs a native function pointer; DataFlex cannot create
+one.
+*/
+External_Function archive_read_set_open_callback "archive_read_set_open_callback" archive.dll ;
+    Pointer pArchive ;
+    Pointer pCallback ;
+    Returns Integer
+
+/* Sets the read callback (la_ssize_t (*)(archive*, void*, const void**)). Needs a native function pointer. */
+External_Function archive_read_set_read_callback "archive_read_set_read_callback" archive.dll ;
+    Pointer pArchive ;
+    Pointer pCallback ;
+    Returns Integer
+
+/* Sets the seek callback (la_int64_t (*)(archive*, void*, la_int64_t, int)). Needs a native function pointer. */
+External_Function archive_read_set_seek_callback "archive_read_set_seek_callback" archive.dll ;
+    Pointer pArchive ;
+    Pointer pCallback ;
+    Returns Integer
+
+/* Sets the skip callback (la_int64_t (*)(archive*, void*, la_int64_t)). Needs a native function pointer. */
+External_Function archive_read_set_skip_callback "archive_read_set_skip_callback" archive.dll ;
+    Pointer pArchive ;
+    Pointer pCallback ;
+    Returns Integer
+
+/* Sets the close callback (int (*)(archive*, void*)). Needs a native function pointer. */
+External_Function archive_read_set_close_callback "archive_read_set_close_callback" archive.dll ;
+    Pointer pArchive ;
+    Pointer pCallback ;
+    Returns Integer
+
+/* Sets the callback that switches from one client data object to the next. Needs a native function pointer. */
+External_Function archive_read_set_switch_callback "archive_read_set_switch_callback" archive.dll ;
+    Pointer pArchive ;
+    Pointer pCallback ;
+    Returns Integer
+
+/* Sets the first client data object that is passed to the callbacks. */
+External_Function archive_read_set_callback_data "archive_read_set_callback_data" archive.dll ;
+    Pointer pArchive ;
+    Pointer pClientData ;
+    Returns Integer
+
+/* Sets the client data object at the given index. */
+External_Function archive_read_set_callback_data2 "archive_read_set_callback_data2" archive.dll ;
+    Pointer pArchive ;
+    Pointer pClientData ;
+    UInteger iIndex ;
+    Returns Integer
+
+/* Adds a client data object at the given index. */
+External_Function archive_read_add_callback_data "archive_read_add_callback_data" archive.dll ;
+    Pointer pArchive ;
+    Pointer pClientData ;
+    UInteger iIndex ;
+    Returns Integer
+
+/* Appends a client data object to the end of the list. */
+External_Function archive_read_append_callback_data "archive_read_append_callback_data" archive.dll ;
+    Pointer pArchive ;
+    Pointer pClientData ;
+    Returns Integer
+
+/* Prepends a client data object to the beginning of the list. */
+External_Function archive_read_prepend_callback_data "archive_read_prepend_callback_data" archive.dll ;
+    Pointer pArchive ;
+    Pointer pClientData ;
+    Returns Integer
+
+// ====================================================================================================
+// Open
+// ====================================================================================================
+
+/* Opens the archive using the callbacks that were set earlier; after this call the callbacks are frozen. */
+External_Function archive_read_open1 "archive_read_open1" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Convenience wrapper that sets the callbacks and opens the archive. Needs native function pointers. */
+External_Function archive_read_open "archive_read_open" archive.dll ;
+    Pointer pArchive ;
+    Pointer pClientData ;
+    Pointer pOpenCallback ;
+    Pointer pReadCallback ;
+    Pointer pCloseCallback ;
+    Returns Integer
+
+/* Like archive_read_open with an additional skip callback. Needs native function pointers. */
+External_Function archive_read_open2 "archive_read_open2" archive.dll ;
+    Pointer pArchive ;
+    Pointer pClientData ;
+    Pointer pOpenCallback ;
+    Pointer pReadCallback ;
+    Pointer pSkipCallback ;
+    Pointer pCloseCallback ;
+    Returns Integer
+
+/*
+Opens an archive file by name (narrow string in the ANSI code page). A zero pointer reads stdin. A block size
+of 10240 is a good default.
+*/
+/*
+Note: The narrow name is interpreted in the ANSI code page; use archive_read_open_filename_w for file names
+with other characters. Opening a handle a second time (even after a failed open) corrupts the heap.
+*/
+External_Function archive_read_open_filename "archive_read_open_filename" archive.dll ;
+    Pointer pArchive ;
+    Pointer pFileName ;
+    Longptr iBlockSize ;
+    Returns Integer
+
+/* Opens an archive file by name using a wide (UTF-16, WString) file name. */
+External_Function archive_read_open_filename_w "archive_read_open_filename_w" archive.dll ;
+    Pointer pArchive ;
+    Pointer pFileName ;
+    Longptr iBlockSize ;
+    Returns Integer
+
+/*
+Opens a multi-volume archive. pFileNames points to a zero-terminated array of pointers to file names; the
+files are not sorted.
+*/
+External_Function archive_read_open_filenames "archive_read_open_filenames" archive.dll ;
+    Pointer pArchive ;
+    Pointer pFileNames ;
+    Longptr iBlockSize ;
+    Returns Integer
+
+/* Wide-character variant of archive_read_open_filenames (zero-terminated array of wide string pointers). */
+External_Function archive_read_open_filenames_w "archive_read_open_filenames_w" archive.dll ;
+    Pointer pArchive ;
+    Pointer pFileNames ;
+    Longptr iBlockSize ;
+    Returns Integer
+
+/* Deprecated synonym for archive_read_open_filename. */
+External_Function archive_read_open_file "archive_read_open_file" archive.dll ;
+    Pointer pArchive ;
+    Pointer pFileName ;
+    Longptr iBlockSize ;
+    Returns Integer
+
+/* Opens an archive that is stored in a memory buffer. The buffer must stay valid until the archive is closed. */
+External_Function archive_read_open_memory "archive_read_open_memory" archive.dll ;
+    Pointer pArchive ;
+    Pointer pBuffer ;
+    Longptr iSize ;
+    Returns Integer
+
+/* Like archive_read_open_memory but delivers the data in chunks of iReadSize bytes (intended for testing). */
+External_Function archive_read_open_memory2 "archive_read_open_memory2" archive.dll ;
+    Pointer pArchive ;
+    Pointer pBuffer ;
+    Longptr iSize ;
+    Longptr iReadSize ;
+    Returns Integer
+
+/* Opens an archive that is already open as a C runtime file descriptor. */
+/*
+Note: archive.dll uses the universal C runtime: the descriptor must come from ucrtbase.dll (_open),
+descriptors of msvcrt.dll are not shared.
+*/
+External_Function archive_read_open_fd "archive_read_open_fd" archive.dll ;
+    Pointer pArchive ;
+    Integer iFileDescriptor ;
+    Longptr iBlockSize ;
+    Returns Integer
+
+/*
+Opens an archive that is already open as a C runtime FILE pointer. Not for tape drives. Declared as
+archive_read_open_FILE_Ptr because DataFlex names are not case sensitive and archive_read_open_file exists.
+*/
+/*
+Note: archive.dll uses the universal C runtime: the FILE pointer must come from ucrtbase.dll (_wfopen),
+pointers of msvcrt.dll are not shared.
+*/
+External_Function archive_read_open_FILE_Ptr "archive_read_open_FILE" archive.dll ;
+    Pointer pArchive ;
+    Pointer pFile ;
+    Returns Integer
+
+// ====================================================================================================
+// Entries and data
+// ====================================================================================================
+
+/* Parses and returns next entry header. */
+External_Function archive_read_next_header "archive_read_next_header" archive.dll ;
+    Pointer pArchive ;
+    Pointer ppEntry ;
+    Returns Integer
+
+/* Parses and returns next entry header using the archive_entry passed in */
+External_Function archive_read_next_header2 "archive_read_next_header2" archive.dll ;
+    Pointer pArchive ;
+    Pointer pEntry ;
+    Returns Integer
+
+/* Byte offset in the uncompressed data where the last read header started. */
+External_Function archive_read_header_position "archive_read_header_position" archive.dll ;
+    Pointer pArchive ;
+    Returns BigInt
+
+/*
+1 when at least one encrypted entry was found, 0 when none was found yet,
+ARCHIVE_READ_FORMAT_ENCRYPTION_DONT_KNOW or _UNSUPPORTED (negative) when unknown.
+*/
+External_Function archive_read_has_encrypted_entries "archive_read_has_encrypted_entries" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Bit mask of ARCHIVE_READ_FORMAT_CAPS_* values describing the encryption capabilities of the format reader. */
+/* Note: The zip reader reports ARCHIVE_READ_FORMAT_CAPS_ENCRYPT_DATA and _ENCRYPT_METADATA (3). */
+External_Function archive_read_format_capabilities "archive_read_format_capabilities" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/*
+Reads up to iSize bytes of the current entry into the buffer. Returns the number of bytes read, 0 at the end
+of the entry, or a negative ARCHIVE_* code.
+*/
+External_Function archive_read_data "archive_read_data" archive.dll ;
+    Pointer pArchive ;
+    Pointer pBuffer ;
+    Longptr iSize ;
+    Returns Longptr
+
+/*
+Seeks within the data of the current entry (whence 0 = SEEK_SET, 1 = SEEK_CUR, 2 = SEEK_END). Returns the new
+offset or a negative ARCHIVE_* code.
+*/
+/*
+Note: For most formats (tar, zip, 7zip, cpio, iso9660) libarchive 3.7.7 returns ARCHIVE_FATAL; only some
+formats can seek.
+*/
+External_Function archive_seek_data "archive_seek_data" archive.dll ;
+    Pointer pArchive ;
+    BigInt iOffset ;
+    Integer iWhence ;
+    Returns BigInt
+
+/*
+Zero-copy read of the next data block of the current entry: stores the block pointer, its size and its file
+offset in the variables pointed to.
+*/
+External_Function archive_read_data_block "archive_read_data_block" archive.dll ;
+    Pointer pArchive ;
+    Pointer ppBuffer ;
+    Pointer pSize ;
+    Pointer pOffset ;
+    Returns Integer
+
+/* Skips the remaining data of the current entry. */
+External_Function archive_read_data_skip "archive_read_data_skip" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Writes the data of the current entry to a C runtime file descriptor. */
+External_Function archive_read_data_into_fd "archive_read_data_into_fd" archive.dll ;
+    Pointer pArchive ;
+    Integer iFileDescriptor ;
+    Returns Integer
+
+// ====================================================================================================
+// Options and passphrases
+// ====================================================================================================
+
+/* Sets an option for the format reader only. pModule can be 0 to match any module. */
+/* Note: An unknown option returns ARCHIVE_FAILED (not ARCHIVE_WARN). */
+External_Function archive_read_set_format_option "archive_read_set_format_option" archive.dll ;
+    Pointer pArchive ;
+    Pointer pModule ;
+    Pointer pOption ;
+    Pointer pValue ;
+    Returns Integer
+
+/* Sets an option for the filter only. pModule can be 0 to match any module. */
+/* Note: An unknown option returns ARCHIVE_FAILED (not ARCHIVE_WARN). */
+External_Function archive_read_set_filter_option "archive_read_set_filter_option" archive.dll ;
+    Pointer pArchive ;
+    Pointer pModule ;
+    Pointer pOption ;
+    Pointer pValue ;
+    Returns Integer
+
+/* Sets an option for both the format and the filter. pModule can be 0 to match any module. */
+/* Note: An unknown option returns ARCHIVE_FAILED (not ARCHIVE_WARN). */
+External_Function archive_read_set_option "archive_read_set_option" archive.dll ;
+    Pointer pArchive ;
+    Pointer pModule ;
+    Pointer pOption ;
+    Pointer pValue ;
+    Returns Integer
+
+/* Sets options from a string like "module:option=value,option2" for both the format and the filter. */
+/* Note: An unknown option returns ARCHIVE_FAILED (not ARCHIVE_WARN). */
+External_Function archive_read_set_options "archive_read_set_options" archive.dll ;
+    Pointer pArchive ;
+    Pointer pOptions ;
+    Returns Integer
+
+/* Adds a passphrase that is tried when decrypting entries; can be called several times. */
+External_Function archive_read_add_passphrase "archive_read_add_passphrase" archive.dll ;
+    Pointer pArchive ;
+    Pointer pPassphrase ;
+    Returns Integer
+
+/* Sets a callback that provides passphrases (const char *(*)(archive*, void*)). Needs a native function pointer. */
+External_Function archive_read_set_passphrase_callback "archive_read_set_passphrase_callback" archive.dll ;
+    Pointer pArchive ;
+    Pointer pClientData ;
+    Pointer pCallback ;
+    Returns Integer
+
+// ====================================================================================================
+// Extract
+// ====================================================================================================
+
+/* Extracts the current entry (header and data) to disk. iFlags is a combination of ARCHIVE_EXTRACT_* values. */
+External_Function archive_read_extract "archive_read_extract" archive.dll ;
+    Pointer pArchive ;
+    Pointer pEntry ;
+    Integer iFlags ;
+    Returns Integer
+
+/* Extracts the current entry through the given archive_write_disk handle. */
+External_Function archive_read_extract2 "archive_read_extract2" archive.dll ;
+    Pointer pArchive ;
+    Pointer pEntry ;
+    Pointer pDestArchive ;
+    Returns Integer
+
+/* Sets a progress callback (void (*)(void*)) for extraction. Needs a native function pointer. */
+External_Function archive_read_extract_set_progress_callback "archive_read_extract_set_progress_callback" archive.dll ;
+    Pointer pArchive ;
+    Pointer pProgressFunc ;
+    Pointer pUserData ;
+    Returns Void_Type
+
+/* Records the device and inode of a file that must not be overwritten (normally the archive being read). */
+/*
+Note: Has no effect on Windows: an entry with the registered device and inode is extracted anyway
+(archive_read_extract returns ARCHIVE_WARN only for the archive being read).
+*/
+External_Function archive_read_extract_set_skip_file "archive_read_extract_set_skip_file" archive.dll ;
+    Pointer pArchive ;
+    BigInt iDevice ;
+    BigInt iInode ;
+    Returns Void_Type
+
+// ====================================================================================================
+// Deprecated
+// ====================================================================================================
+
+/* Deprecated synonym for archive_read_free. */
+External_Function archive_read_finish "archive_read_finish" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Deprecated synonym for archive_read_support_filter_all. */
+External_Function archive_read_support_compression_all "archive_read_support_compression_all" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Deprecated synonym for archive_read_support_filter_bzip2. */
+External_Function archive_read_support_compression_bzip2 "archive_read_support_compression_bzip2" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Deprecated synonym for archive_read_support_filter_compress. */
+External_Function archive_read_support_compression_compress "archive_read_support_compression_compress" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Deprecated synonym for archive_read_support_filter_gzip. */
+External_Function archive_read_support_compression_gzip "archive_read_support_compression_gzip" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Deprecated synonym for archive_read_support_filter_lzip. */
+External_Function archive_read_support_compression_lzip "archive_read_support_compression_lzip" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Deprecated synonym for archive_read_support_filter_lzma. */
+External_Function archive_read_support_compression_lzma "archive_read_support_compression_lzma" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Deprecated synonym for archive_read_support_filter_none. */
+External_Function archive_read_support_compression_none "archive_read_support_compression_none" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Deprecated synonym for archive_read_support_filter_program. */
+External_Function archive_read_support_compression_program "archive_read_support_compression_program" archive.dll ;
+    Pointer pArchive ;
+    Pointer pCommand ;
+    Returns Integer
+
+/* Deprecated synonym for archive_read_support_filter_program_signature. */
+External_Function archive_read_support_compression_program_signature "archive_read_support_compression_program_signature" archive.dll ;
+    Pointer pArchive ;
+    Pointer pCommand ;
+    Pointer pSignature ;
+    Longptr iSignatureLength ;
+    Returns Integer
+
+/* Deprecated synonym for archive_read_support_filter_rpm. */
+External_Function archive_read_support_compression_rpm "archive_read_support_compression_rpm" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Deprecated synonym for archive_read_support_filter_uu. */
+External_Function archive_read_support_compression_uu "archive_read_support_compression_uu" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer
+
+/* Deprecated synonym for archive_read_support_filter_xz. */
+External_Function archive_read_support_compression_xz "archive_read_support_compression_xz" archive.dll ;
+    Pointer pArchive ;
+    Returns Integer

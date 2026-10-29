@@ -1,0 +1,318 @@
+﻿Use cArchiveBase.pkg
+Use cArchiveEntry.pkg
+
+// Wrapper around the "write to disk" archive of libarchive (archive_write_disk_*): the entries and data written to it
+// are created as files, directories and links on disk. It is the extraction half of the reader classes: read an
+// entry with a cArchiveReader and write its header and data blocks to this object (or pass ppArchive of this object
+// to the extraction functions of libarchive).
+//
+// Callbacks: archive_write_disk_set_group_lookup and archive_write_disk_set_user_lookup need native function
+// pointers, which DataFlex cannot create, so they are not exposed. SetStandardLookup and LookupUid / LookupGid are
+// available.
+//
+// Typical use:
+//   Send CreateDiskWriter
+//   Set piOptions to (ARCHIVE_EXTRACT_TIME ior ARCHIVE_EXTRACT_PERM)
+//   // hoEntry is a cArchiveEntry with the path name "C:/Temp/out/readme.txt", type AE_IFREG, size 5, ...
+//   Get WriteHeader hoEntry to iResult
+//   Get WriteString "Hello" to iBytes
+//   Get FinishEntry to iResult
+//   Get CloseWriter to iResult
+//   Send FreeWriter
+//
+// Every method returns the libarchive result (ARCHIVE_OK, ...) unless it is documented otherwise; failures are
+// reported as described in cArchiveBase (pbRaiseErrors, OnError). Path names of the entries are UTF-8; the entry
+// path is used as it is (relative to the current directory unless it is absolute), missing parent directories are
+// created unless ARCHIVE_EXTRACT_NO_AUTODIR is set.
+Class cArchiveDiskWriter is a cArchiveBase
+    Procedure Construct_Object
+        Forward Send Construct_Object
+
+        // Remembered value of piOptions.
+        { DesignTime = False }
+        Property Integer piOptionsValue 0
+
+        // Restore time stamps and permissions, reject ".." path elements and refuse to follow symbolic links
+        // that point out of the destination.
+        Set piOptionsValue to (ARCHIVE_EXTRACT_TIME ior ARCHIVE_EXTRACT_PERM ior ARCHIVE_EXTRACT_SECURE_NODOTDOT ior ARCHIVE_EXTRACT_SECURE_SYMLINKS)
+    End_Procedure
+
+    // Returns the archive handle. Raises an error and returns 0 when there is none (CreateDiskWriter was not sent).
+    Function RequireHandle Returns Pointer
+        Pointer pArchive
+
+        Get ppArchive to pArchive
+        If (pArchive = 0) Begin
+            Error DFERR_PROGRAM "There is no disk writer. Send CreateDiskWriter first."
+        End
+        Function_Return pArchive
+    End_Function
+
+    // Creates a new disk writer (archive_write_disk_new) and applies piOptions. An existing writer is freed first.
+    Procedure CreateDiskWriter
+        Pointer pArchive
+        Integer iResult
+
+        Send FreeHandle
+        Move (archive_write_disk_new ()) to pArchive
+        If (pArchive = 0) Begin
+            Error DFERR_PROGRAM "archive_write_disk_new failed (out of memory)"
+        End
+        Set ppArchive to pArchive
+        Send ClearLastResult
+        Get piOptionsValue to iResult
+        Move (archive_write_disk_set_options (pArchive, iResult)) to iResult
+        Get CheckResult iResult "archive_write_disk_set_options" to iResult
+    End_Procedure
+
+    // Closes the archive when needed and frees the writer (archive_free). Safe to call without a writer.
+    Procedure FreeWriter
+        Send FreeHandle
+    End_Procedure
+
+    // Finishes the last entry and closes the archive (archive_write_close). Directory times and permissions are
+    // restored now. The writer must still be freed (FreeWriter).
+    Function CloseWriter Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_close (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_close" to iResult
+        Function_Return iResult
+    End_Function
+
+    // ---- options ----------------------------------------------------------------------------------------------
+
+    // Combination of the ARCHIVE_EXTRACT_* flags that select how entries are created (archive_write_disk_set_options),
+    // for example (ARCHIVE_EXTRACT_TIME ior ARCHIVE_EXTRACT_PERM ior ARCHIVE_EXTRACT_NO_OVERWRITE). The value is
+    // remembered and applied by CreateDiskWriter; setting it while a writer exists applies it to the next entries.
+    // The default is ARCHIVE_EXTRACT_TIME, ARCHIVE_EXTRACT_PERM, ARCHIVE_EXTRACT_SECURE_NODOTDOT and
+    // ARCHIVE_EXTRACT_SECURE_SYMLINKS.
+    { MethodType = Property }
+    Function piOptions Returns Integer
+        Function_Return (piOptionsValue (Self))
+    End_Function
+
+    { MethodType = Property }
+    Procedure Set piOptions Integer iOptions
+        Pointer pArchive
+        Integer iResult
+
+        Set piOptionsValue to iOptions
+        Get ppArchive to pArchive
+        If (pArchive <> 0) Begin
+            Move (archive_write_disk_set_options (pArchive, iOptions)) to iResult
+            Get CheckResult iResult "archive_write_disk_set_options" to iResult
+        End
+    End_Procedure
+
+    // Device and inode of a file that must not be overwritten, normally the archive being extracted
+    // (archive_write_disk_set_skip_file).
+    Function SetSkipFile BigInt iDevice BigInt iInode Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_disk_set_skip_file (pArchive, iDevice, iInode)) to iResult
+        Get CheckResult iResult "archive_write_disk_set_skip_file" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Installs the standard user and group name lookup of the system (archive_write_disk_set_standard_lookup), used
+    // when ARCHIVE_EXTRACT_OWNER is set. Without a lookup the numeric ids of the entries are used.
+    Function SetStandardLookup Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_disk_set_standard_lookup (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_disk_set_standard_lookup" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Looks up the user id of a user name with the installed lookup (archive_write_disk_uid). Returns iDefaultUid when
+    // the name is not found or no lookup is installed.
+    Function LookupUid String sUserName BigInt iDefaultUid Returns BigInt
+        Pointer pArchive
+        BigInt iUid
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return iDefaultUid
+        End
+        Move (archive_write_disk_uid (pArchive, AddressOf (sUserName), iDefaultUid)) to iUid
+        Function_Return iUid
+    End_Function
+
+    // Looks up the group id of a group name with the installed lookup (archive_write_disk_gid). Returns iDefaultGid when
+    // the name is not found or no lookup is installed.
+    Function LookupGid String sGroupName BigInt iDefaultGid Returns BigInt
+        Pointer pArchive
+        BigInt iGid
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return iDefaultGid
+        End
+        Move (archive_write_disk_gid (pArchive, AddressOf (sGroupName), iDefaultGid)) to iGid
+        Function_Return iGid
+    End_Function
+
+    // ---- entries and data ---------------------------------------------------------------------------------------
+
+    // Creates the file, directory or link of an entry (archive_write_header). hoEntry is a cArchiveEntry object
+    // (for example the entry of a reader) with path name, type, size, time stamps and permissions. Write the data of
+    // a regular file afterwards with WriteData, WriteString, WriteDataPointer or WriteDataBlock. The entry is not
+    // changed.
+    Function WriteHeader Handle hoEntry Returns Integer
+        Pointer pEntry
+        Integer iResult
+
+        Get ppEntry of hoEntry to pEntry
+        If (pEntry = 0) Begin
+            Get Fail "WriteHeader" "The entry object has no entry." to iResult
+            Function_Return iResult
+        End
+        Get WriteHeaderPointer pEntry to iResult
+        Function_Return iResult
+    End_Function
+
+    // Creates the file, directory or link of a raw libarchive entry (archive_write_header).
+    Function WriteHeaderPointer Pointer pEntry Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        If (pEntry = 0) Begin
+            Get Fail "WriteHeader" "The entry is 0." to iResult
+            Function_Return iResult
+        End
+        Move (archive_write_header (pArchive, pEntry)) to iResult
+        Get CheckResult iResult "archive_write_header" to iResult
+        Function_Return iResult
+    End_Function
+
+    // Remembers a failure of the wrapper itself (not of libarchive) like CheckResult does and returns ARCHIVE_FAILED.
+    { Visibility = Private }
+    Function Fail String sOperation String sErrorText Returns Integer
+        Set piLastResult to ARCHIVE_FAILED
+        Set psLastError to sErrorText
+        Send OnError ARCHIVE_FAILED sOperation sErrorText
+        Function_Return ARCHIVE_FAILED
+    End_Function
+
+    // Raises the error of a failed write: a negative count is the error code. Returns the count.
+    { Visibility = Private }
+    Function CheckWritten BigInt iWritten String sOperation Returns BigInt
+        Integer iResult
+
+        If (iWritten < 0) Begin
+            Move (iWritten min ARCHIVE_FAILED) to iResult
+            Get CheckResult iResult sOperation to iResult
+        End
+        Function_Return iWritten
+    End_Function
+
+    // Writes the data of the current file sequentially (archive_write_data). Returns the number of bytes written (a negative
+    // number is an error code).
+    Function WriteData UChar[] ucData Returns BigInt
+        Pointer pArchive
+        BigInt iWritten iSize
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (SizeOfArray (ucData)) to iSize
+        If (iSize = 0) Begin
+            Function_Return 0
+        End
+        Move (archive_write_data (pArchive, AddressOf (ucData), iSize)) to iWritten
+        Get CheckWritten iWritten "archive_write_data" to iWritten
+        Function_Return iWritten
+    End_Function
+
+    // Writes the bytes of a string (UTF-8) as data of the current file (archive_write_data). Returns the number of bytes
+    // written.
+    Function WriteString String sData Returns BigInt
+        Pointer pArchive
+        BigInt iWritten iSize
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (SizeOfString (sData)) to iSize
+        If (iSize = 0) Begin
+            Function_Return 0
+        End
+        Move (archive_write_data (pArchive, AddressOf (sData), iSize)) to iWritten
+        Get CheckWritten iWritten "archive_write_data" to iWritten
+        Function_Return iWritten
+    End_Function
+
+    // Writes iSize bytes at pData as data of the current file (archive_write_data). Returns the number of bytes written.
+    Function WriteDataPointer Pointer pData BigInt iSize Returns BigInt
+        Pointer pArchive
+        BigInt iWritten
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        If (iSize <= 0) Begin
+            Function_Return 0
+        End
+        Move (archive_write_data (pArchive, pData, iSize)) to iWritten
+        Get CheckWritten iWritten "archive_write_data" to iWritten
+        Function_Return iWritten
+    End_Function
+
+    // Writes a block of data at the file offset iOffset of the current file (archive_write_data_block); blocks may be
+    // written in any order and gaps are filled with zero bytes (or become holes with ARCHIVE_EXTRACT_SPARSE). Returns
+    // ARCHIVE_OK (0) on success, a negative number is an error code.
+    Function WriteDataBlock UChar[] ucData BigInt iOffset Returns BigInt
+        Pointer pArchive
+        BigInt iWritten iSize
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (SizeOfArray (ucData)) to iSize
+        If (iSize = 0) Begin
+            Function_Return ARCHIVE_OK
+        End
+        Move (archive_write_data_block (pArchive, AddressOf (ucData), iSize, iOffset)) to iWritten
+        Get CheckWritten iWritten "archive_write_data_block" to iWritten
+        Function_Return iWritten
+    End_Function
+
+    // Finishes the current entry: sets the final size, time stamps, permissions and owner (archive_write_finish_entry). It
+    // is done automatically by the next WriteHeader and by CloseWriter.
+    Function FinishEntry Returns Integer
+        Pointer pArchive
+        Integer iResult
+
+        Get RequireHandle to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ARCHIVE_FATAL
+        End
+        Move (archive_write_finish_entry (pArchive)) to iResult
+        Get CheckResult iResult "archive_write_finish_entry" to iResult
+        Function_Return iResult
+    End_Function
+End_Class

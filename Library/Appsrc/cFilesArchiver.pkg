@@ -279,7 +279,7 @@ Class cFilesArchiver is a cObject
             Move (ArchivePathFileName (sFileName)) to sFileNameWithoutPath
             Move (archive_entry_set_mtime (pArchiveEntry, biSeconds, 0)) to iVoid
             Move (SizeOfArray (ucData)) to iFileSize
-            Move (archive_entry_set_pathname (pArchiveEntry, AddressOf (sFileNameWithoutPath))) to iVoid
+            Move (archive_entry_set_pathname_utf8 (pArchiveEntry, AddressOf (sFileNameWithoutPath))) to iVoid
             Move (archive_entry_set_size (pArchiveEntry, iFileSize)) to iVoid
             Move (archive_entry_set_perm (pArchiveEntry, ARCHIVE_FOR_REGULAR_FILES)) to iVoid
             Move (archive_entry_set_filetype (pArchiveEntry, AE_IFREG)) to iVoid
@@ -314,7 +314,7 @@ Class cFilesArchiver is a cObject
         If (sFolder = "") Begin
             Move (SysConf (SYSCONF_DIR_SEPARATOR)) to sFolder // Without the archive_write_header will GPF
         End
-        Move (archive_entry_set_pathname (pDirEntry, AddressOf (sFolder))) to iVoid
+        Move (archive_entry_set_pathname_utf8 (pDirEntry, AddressOf (sFolder))) to iVoid
         Move (archive_entry_set_perm (pDirEntry, ARCHIVE_FOR_REGULAR_FILES)) to iVoid
         Move (archive_entry_set_filetype (pDirEntry, AE_IFDIR)) to iVoid
         Move (archive_entry_set_mtime (pDirEntry, biSeconds, 0)) to iVoid
@@ -392,7 +392,7 @@ Class cFilesArchiver is a cObject
                         If (Left (sFileName, 1) = sSeparator) Begin
                             Move (Remove (sFileName, 1, 1)) to sFileName
                         End
-                        Move (archive_entry_set_pathname (pFileEntry, AddressOf (sFileName))) to iVoid
+                        Move (archive_entry_set_pathname_utf8 (pFileEntry, AddressOf (sFileName))) to iVoid
                         Move (archive_entry_set_size (pFileEntry, iFileSize)) to iVoid
                         Move (archive_entry_set_perm (pFileEntry, ARCHIVE_FOR_REGULAR_FILES)) to iVoid
                         Move (archive_entry_set_filetype (pFileEntry, AE_IFREG)) to iVoid
@@ -516,7 +516,7 @@ Class cFilesArchiver is a cObject
                     Move (archive_write_set_format_ar_svr4 (pArchive)) to eRetval
                     Case Break
                 Case (eArchiveFormat = ARCHIVE_FORMAT_AR_GNU)
-                    Move (archive_write_set_format_ar_gnu (pArchive)) to eRetval
+                    Move (archive_write_set_format_ar_svr4 (pArchive)) to eRetval // GNU ar uses the SVR4 layout; libarchive has no separate GNU writer
                     Case Break
                 Case (eArchiveFormat = ARCHIVE_FORMAT_AR_BSD)
                     Move (archive_write_set_format_ar_bsd (pArchive)) to eRetval

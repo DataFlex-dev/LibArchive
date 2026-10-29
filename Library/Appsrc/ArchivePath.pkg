@@ -61,7 +61,7 @@ Function ArchiveReadDiskMetadata Global String sPath UShort ByRef eFileType BigI
         Function_Return False
     End
 
-    Move (archive_entry_set_pathname(pEntry, AddressOf(sPath))) to iIgnored
+    Move (archive_entry_set_pathname_utf8(pEntry, AddressOf(sPath))) to iIgnored
     // Only type and modification time are needed. Avoid platform-specific ACL,
     // extended-attribute, and file-flag lookups that could produce warnings.
     Move (archive_read_disk_set_behavior(pDisk, ;

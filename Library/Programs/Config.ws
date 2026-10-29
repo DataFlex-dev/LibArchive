@@ -1,12 +1,12 @@
 [Workspace]
 Home=..\
-AppSrcPath=Appsrc
-AppHTMLPath=.
-BitmapPath=.
+AppSrcPath=AppSrc
+AppHTMLPath=AppHtml
+BitmapPath=Bitmaps
 IdeSrcPath=IdeSrc
 DataPath=Data
 DDSrcPath=DDSrc
-HelpPath=.
+HelpPath=Help
 ProgramPath=Programs
 FileList=Data\Filelist.cfg
 Description=LibArchive

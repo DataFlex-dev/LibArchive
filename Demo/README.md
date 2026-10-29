@@ -1,10 +1,10 @@
-# Demo directory
+# Demo Directory
 
 This directory should include a demo DataFlex workspace that uses the library in the `Library` directory.
 
 ## Overview
 
-The workspace contains the archive-writer GUI. The DFUnit security-test project for `cArchiveReader` is part of the migrated `Library\LibArchive.sws` workspace.
+The purpose of this demo workspace is to provide examples and usage scenarios for the library located in the `Library` directory. It helps developers understand how to integrate and utilize the library in their own projects.
 
 ## Structure
 
@@ -12,21 +12,12 @@ The workspace contains the archive-writer GUI. The DFUnit security-test project 
 - `Data/`: Includes any sample data files required for the demo.
 - `DDSrc/`: Contains Data Dictionary source files.
 - `Programs/`: Compiled executable files for the demo application.
-- `Tests/RunArchiveReaderTests.ps1`: Generates adversarial ZIP fixtures, builds the library's DFUnit project, and runs it.
 
 ## Getting Started
 
 1. Ensure that the library in the `Library` directory is properly set up.
 2. Open the demo workspace in DataFlex.
 3. Compile and run the demo application to see the library in action.
-
-To exercise inspection and bounded extraction directly:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Tests\RunArchiveReaderTests.ps1
-```
-
-Pass `-KeepFixtures` to retain generated archives, extracted output, and the DFUnit XML report for debugging. The runner uses `df-cli build` with the DataFlex 26 x64 toolchain by default; override these with `-DfCli` or `-Toolchain` when needed.
 
 ## DLLs
 The programs folder contains 7 64 bit DLL files. At this moment there is no plan to make 32 bit DLLs.
@@ -38,4 +29,10 @@ These files, when you use the library in your own environment, need to be presen
 - DataFlex development environment
 - The library from the `Library` directory
 
-See the repository and library READMEs for the reader API, deployment requirements, and security boundary.
+## Support
+
+For any issues or questions, please refer to the documentation in the `Library` directory or contact the support team.
+
+## Unit tests
+
+`AppSrc/LibArchiveTests.src` is a DFUnit test application that tests every external function and every wrapper class. Build with `df-cli build -t LibArchiveTests.src "LibArchive Demo.sws"` and run `Programs\LibArchiveTests64.exe -c`. See `../Help/Tests.md`.

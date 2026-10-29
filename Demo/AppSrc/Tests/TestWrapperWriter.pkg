@@ -1,0 +1,2136 @@
+﻿External_Function wwtestRemoveDirectoryW "RemoveDirectoryW" kernel32.dll ;
+    WString wsPathName ;
+    Returns Integer
+
+External_Function wwtestCreateFileW "CreateFileW" kernel32.dll ;
+    WString wsFileName ;
+    DWord dwDesiredAccess ;
+    DWord dwShareMode ;
+    Pointer pSecurityAttributes ;
+    DWord dwCreationDisposition ;
+    DWord dwFlagsAndAttributes ;
+    Handle hTemplateFile ;
+    Returns Handle
+
+External_Function wwtestSetFileTime "SetFileTime" kernel32.dll ;
+    Handle hFile ;
+    Pointer pCreationTime ;
+    Pointer pLastAccessTime ;
+    Pointer pLastWriteTime ;
+    Returns Integer
+
+External_Function wwtestCloseHandle "CloseHandle" kernel32.dll ;
+    Handle hObject ;
+    Returns Integer
+
+External_Function wwtestWOpen "_wopen" ucrtbase.dll ;
+    WString wsFileName ;
+    Integer iFlags ;
+    Integer iMode ;
+    Returns Integer
+
+External_Function wwtestClose "_close" ucrtbase.dll ;
+    Integer iFileDescriptor ;
+    Returns Integer
+
+External_Function wwtestWFopen "_wfopen" ucrtbase.dll ;
+    WString wsFileName ;
+    WString wsMode ;
+    Returns Pointer
+
+External_Function wwtestFclose "fclose" ucrtbase.dll ;
+    Pointer pFile ;
+    Returns Integer
+
+// Tests of cArchiveWriter. Archives are verified with raw libarchive read calls (ReadMemory / ReadFile of this
+// fixture), never with the reader wrapper.
+Object oWrapperWriterTests is a cArchiveTestFixture
+    Set psTestFixtureName to "WrapperWriter"
+
+    // Result of the last ReadMemory / ReadFile: one element per entry.
+    Property String[] pasNames
+    Property String[] pasContents
+    Property String[] pasSymlinks
+    Property Integer[] paiTypes
+    Property Integer[] paiPerms
+    Property Integer[] paiNanos
+    Property Integer[] paiEncrypted
+    Property Integer[] paiDataResults
+    Property BigInt[] pabiSizes
+    Property BigInt[] pabiMTimes
+    Property BigInt[] pabiSums
+    Property Integer piFormat 0
+    Property Integer piFilterCode 0
+    Property Integer piSecondFilterCode 0
+    Property Integer piFilterCount 0
+
+    // Text of an array of bytes (the bytes must not contain 0).
+    Function BytesToString UChar[] ucBuffer Integer iCount Returns String
+        String sChunk
+        Integer iVoid
+
+        If (iCount <= 0) Begin
+            Function_Return ""
+        End
+        Move (Repeat (" ", iCount)) to sChunk
+        Move (MemCopy (AddressOf (sChunk), AddressOf (ucBuffer), iCount)) to iVoid
+        Function_Return sChunk
+    End_Function
+
+    // Weighted checksum of bytes that is sensitive to the order and to zero bytes.
+    Function ByteSum UChar[] ucData Returns BigInt
+        Integer iIndex iCount iByte
+        BigInt iSum
+
+        Move 0 to iSum
+        Move (SizeOfArray (ucData)) to iCount
+        For iIndex from 0 to (iCount - 1)
+            Move ucData[iIndex] to iByte
+            // DataFlex evaluates arithmetic from left to right without operator precedence: parenthesize
+            Move (iSum + ((iByte + 1) * (Mod (iIndex, 251) + 1))) to iSum
+        Loop
+        Function_Return iSum
+    End_Function
+
+    // Reads all entries of the open raw read handle into the properties of the fixture. Returns the number of entries
+    // or the failing result of archive_read_next_header (negative).
+    Function ReadOpened Pointer pArchive Returns Integer
+        Pointer pEntry pName
+        Integer iResult iCount iType iDone iDataResult iVoid iChunk
+        BigInt iSize iTotal iRead iSum
+        UChar[] ucBuffer
+        String sName sContent sSymlink
+        String[] sNames sContents sSymlinks
+        Integer[] iTypes iPerms iNanos iEncrypted iDataResults
+        BigInt[] iSizes iMTimes iSums
+
+        Move 0 to iCount
+        Move 65536 to iChunk
+        Move (ResizeArray (ucBuffer, iChunk)) to ucBuffer
+        Move 0 to iDone
+        While (iDone = 0)
+            Move (archive_read_next_header (pArchive, AddressOf (pEntry))) to iResult
+            If (iResult = ARCHIVE_EOF) Begin
+                Move 1 to iDone
+            End
+            Else If (iResult < ARCHIVE_WARN) Begin
+                Move 2 to iDone
+            End
+            Else Begin
+                If (iCount = 0) Begin
+                    Set piFormat to (archive_format (pArchive))
+                    Set piFilterCount to (archive_filter_count (pArchive))
+                    Set piFilterCode to (archive_filter_code (pArchive, 0))
+                    Set piSecondFilterCode to (archive_filter_code (pArchive, 1))
+                End
+                Move "" to sName
+                Move (archive_entry_pathname_utf8 (pEntry)) to pName
+                If (pName <> 0) Begin
+                    Move (PointerToString (pName)) to sName
+                End
+                Move "" to sSymlink
+                Move (archive_entry_symlink_utf8 (pEntry)) to pName
+                If (pName <> 0) Begin
+                    Move (PointerToString (pName)) to sSymlink
+                End
+                Move (archive_entry_filetype (pEntry)) to iType
+                Move (archive_entry_size (pEntry)) to iSize
+                Move sName to sNames[iCount]
+                Move sSymlink to sSymlinks[iCount]
+                Move iType to iTypes[iCount]
+                Move (archive_entry_perm (pEntry)) to iPerms[iCount]
+                Move (archive_entry_mtime (pEntry)) to iMTimes[iCount]
+                Move (archive_entry_mtime_nsec (pEntry)) to iNanos[iCount]
+                Move (archive_entry_is_data_encrypted (pEntry)) to iEncrypted[iCount]
+
+                // data
+                Move "" to sContent
+                Move 0 to iDataResult
+                Move 0 to iTotal
+                Move 0 to iSum
+                If (iType = AE_IFREG) Begin
+                    Move 1 to iRead
+                    While (iRead > 0)
+                        Move (archive_read_data (pArchive, AddressOf (ucBuffer), iChunk)) to iRead
+                        If (iRead > 0) Begin
+                            Move (sContent + BytesToString (Self, ucBuffer, iRead)) to sContent
+                            If (iSize <= 200000) Begin
+                                Move (ResizeArray (ucBuffer, iRead)) to ucBuffer
+                                Move (iSum + ByteSum (Self, ucBuffer)) to iSum
+                                Move (ResizeArray (ucBuffer, iChunk)) to ucBuffer
+                            End
+                            Move (iTotal + iRead) to iTotal
+                        End
+                        Else If (iRead < 0) Begin
+                            Move iRead to iDataResult
+                        End
+                    Loop
+                End
+                // The WARC reader delivers a few bytes more than the size in the header (the record trailer).
+                If (iSize > 0 and SizeOfString (sContent) > iSize) Begin
+                    Move (Left (sContent, iSize)) to sContent
+                End
+                Move sContent to sContents[iCount]
+                Move iDataResult to iDataResults[iCount]
+                If (iSize <= 200000) Begin
+                    Move iSum to iSums[iCount]
+                End
+                Else Begin
+                    Move -1 to iSums[iCount]
+                End
+                // The size of the entry header is authoritative, the number of bytes read is checked by the tests.
+                If (iSize = 0 and iTotal > 0) Begin
+                    Move iTotal to iSize
+                End
+                Move iSize to iSizes[iCount]
+                Increment iCount
+            End
+        Loop
+        Set pasNames to sNames
+        Set pasContents to sContents
+        Set pasSymlinks to sSymlinks
+        Set paiTypes to iTypes
+        Set paiPerms to iPerms
+        Set paiNanos to iNanos
+        Set paiEncrypted to iEncrypted
+        Set paiDataResults to iDataResults
+        Set pabiSizes to iSizes
+        Set pabiMTimes to iMTimes
+        Set pabiSums to iSums
+        If (iDone = 2) Begin
+            Function_Return iResult
+        End
+        Function_Return iCount
+    End_Function
+
+    // Reads an archive from memory with raw libarchive calls. Returns the number of entries or a negative result.
+    Function ReadMemory UChar[] ucArchive String sPassphrase Returns Integer
+        Pointer pArchive
+        Integer iResult iVoid
+        String sCharset
+
+        Move (archive_read_new ()) to pArchive
+        Move (archive_read_support_format_all (pArchive)) to iVoid
+        Move (archive_read_support_filter_all (pArchive)) to iVoid
+        // names of tar and cpio archives are UTF-8 (the writer sets hdrcharset=UTF-8)
+        Move "hdrcharset=UTF-8" to sCharset
+        Move (archive_read_set_options (pArchive, AddressOf (sCharset))) to iVoid
+        If (sPassphrase <> "") Begin
+            Move (archive_read_add_passphrase (pArchive, AddressOf (sPassphrase))) to iVoid
+        End
+        Move (archive_read_open_memory (pArchive, AddressOf (ucArchive), SizeOfArray (ucArchive))) to iResult
+        If (iResult = ARCHIVE_OK) Begin
+            Move (ReadOpened (Self, pArchive)) to iResult
+        End
+        Move (archive_read_free (pArchive)) to iVoid
+        Function_Return iResult
+    End_Function
+
+    // Reads an archive file with raw libarchive calls. Returns the number of entries or a negative result.
+    Function ReadFile String sFileName String sPassphrase Returns Integer
+        Pointer pArchive
+        Integer iResult iVoid
+        String sCharset
+        WString wsFileName
+
+        Move sFileName to wsFileName
+        Move (archive_read_new ()) to pArchive
+        Move (archive_read_support_format_all (pArchive)) to iVoid
+        Move (archive_read_support_filter_all (pArchive)) to iVoid
+        // names of tar and cpio archives are UTF-8 (the writer sets hdrcharset=UTF-8)
+        Move "hdrcharset=UTF-8" to sCharset
+        Move (archive_read_set_options (pArchive, AddressOf (sCharset))) to iVoid
+        If (sPassphrase <> "") Begin
+            Move (archive_read_add_passphrase (pArchive, AddressOf (sPassphrase))) to iVoid
+        End
+        Move (archive_read_open_filename_w (pArchive, AddressOf (wsFileName), 10240)) to iResult
+        If (iResult = ARCHIVE_OK) Begin
+            Move (ReadOpened (Self, pArchive)) to iResult
+        End
+        Move (archive_read_free (pArchive)) to iVoid
+        Function_Return iResult
+    End_Function
+
+    // True when the ASCII text sMagic is found in ucData at iOffset.
+    Function HasAsciiAt UChar[] ucData Integer iOffset String sMagic Returns Boolean
+        Integer iIndex iLength
+
+        Move (Length (sMagic)) to iLength
+        If (SizeOfArray (ucData) < iOffset + iLength) Begin
+            Function_Return False
+        End
+        For iIndex from 0 to (iLength - 1)
+            If (ucData[iOffset + iIndex] <> Ascii (Mid (sMagic, 1, iIndex + 1))) Begin
+                Function_Return False
+            End
+        Loop
+        Function_Return True
+    End_Function
+
+    // Creates a writer object with raised errors switched off.
+    Function NewWriter Returns Handle
+        Handle hoWriter
+
+        Get Create (RefClass (cArchiveWriter)) to hoWriter
+        Set pbRaiseErrors of hoWriter to False
+        Send CreateWriter of hoWriter
+        Function_Return hoWriter
+    End_Function
+
+    // Writes the two standard test files alpha.txt and beta.txt.
+    Function WriteTwoFiles Handle hoWriter Returns Integer
+        Integer iResult
+
+        Get AddText of hoWriter "alpha.txt" "Hello Archive" to iResult
+        If (iResult >= ARCHIVE_WARN) Begin
+            Get AddText of hoWriter "beta.txt" "Second file" to iResult
+        End
+        Function_Return iResult
+    End_Function
+
+    // Asserts that the regular files of the result of the last read are the two files of WriteTwoFiles (directory
+    // entries, for example the root entry of an ISO image, are ignored).
+    Procedure AssertTwoFiles String sLabel
+        String[] sNames sContents
+        Integer[] iTypes
+        Integer iIndex iCount iFile
+
+        Get pasNames to sNames
+        Get pasContents to sContents
+        Get paiTypes to iTypes
+        Move 0 to iFile
+        Move (SizeOfArray (sNames)) to iCount
+        For iIndex from 0 to (iCount - 1)
+            If (iTypes[iIndex] = AE_IFREG) Begin
+                If (iFile = 0) Begin
+                    Send AssertSAreEqual "alpha.txt" sNames[iIndex] (sLabel * "name 0")
+                    Send AssertSAreEqual "Hello Archive" sContents[iIndex] (sLabel * "content 0")
+                End
+                If (iFile = 1) Begin
+                    Send AssertSAreEqual "beta.txt" sNames[iIndex] (sLabel * "name 1")
+                    Send AssertSAreEqual "Second file" sContents[iIndex] (sLabel * "content 1")
+                End
+                Increment iFile
+            End
+        Loop
+        Send AssertIAreEqual 2 iFile (sLabel * "number of files")
+    End_Procedure
+
+    // Writes the two standard files with the format message iMsg into memory, closes the archive and checks magic bytes,
+    // format code and (when bReadable) the content read back with raw libarchive calls. sContains is text that must
+    // occur in the output of text formats.
+    Procedure CheckFormat Integer iMsg String sLabel Integer eBase Integer iMagicOffset String sMagic Boolean bReadable String sContains
+        Handle hoWriter
+        Integer iResult iFormat
+        BigInt iSize
+        Boolean bOk
+        UChar[] ucOut
+        String sOut
+
+        Get NewWriter to hoWriter
+        Get iMsg of hoWriter to iResult
+        Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "set format")
+        Get peFormat of hoWriter to iFormat
+        Send AssertIAreEqual eBase (iFormat iand ARCHIVE_FORMAT_BASE_MASK) (sLabel * "writer format code")
+        Get OpenMemory of hoWriter 4194304 to iResult
+        Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "open")
+        Get WriteTwoFiles hoWriter to iResult
+        Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "write files")
+        Get piFileCount of hoWriter to iResult
+        Send AssertIAreEqual 2 iResult (sLabel * "file count")
+        Get CloseWriter of hoWriter to iResult
+        Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "close")
+        Send FreeWriter of hoWriter
+        Get GetOutput of hoWriter (&ucOut) to iSize
+        Send Assert (iSize > 0) (sLabel * "output has bytes")
+        Send AssertBIAreEqual iSize (SizeOfArray (ucOut)) (sLabel * "output size")
+        If (sMagic <> "") Begin
+            Get HasAsciiAt ucOut iMagicOffset sMagic to bOk
+            Send Assert bOk (sLabel * "magic bytes" * sMagic)
+        End
+        If (sContains <> "") Begin
+            Move (BytesToString (Self, ucOut, SizeOfArray (ucOut))) to sOut
+            Send Assert (Pos (sContains, sOut) > 0) (sLabel * "output contains" * sContains)
+        End
+        If (bReadable) Begin
+            Get ReadMemory ucOut "" to iResult
+            Send Assert (iResult >= 2) (sLabel * "read back entry count")
+            Send AssertTwoFiles sLabel
+            Get piFormat to iFormat
+            Send AssertIAreEqual eBase (iFormat iand ARCHIVE_FORMAT_BASE_MASK) (sLabel * "read back format")
+        End
+        Send Destroy of hoWriter
+    End_Procedure
+
+    // Writes the two standard files with the format selected by code (sName empty) or by name into memory and reads
+    // them back.
+    Procedure CheckFormatSelection Integer eCode String sName String sLabel Integer eBase
+        Handle hoWriter
+        Integer iResult iFormat
+        BigInt iSize
+        UChar[] ucOut
+
+        Get NewWriter to hoWriter
+        If (sName = "") Begin
+            Get SetFormat of hoWriter eCode to iResult
+        End
+        Else Begin
+            Get SetFormatByName of hoWriter sName to iResult
+        End
+        Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "set format")
+        Get peFormat of hoWriter to iFormat
+        Send AssertIAreEqual eBase (iFormat iand ARCHIVE_FORMAT_BASE_MASK) (sLabel * "writer format")
+        Get OpenMemory of hoWriter 4194304 to iResult
+        Get WriteTwoFiles hoWriter to iResult
+        Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "write")
+        Get CloseWriter of hoWriter to iResult
+        Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "close")
+        Get GetOutput of hoWriter (&ucOut) to iSize
+        Get ReadMemory ucOut "" to iResult
+        Send Assert (iResult >= 2) (sLabel * "read back")
+        Send AssertTwoFiles sLabel
+        Get piFormat to iFormat
+        Send AssertIAreEqual eBase (iFormat iand ARCHIVE_FORMAT_BASE_MASK) (sLabel * "read back format")
+        Send Destroy of hoWriter
+    End_Procedure
+
+    // Writes the two standard files as ustar with the filter message iMsg (a method of cArchiveWriter without parameters) and
+    // checks the first two bytes of the output (iB0 / iB1, -1 skips) and, when bReadable, the content and the filter
+    // code found by the reader.
+    Procedure CheckFilter Integer iMsg String sLabel Integer eFilter Integer iB0 Integer iB1 Boolean bReadable
+        Handle hoWriter
+        Integer iResult iCount
+        BigInt iSize
+        UChar[] ucOut
+
+        Get NewWriter to hoWriter
+        Get SetFormatUstar of hoWriter to iResult
+        Get iMsg of hoWriter to iResult
+        Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "add filter")
+        Get piFilterCount of hoWriter to iCount
+        If (eFilter = ARCHIVE_FILTER_NONE) Begin
+            // The pass-through filter adds nothing to the pipeline.
+            Send AssertIAreEqual 0 iCount (sLabel * "writer filter count")
+        End
+        Else Begin
+            Send AssertIAreEqual 1 iCount (sLabel * "writer filter count")
+            Get FilterCode of hoWriter 0 to iResult
+            Send AssertIAreEqual eFilter iResult (sLabel * "writer filter code")
+        End
+        Get OpenMemory of hoWriter 4194304 to iResult
+        Get WriteTwoFiles hoWriter to iResult
+        Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "write")
+        Get CloseWriter of hoWriter to iResult
+        Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "close")
+        Get GetOutput of hoWriter (&ucOut) to iSize
+        Send Assert (iSize > 0) (sLabel * "output has bytes")
+        If (iB0 >= 0 and iSize > 1) Begin
+            Send AssertIAreEqual iB0 ucOut[0] (sLabel * "first byte")
+            Send AssertIAreEqual iB1 ucOut[1] (sLabel * "second byte")
+        End
+        If (bReadable) Begin
+            Get ReadMemory ucOut "" to iResult
+            Send Assert (iResult >= 2) (sLabel * "read back")
+            Send AssertTwoFiles sLabel
+            Get piFilterCode to iResult
+            Send AssertIAreEqual eFilter iResult (sLabel * "filter found by the reader")
+        End
+        Send Destroy of hoWriter
+    End_Procedure
+
+    // Selects format and filter from a file name extension and checks what the reader finds.
+    Procedure CheckExtension String sFileName String sDefaultExt String sLabel Integer eBase Integer eFilter
+        Handle hoWriter
+        Integer iResult iFormat
+        BigInt iSize
+        UChar[] ucOut
+
+        Get NewWriter to hoWriter
+        If (sDefaultExt = "") Begin
+            Get SetFormatFilterByExtension of hoWriter sFileName to iResult
+        End
+        Else Begin
+            Get SetFormatFilterByExtensionDefault of hoWriter sFileName sDefaultExt to iResult
+        End
+        Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "set format and filter")
+        Get OpenMemory of hoWriter 4194304 to iResult
+        Get WriteTwoFiles hoWriter to iResult
+        Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "write")
+        Get CloseWriter of hoWriter to iResult
+        Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "close")
+        Get GetOutput of hoWriter (&ucOut) to iSize
+        Get ReadMemory ucOut "" to iResult
+        Send Assert (iResult >= 2) (sLabel * "read back")
+        Send AssertTwoFiles sLabel
+        Get piFormat to iFormat
+        Send AssertIAreEqual eBase (iFormat iand ARCHIVE_FORMAT_BASE_MASK) (sLabel * "format")
+        Get piFilterCode to iResult
+        Send AssertIAreEqual eFilter iResult (sLabel * "filter")
+        Send Destroy of hoWriter
+    End_Procedure
+
+    // Writes the two standard files as ustar with the filter selected by code (sName empty) or by name.
+    Procedure CheckFilterSelection Integer eCode String sName String sLabel Integer eFilter
+        Handle hoWriter
+        Integer iResult
+        BigInt iSize
+        UChar[] ucOut
+
+        Get NewWriter to hoWriter
+        Get SetFormatUstar of hoWriter to iResult
+        If (sName = "") Begin
+            Get AddFilter of hoWriter eCode to iResult
+        End
+        Else Begin
+            Get AddFilterByName of hoWriter sName to iResult
+        End
+        Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "add filter")
+        Get OpenMemory of hoWriter 4194304 to iResult
+        Get WriteTwoFiles hoWriter to iResult
+        Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "write")
+        Get CloseWriter of hoWriter to iResult
+        Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "close")
+        Get GetOutput of hoWriter (&ucOut) to iSize
+        Get ReadMemory ucOut "" to iResult
+        Send Assert (iResult >= 2) (sLabel * "read back")
+        Send AssertTwoFiles sLabel
+        Get piFilterCode to iResult
+        Send AssertIAreEqual eFilter iResult (sLabel * "filter found by the reader")
+        Send Destroy of hoWriter
+    End_Procedure
+
+    // Index of an entry name in the result of the last read, -1 when there is none.
+    Function FindEntry String sName Returns Integer
+        String[] sNames
+        Integer iIndex iCount
+
+        Get pasNames to sNames
+        Move (SizeOfArray (sNames)) to iCount
+        For iIndex from 0 to (iCount - 1)
+            If (sNames[iIndex] = sName) Begin
+                Function_Return iIndex
+            End
+        Loop
+        Function_Return -1
+    End_Function
+
+    // Content (regular file) of an entry of the last read, "" when there is none.
+    Function EntryContent String sName Returns String
+        String[] sContents
+        Integer iIndex
+
+        Get FindEntry sName to iIndex
+        If (iIndex < 0) Begin
+            Function_Return ""
+        End
+        Get pasContents to sContents
+        Function_Return sContents[iIndex]
+    End_Function
+
+    // Writes a text into a file (binary).
+    Procedure WriteTextFile String sFileName String sText
+        Integer iChannel
+
+        Move (Seq_New_Channel ()) to iChannel
+        Direct_Output channel iChannel ("BINARY:" + sFileName)
+        If (sText <> "") Begin
+            Write channel iChannel sText
+        End
+        Close_Output channel iChannel
+        Send Seq_Release_Channel iChannel
+    End_Procedure
+
+    // Deletes a folder with everything in it.
+    Procedure RemoveTree String sFolder
+        tWin32FindDataW FindData
+        Handle hFind
+        Pointer pName
+        Integer iNext iVoid iIndex iCount
+        String sName
+        String[] sNames
+        Boolean[] bFolders
+
+        If (Right (sFolder, 1) <> "\") Begin
+            Move (sFolder + "\") to sFolder
+        End
+        Move (winFindFirstFileW (sFolder + "*", AddressOf (FindData))) to hFind
+        If (hFind <> INVALID_HANDLE_VALUE) Begin
+            Repeat
+                Move (AddressOf (FindData) + 44) to pName
+                Move (PointerToWString (pName)) to sName
+                If (sName <> "." and sName <> "..") Begin
+                    Move sName to sNames[-1]
+                    Move (IsFlagIn (FILE_ATTRIBUTE_DIRECTORY, FindData.dwFileAttributes)) to bFolders[-1]
+                End
+                Move (winFindNextFileW (hFind, AddressOf (FindData))) to iNext
+            Until (iNext = 0)
+            Move (winFindClose (hFind)) to iVoid
+        End
+        Move (SizeOfArray (sNames)) to iCount
+        For iIndex from 0 to (iCount - 1)
+            If (bFolders[iIndex]) Begin
+                Send RemoveTree (sFolder + sNames[iIndex])
+            End
+            Else Begin
+                EraseFile (sFolder + sNames[iIndex])
+            End
+        Loop
+        Move (wwtestRemoveDirectoryW (sFolder)) to iVoid
+    End_Procedure
+
+    // Builds the test folder TreeSrc in the temp folder and returns its path (with trailing backslash).
+    Function BuildTreeSource Returns String
+        String sRoot
+        Boolean bOk
+
+        Get TempFolder to sRoot
+        Move (sRoot + "TreeSrc\") to sRoot
+        Send RemoveTree sRoot
+        Move (CreateDirectoryRecursive (sRoot + "sub\deep\")) to bOk
+        Move (CreateDirectoryRecursive (sRoot + "empty\")) to bOk
+        Send WriteTextFile (sRoot + "a.txt") "Content A"
+        Send WriteTextFile (sRoot + "sub\b.txt") "Content B"
+        Send WriteTextFile (sRoot + "sub\deep\c.txt") "Content C"
+        Send WriteTextFile (sRoot + "ünï.txt") "Content unicode"
+        Function_Return sRoot
+    End_Function
+
+    // Asserts the entries of AddFolderTree for the folder created by BuildTreeSource. sPrefix is "" or the folder name
+    // with a trailing "/".
+    Procedure AssertTreeEntries String sPrefix Integer iExpectedCount String sLabel
+        String[] sContents
+        Integer[] iTypes
+        Integer iIndex
+
+        Get paiTypes to iTypes
+        Get pasContents to sContents
+        Send AssertIAreEqual iExpectedCount (SizeOfArray (iTypes)) (sLabel * "entry count")
+        If (sPrefix <> "") Begin
+            Get FindEntry sPrefix to iIndex
+            Send Assert (iIndex >= 0) (sLabel * "root directory entry")
+            If (iIndex >= 0) Begin
+                Send AssertIAreEqual AE_IFDIR iTypes[iIndex] (sLabel * "root is a directory")
+            End
+        End
+        Get FindEntry (sPrefix + "a.txt") to iIndex
+        Send Assert (iIndex >= 0) (sLabel * "a.txt")
+        If (iIndex >= 0) Begin
+            Send AssertIAreEqual AE_IFREG iTypes[iIndex] (sLabel * "a.txt type")
+            Send AssertSAreEqual "Content A" sContents[iIndex] (sLabel * "a.txt content")
+        End
+        Get FindEntry (sPrefix + "sub/") to iIndex
+        Send Assert (iIndex >= 0) (sLabel * "sub/")
+        If (iIndex >= 0) Begin
+            Send AssertIAreEqual AE_IFDIR iTypes[iIndex] (sLabel * "sub type")
+        End
+        Get FindEntry (sPrefix + "sub/b.txt") to iIndex
+        Send Assert (iIndex >= 0) (sLabel * "sub/b.txt")
+        If (iIndex >= 0) Begin
+            Send AssertSAreEqual "Content B" sContents[iIndex] (sLabel * "sub/b.txt content")
+        End
+        Get FindEntry (sPrefix + "sub/deep/") to iIndex
+        Send Assert (iIndex >= 0) (sLabel * "sub/deep/")
+        Get FindEntry (sPrefix + "sub/deep/c.txt") to iIndex
+        Send Assert (iIndex >= 0) (sLabel * "sub/deep/c.txt")
+        If (iIndex >= 0) Begin
+            Send AssertSAreEqual "Content C" sContents[iIndex] (sLabel * "sub/deep/c.txt content")
+        End
+        Get FindEntry (sPrefix + "empty/") to iIndex
+        Send Assert (iIndex >= 0) (sLabel * "empty/ (empty folder)")
+        If (iIndex >= 0) Begin
+            Send AssertIAreEqual AE_IFDIR iTypes[iIndex] (sLabel * "empty type")
+        End
+        Get FindEntry (sPrefix + "ünï.txt") to iIndex
+        Send Assert (iIndex >= 0) (sLabel * "unicode file name")
+        If (iIndex >= 0) Begin
+            Send AssertSAreEqual "Content unicode" sContents[iIndex] (sLabel * "unicode file content")
+        End
+    End_Procedure
+
+    Object oEveryNamedFormatTest is a cTest
+        Procedure Test
+            Handle hoWriter
+            Integer iMsg
+            Boolean bFalse bTrue
+
+            Move False to bFalse
+            Move True to bTrue
+            //                                  message                          label         base format               magic offset  magic       readable  text
+            Move (RefFunc (SetFormat7zip)) to iMsg
+            Send CheckFormat iMsg "7zip" ARCHIVE_FORMAT_7ZIP 0 "7z" bTrue ""
+            Move (RefFunc (SetFormatArBsd)) to iMsg
+            Send CheckFormat iMsg "ar_bsd" ARCHIVE_FORMAT_AR 0 "!<arch>" bTrue ""
+            Move (RefFunc (SetFormatArSvr4)) to iMsg
+            Send CheckFormat iMsg "ar_svr4" ARCHIVE_FORMAT_AR 0 "!<arch>" bTrue ""
+            Move (RefFunc (SetFormatCpio)) to iMsg
+            Send CheckFormat iMsg "cpio" ARCHIVE_FORMAT_CPIO 0 "070707" bTrue ""
+            Move (RefFunc (SetFormatCpioBin)) to iMsg
+            Send CheckFormat iMsg "cpio_bin" ARCHIVE_FORMAT_CPIO 0 "" bTrue ""
+            Move (RefFunc (SetFormatCpioNewc)) to iMsg
+            Send CheckFormat iMsg "cpio_newc" ARCHIVE_FORMAT_CPIO 0 "070701" bTrue ""
+            Move (RefFunc (SetFormatCpioOdc)) to iMsg
+            Send CheckFormat iMsg "cpio_odc" ARCHIVE_FORMAT_CPIO 0 "070707" bTrue ""
+            Move (RefFunc (SetFormatCpioPwb)) to iMsg
+            Send CheckFormat iMsg "cpio_pwb" ARCHIVE_FORMAT_CPIO 0 "" bTrue ""
+            Move (RefFunc (SetFormatGnuTar)) to iMsg
+            Send CheckFormat iMsg "gnutar" ARCHIVE_FORMAT_TAR 257 "ustar  " bTrue ""
+            Move (RefFunc (SetFormatIso9660)) to iMsg
+            Send CheckFormat iMsg "iso9660" ARCHIVE_FORMAT_ISO9660 32769 "CD001" bTrue ""
+            Move (RefFunc (SetFormatMtree)) to iMsg
+            Send CheckFormat iMsg "mtree" ARCHIVE_FORMAT_MTREE 0 "#mtree" bFalse "alpha.txt"
+            Move (RefFunc (SetFormatMtreeClassic)) to iMsg
+            Send CheckFormat iMsg "mtree_classic" ARCHIVE_FORMAT_MTREE 0 "#mtree" bFalse "alpha.txt"
+            Move (RefFunc (SetFormatPax)) to iMsg
+            Send CheckFormat iMsg "pax" ARCHIVE_FORMAT_TAR 257 "ustar" bTrue ""
+            Move (RefFunc (SetFormatPaxRestricted)) to iMsg
+            Send CheckFormat iMsg "pax_restricted" ARCHIVE_FORMAT_TAR 257 "ustar" bTrue ""
+            Move (RefFunc (SetFormatShar)) to iMsg
+            Send CheckFormat iMsg "shar" ARCHIVE_FORMAT_SHAR 0 "#!/bin/sh" bFalse "Hello Archive"
+            Move (RefFunc (SetFormatSharDump)) to iMsg
+            Send CheckFormat iMsg "shar_dump" ARCHIVE_FORMAT_SHAR 0 "#!/bin/sh" bFalse "alpha.txt"
+            Move (RefFunc (SetFormatUstar)) to iMsg
+            Send CheckFormat iMsg "ustar" ARCHIVE_FORMAT_TAR 257 "ustar" bTrue ""
+            Move (RefFunc (SetFormatV7Tar)) to iMsg
+            Send CheckFormat iMsg "v7tar" ARCHIVE_FORMAT_TAR 0 "alpha.txt" bTrue ""
+            Move (RefFunc (SetFormatWarc)) to iMsg
+            Send CheckFormat iMsg "warc" ARCHIVE_FORMAT_WARC 0 "WARC/1.0" bTrue ""
+            Move (RefFunc (SetFormatZip)) to iMsg
+            Send CheckFormat iMsg "zip" ARCHIVE_FORMAT_ZIP 0 "PK" bTrue ""
+        End_Procedure
+    End_Object
+
+    // This archive.dll is built without XAR support: the format function reports ARCHIVE_WARN and every write fails.
+    Object oXarFormatTest is a cTest
+        Procedure Test
+            Handle hoWriter
+            Integer iResult iMsg
+            String sError
+
+            Get NewWriter to hoWriter
+            Get SetFormatXar of hoWriter to iResult
+            If (iResult = ARCHIVE_OK) Begin
+                // A build with XAR support: it works like every other format.
+                Send Destroy of hoWriter
+                Move (RefFunc (SetFormatXar)) to iMsg
+                Send CheckFormat iMsg "xar" ARCHIVE_FORMAT_XAR 0 "xar!" True ""
+            End
+            Else Begin
+                Send AssertIAreEqual ARCHIVE_WARN iResult "SetFormatXar warns when XAR is not supported"
+                Get psErrorString of hoWriter to sError
+                Send Assert (Pos ("not supported", sError) > 0) ("XAR error text:" * sError)
+                Send Destroy of hoWriter
+            End
+        End_Procedure
+    End_Object
+
+    Object oLifecycleTest is a cTest
+        Procedure Test
+            Handle hoWriter
+            Pointer pArchive
+            Integer iResult
+            Boolean bHas
+
+            Get Create (RefClass (cArchiveWriter)) to hoWriter
+            Get HasHandle of hoWriter to bHas
+            Send AssertFalse bHas "no handle before CreateWriter"
+
+            // Without a writer the methods raise a programming error and return ARCHIVE_FATAL.
+            Send ExpectError DFERR_PROGRAM
+            Get SetFormatZip of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "SetFormatZip without writer"
+            Get piBytesPerBlock of hoWriter to iResult
+            Send AssertIAreEqual 0 iResult "piBytesPerBlock without writer"
+            Get peFormat of hoWriter to iResult
+            Send AssertIAreEqual 0 iResult "peFormat without writer"
+            Send UnExpectError DFERR_PROGRAM
+
+            Send CreateWriter of hoWriter
+            Get HasHandle of hoWriter to bHas
+            Send Assert bHas "handle after CreateWriter"
+            Get ppArchive of hoWriter to pArchive
+            Send Assert (pArchive <> 0) "pointer after CreateWriter"
+            Get piLastResult of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "no last result"
+
+            // A second CreateWriter replaces the writer.
+            Send CreateWriter of hoWriter
+            Get HasHandle of hoWriter to bHas
+            Send Assert bHas "handle after second CreateWriter"
+
+            Send FreeWriter of hoWriter
+            Get HasHandle of hoWriter to bHas
+            Send AssertFalse bHas "no handle after FreeWriter"
+            Send FreeWriter of hoWriter // harmless
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+    Object oVersionInfoTest is a cTest
+        Procedure Test
+            Handle hoWriter
+            String sVersion
+
+            Get NewWriter to hoWriter
+            Get psVersionString of hoWriter to sVersion
+            Send AssertSAreEqual "libarchive 3.7.7" sVersion "version string through the writer"
+            Get piVersionNumber of hoWriter to sVersion
+            Send AssertSAreEqual "3007007" sVersion "version number through the writer"
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+    Object oRawFormatTest is a cTest
+        Procedure Test
+            Handle hoWriter
+            Integer iResult
+            BigInt iSize
+            UChar[] ucOut
+            String sOut
+
+            Get NewWriter to hoWriter
+            Get SetFormatRaw of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "raw format"
+            Get OpenMemory of hoWriter 100000 to iResult
+            Get AddText of hoWriter "ignored-name" "RAW PAYLOAD" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "first entry"
+            // The raw format holds a single entry only.
+            Get AddText of hoWriter "second" "more" to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "second entry is refused"
+            Get piLastResult of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "piLastResult"
+            Get psLastError of hoWriter to sOut
+            Send Assert (sOut <> "") "psLastError is set"
+            Get CloseWriter of hoWriter to iResult
+            Get GetOutput of hoWriter (&ucOut) to iSize
+            Move (BytesToString (Self, ucOut, SizeOfArray (ucOut))) to sOut
+            Send AssertSAreEqual "RAW PAYLOAD" sOut "raw output is the payload only"
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+    Object oSetFormatByCodeTest is a cTest
+        Procedure Test
+            Send CheckFormatSelection ARCHIVE_FORMAT_ZIP "" "code zip" ARCHIVE_FORMAT_ZIP
+            Send CheckFormatSelection ARCHIVE_FORMAT_7ZIP "" "code 7zip" ARCHIVE_FORMAT_7ZIP
+            Send CheckFormatSelection ARCHIVE_FORMAT_TAR_USTAR "" "code ustar" ARCHIVE_FORMAT_TAR
+            Send CheckFormatSelection ARCHIVE_FORMAT_TAR_GNUTAR "" "code gnutar" ARCHIVE_FORMAT_TAR
+            Send CheckFormatSelection ARCHIVE_FORMAT_TAR_PAX_RESTRICTED "" "code pax restricted" ARCHIVE_FORMAT_TAR
+            Send CheckFormatSelection ARCHIVE_FORMAT_CPIO "" "code cpio" ARCHIVE_FORMAT_CPIO
+            Send CheckFormatSelection ARCHIVE_FORMAT_ISO9660 "" "code iso9660" ARCHIVE_FORMAT_ISO9660
+        End_Procedure
+    End_Object
+
+    Object oSetFormatByNameTest is a cTest
+        Procedure Test
+            Handle hoWriter
+            Integer iResult
+            String sError
+
+            Send CheckFormatSelection 0 "zip" "name zip" ARCHIVE_FORMAT_ZIP
+            Send CheckFormatSelection 0 "7zip" "name 7zip" ARCHIVE_FORMAT_7ZIP
+            Send CheckFormatSelection 0 "ustar" "name ustar" ARCHIVE_FORMAT_TAR
+            Send CheckFormatSelection 0 "gnutar" "name gnutar" ARCHIVE_FORMAT_TAR
+            Send CheckFormatSelection 0 "pax" "name pax" ARCHIVE_FORMAT_TAR
+            Send CheckFormatSelection 0 "cpio" "name cpio" ARCHIVE_FORMAT_CPIO
+            Send CheckFormatSelection 0 "newc" "name newc" ARCHIVE_FORMAT_CPIO
+            Send CheckFormatSelection 0 "arbsd" "name arbsd" ARCHIVE_FORMAT_AR
+
+            Get NewWriter to hoWriter
+            Get SetFormatByName of hoWriter "no-such-format" to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "unknown format name"
+            Get psLastError of hoWriter to sError
+            Send Assert (Pos ("no-such-format", sError) > 0) ("error text names the format:" * sError)
+            Get piErrorNumber of hoWriter to iResult
+            Send Assert (iResult <> 0) "error number"
+            // ClearError resets the error state.
+            Send ClearError of hoWriter
+            Get piLastResult of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "piLastResult after ClearError"
+            Get psErrorString of hoWriter to sError
+            Send AssertSAreEqual "" sError "error string after ClearError"
+
+            // The default raises a DataFlex error.
+            Set pbRaiseErrors of hoWriter to True
+            Send ExpectError DFERR_PROGRAM
+            Get SetFormat of hoWriter 12345 to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "unknown format code"
+            Send UnExpectError DFERR_PROGRAM
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+    Object oFormatFilterByExtensionTest is a cTest
+        Procedure Test
+            Handle hoWriter
+            Integer iResult
+
+            Send CheckExtension "archive.zip" "" "ext zip" ARCHIVE_FORMAT_ZIP ARCHIVE_FILTER_NONE
+            Send CheckExtension "archive.7z" "" "ext 7z" ARCHIVE_FORMAT_7ZIP ARCHIVE_FILTER_NONE
+            Send CheckExtension "archive.tar" "" "ext tar" ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_NONE
+            Send CheckExtension "archive.tar.gz" "" "ext tar.gz" ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_GZIP
+            Send CheckExtension "archive.tgz" "" "ext tgz" ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_GZIP
+            Send CheckExtension "archive.tar.bz2" "" "ext tar.bz2" ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_BZIP2
+            Send CheckExtension "archive.tar.xz" "" "ext tar.xz" ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_XZ
+            Send CheckExtension "archive.jar" "" "ext jar" ARCHIVE_FORMAT_ZIP ARCHIVE_FILTER_NONE
+            Send CheckExtension "archive.a" "" "ext a" ARCHIVE_FORMAT_AR ARCHIVE_FILTER_NONE
+            Send CheckExtension "archive.iso" "" "ext iso" ARCHIVE_FORMAT_ISO9660 ARCHIVE_FILTER_NONE
+            Send CheckExtension "archive.cpio" "" "ext cpio" ARCHIVE_FORMAT_CPIO ARCHIVE_FILTER_NONE
+            // _def: the default extension is used when the file name has no known extension
+            Send CheckExtension "archive.unknown" ".tar.gz" "ext default" ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_GZIP
+            Send CheckExtension "archive.zip" ".tar.gz" "ext default is not used for a known extension" ARCHIVE_FORMAT_ZIP ARCHIVE_FILTER_NONE
+
+            Get NewWriter to hoWriter
+            Get SetFormatFilterByExtension of hoWriter "archive.unknown" to iResult
+            Send Assert (iResult < ARCHIVE_OK) "unknown extension is refused"
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+    Object oFilterMethodsTest is a cTest
+        Procedure Test
+            Integer iMsg
+
+            //                                       message                   label        filter code            B0  B1   readable
+            Move (RefFunc (AddFilterGzip)) to iMsg
+            Send CheckFilter iMsg "gzip" ARCHIVE_FILTER_GZIP 31 139 True
+            Move (RefFunc (AddFilterBzip2)) to iMsg
+            Send CheckFilter iMsg "bzip2" ARCHIVE_FILTER_BZIP2 66 90 True
+            Move (RefFunc (AddFilterXz)) to iMsg
+            Send CheckFilter iMsg "xz" ARCHIVE_FILTER_XZ 253 55 True
+            Move (RefFunc (AddFilterZstd)) to iMsg
+            Send CheckFilter iMsg "zstd" ARCHIVE_FILTER_ZSTD 40 181 True
+            Move (RefFunc (AddFilterLz4)) to iMsg
+            Send CheckFilter iMsg "lz4" ARCHIVE_FILTER_LZ4 4 34 True
+            Move (RefFunc (AddFilterLzma)) to iMsg
+            Send CheckFilter iMsg "lzma" ARCHIVE_FILTER_LZMA 93 0 True
+            Move (RefFunc (AddFilterLzip)) to iMsg
+            Send CheckFilter iMsg "lzip" ARCHIVE_FILTER_LZIP 76 90 True
+            Move (RefFunc (AddFilterCompress)) to iMsg
+            Send CheckFilter iMsg "compress" ARCHIVE_FILTER_COMPRESS 31 157 True
+            Move (RefFunc (AddFilterUuencode)) to iMsg
+            Send CheckFilter iMsg "uuencode" ARCHIVE_FILTER_UU 98 101 True
+            Move (RefFunc (AddFilterB64Encode)) to iMsg
+            Send CheckFilter iMsg "b64encode" ARCHIVE_FILTER_UU 98 101 False
+            Move (RefFunc (AddFilterNone)) to iMsg
+            Send CheckFilter iMsg "none" ARCHIVE_FILTER_NONE -1 -1 True
+        End_Procedure
+    End_Object
+
+    Object oFilterByCodeAndNameTest is a cTest
+        Procedure Test
+            Handle hoWriter
+            Integer iResult
+
+            Send CheckFilterSelection ARCHIVE_FILTER_GZIP "" "code gzip" ARCHIVE_FILTER_GZIP
+            Send CheckFilterSelection ARCHIVE_FILTER_BZIP2 "" "code bzip2" ARCHIVE_FILTER_BZIP2
+            Send CheckFilterSelection ARCHIVE_FILTER_XZ "" "code xz" ARCHIVE_FILTER_XZ
+            Send CheckFilterSelection ARCHIVE_FILTER_ZSTD "" "code zstd" ARCHIVE_FILTER_ZSTD
+            Send CheckFilterSelection ARCHIVE_FILTER_LZ4 "" "code lz4" ARCHIVE_FILTER_LZ4
+            Send CheckFilterSelection 0 "gzip" "name gzip" ARCHIVE_FILTER_GZIP
+            Send CheckFilterSelection 0 "bzip2" "name bzip2" ARCHIVE_FILTER_BZIP2
+            Send CheckFilterSelection 0 "xz" "name xz" ARCHIVE_FILTER_XZ
+            Send CheckFilterSelection 0 "zstd" "name zstd" ARCHIVE_FILTER_ZSTD
+            Send CheckFilterSelection 0 "lz4" "name lz4" ARCHIVE_FILTER_LZ4
+            Send CheckFilterSelection 0 "lzma" "name lzma" ARCHIVE_FILTER_LZMA
+
+            Get NewWriter to hoWriter
+            Get AddFilterByName of hoWriter "no-such-filter" to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "unknown filter name"
+            Get AddFilter of hoWriter 9999 to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "unknown filter code"
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+    Object oFilterChainTest is a cTest
+        Procedure Test
+            Handle hoWriter
+            Integer iResult iCount iCode0 iCode1
+            BigInt iSize
+            UChar[] ucOut
+
+            // tar -> gzip -> uuencode
+            Get NewWriter to hoWriter
+            Get SetFormatUstar of hoWriter to iResult
+            Get AddFilterGzip of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "gzip"
+            Get AddFilterUuencode of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "uuencode"
+            Get piFilterCount of hoWriter to iCount
+            Send AssertIAreEqual 2 iCount "two filters"
+            Get OpenMemory of hoWriter 4194304 to iResult
+            Get WriteTwoFiles hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "write"
+            Get CloseWriter of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "close"
+            Get GetOutput of hoWriter (&ucOut) to iSize
+            Get ReadMemory ucOut "" to iResult
+            Send Assert (iResult >= 2) "read back"
+            Send AssertTwoFiles "chain"
+            Get piFilterCount to iCount
+            Send Assert (iCount >= 2) "the reader finds two filters"
+            // The reader numbers the filters from the one next to the format reader: gzip, then uuencode.
+            Get piFilterCode to iCode0
+            Send AssertIAreEqual ARCHIVE_FILTER_GZIP iCode0 "filter next to the format is gzip"
+            Get piSecondFilterCode to iCode1
+            Send AssertIAreEqual ARCHIVE_FILTER_UU iCode1 "second filter is uuencode"
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+    Object oExternalFilterMethodsTest is a cTest
+        // lzop, lrzip and grzip run external programs when the archive is opened; adding them only needs libarchive.
+        Procedure Test
+            Handle hoWriter
+            Integer iResult
+
+            Get NewWriter to hoWriter
+            Get AddFilterLzop of hoWriter to iResult
+            Send Assert (iResult >= ARCHIVE_WARN) ("AddFilterLzop returned" * String (iResult))
+            Send Destroy of hoWriter
+            Get NewWriter to hoWriter
+            Get AddFilterLrzip of hoWriter to iResult
+            Send Assert (iResult >= ARCHIVE_WARN) ("AddFilterLrzip returned" * String (iResult))
+            Send Destroy of hoWriter
+            Get NewWriter to hoWriter
+            Get AddFilterGrzip of hoWriter to iResult
+            Send Assert (iResult >= ARCHIVE_WARN) ("AddFilterGrzip returned" * String (iResult))
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+    // Filter program: findstr "^" copies its input lines to the output; the raw format writes the data of the entry as it
+    // is, so text with CRLF line ends survives the program unchanged.
+    Object oFilterProgramTest is a cTest
+        Procedure Test
+            Handle hoWriter
+            Integer iResult
+            BigInt iSize
+            UChar[] ucOut
+            String sOut
+            Boolean bCanLaunch
+
+            Get NewWriter to hoWriter
+            Get SetFormatRaw of hoWriter to iResult
+            Get AddFilterProgram of hoWriter 'findstr "^"' to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "AddFilterProgram"
+            Get piFilterCount of hoWriter to iResult
+            Send AssertIAreEqual 1 iResult "program filter in the pipeline"
+            Get FilterCode of hoWriter 0 to iResult
+            Send AssertIAreEqual ARCHIVE_FILTER_PROGRAM iResult "filter code is ARCHIVE_FILTER_PROGRAM"
+            Delegate Get CanLaunchPrograms to bCanLaunch
+            Get OpenMemory of hoWriter 100000 to iResult
+            If (not (bCanLaunch)) Begin
+                // The program filter is started when the archive is opened; a process that cannot launch programs
+                // (see CanLaunchPrograms) makes libarchive refuse to open.
+                Send AssertIAreEqual ARCHIVE_FATAL iResult "open when the program cannot be launched"
+                Send Destroy of hoWriter
+                Procedure_Return
+            End
+            Send AssertIAreEqual ARCHIVE_OK iResult "open"
+            Get AddText of hoWriter "x" ("line one" + (Character (13)) + (Character (10)) + "line two" + (Character (13)) + (Character (10))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "write"
+            Get CloseWriter of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "close"
+            Get GetOutput of hoWriter (&ucOut) to iSize
+            Move (BytesToString (Self, ucOut, SizeOfArray (ucOut))) to sOut
+            Send AssertSAreEqual ("line one" + (Character (13)) + (Character (10)) + "line two" + (Character (13)) + (Character (10))) sOut "output of the program"
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+    Object oZipCompressionTest is a cTest
+        Procedure Test
+            Handle hoWriter
+            Integer iResult iStoredSize iDeflatedSize
+            BigInt iSize
+            UChar[] ucOut
+            String sText sContent
+
+            Move (Repeat ("0123456789abcdef", 12800)) to sText // 204800 bytes, compresses very well
+
+            // deflate is the default
+            Get NewWriter to hoWriter
+            Get peZipCompression of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_ZIP_COMPRESSION_DEFLATE iResult "default compression"
+            Get SetFormatZip of hoWriter to iResult
+            Get OpenMemory of hoWriter 1048576 to iResult
+            Get AddText of hoWriter "text.txt" sText to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "deflate write"
+            Get CloseWriter of hoWriter to iResult
+            Get GetOutput of hoWriter (&ucOut) to iSize
+            Move iSize to iDeflatedSize
+            Send Assert (iDeflatedSize < 20000) ("deflated size" * String (iDeflatedSize))
+            Get ReadMemory ucOut "" to iResult
+            Send AssertIAreEqual 1 iResult "deflate read back"
+            Get EntryContent "text.txt" to sContent
+            Send Assert (sContent = sText) "deflated content round trip"
+            Send Destroy of hoWriter
+
+            // stored through the property
+            Get NewWriter to hoWriter
+            Get SetFormatZip of hoWriter to iResult
+            Set peZipCompression of hoWriter to ARCHIVE_ZIP_COMPRESSION_STORE
+            Get peZipCompression of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_ZIP_COMPRESSION_STORE iResult "property after Set"
+            Get piLastResult of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "no error"
+            Get OpenMemory of hoWriter 1048576 to iResult
+            Get AddText of hoWriter "text.txt" sText to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "store write"
+            Get CloseWriter of hoWriter to iResult
+            Get GetOutput of hoWriter (&ucOut) to iSize
+            Move iSize to iStoredSize
+            Send Assert (iStoredSize > 204800) ("stored size" * String (iStoredSize))
+            Get ReadMemory ucOut "" to iResult
+            Send AssertIAreEqual 1 iResult "store read back"
+            Get EntryContent "text.txt" to sContent
+            Send Assert (sContent = sText) "stored content round trip"
+            Send Destroy of hoWriter
+
+            // the methods
+            Get NewWriter to hoWriter
+            Get SetFormatZip of hoWriter to iResult
+            Get SetZipCompressionStore of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "SetZipCompressionStore"
+            Get peZipCompression of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_ZIP_COMPRESSION_STORE iResult "property is store"
+            Get SetZipCompressionDeflate of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "SetZipCompressionDeflate"
+            Get peZipCompression of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_ZIP_COMPRESSION_DEFLATE iResult "property is deflate"
+            Send Destroy of hoWriter
+
+            // other formats refuse the zip options
+            Get NewWriter to hoWriter
+            Get SetFormatUstar of hoWriter to iResult
+            Get SetZipCompressionStore of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "zip option with the tar format"
+            Get peZipCompression of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_ZIP_COMPRESSION_DEFLATE iResult "property unchanged after the failure"
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+    Object oBlockSizeTest is a cTest
+        Procedure Test
+            Handle hoWriter
+            Integer iResult
+            BigInt iSize
+            UChar[] ucOut
+
+            // default: the block size is 10240 bytes, the ustar writer does not pad the last block
+            Get NewWriter to hoWriter
+            Get SetFormatUstar of hoWriter to iResult
+            Get piBytesPerBlock of hoWriter to iResult
+            Send AssertIAreEqual 10240 iResult "default block size"
+            Get piBytesInLastBlock of hoWriter to iResult
+            Send AssertIAreEqual -1 iResult "default size of the last block (-1: not set)"
+            Get OpenMemory of hoWriter 1048576 to iResult
+            Get WriteTwoFiles hoWriter to iResult
+            Get CloseWriter of hoWriter to iResult
+            Get GetOutput of hoWriter (&ucOut) to iSize
+            Send AssertBIAreEqual 3072 iSize "default archive size"
+            Send Destroy of hoWriter
+
+            // the last block padded to the block size
+            Get NewWriter to hoWriter
+            Get SetFormatUstar of hoWriter to iResult
+            Set piBytesInLastBlock of hoWriter to 10240
+            Get piBytesInLastBlock of hoWriter to iResult
+            Send AssertIAreEqual 10240 iResult "last block size after Set"
+            Get OpenMemory of hoWriter 1048576 to iResult
+            Get WriteTwoFiles hoWriter to iResult
+            Get CloseWriter of hoWriter to iResult
+            Get GetOutput of hoWriter (&ucOut) to iSize
+            Send AssertBIAreEqual 10240 iSize "padded archive size"
+            Send Destroy of hoWriter
+
+            // small blocks and no padding of the last block
+            Get NewWriter to hoWriter
+            Get SetFormatUstar of hoWriter to iResult
+            Set piBytesPerBlock of hoWriter to 512
+            Set piBytesInLastBlock of hoWriter to 1
+            Get piLastResult of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "setting the block sizes"
+            Get piBytesPerBlock of hoWriter to iResult
+            Send AssertIAreEqual 512 iResult "block size after Set"
+            Get piBytesInLastBlock of hoWriter to iResult
+            Send AssertIAreEqual 1 iResult "last block size after Set"
+            Get OpenMemory of hoWriter 1048576 to iResult
+            Get WriteTwoFiles hoWriter to iResult
+            Get CloseWriter of hoWriter to iResult
+            Get GetOutput of hoWriter (&ucOut) to iSize
+            // 2 x (512 header + 512 data) + 1024 end of archive
+            Send AssertBIAreEqual 3072 iSize "archive size without padding"
+            Get ReadMemory ucOut "" to iResult
+            Send Assert (iResult >= 2) "read back"
+            Send AssertTwoFiles "small blocks"
+            Send Destroy of hoWriter
+
+            // the block size cannot be changed once the archive is open
+            Get NewWriter to hoWriter
+            Get SetFormatUstar of hoWriter to iResult
+            Get OpenMemory of hoWriter 1048576 to iResult
+            Set piBytesPerBlock of hoWriter to 512
+            Get piLastResult of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "block size after open"
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+    Object oSkipFileTest is a cTest
+        Procedure Test
+            Handle hoWriter hoEntry
+            Integer iResult
+            Pointer pEntry
+            Void_Type iVoid
+
+            Get NewWriter to hoWriter
+            Get SetFormatUstar of hoWriter to iResult
+            Get SetSkipFile of hoWriter 7 42 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "SetSkipFile"
+            Get OpenMemory of hoWriter 1048576 to iResult
+
+            Get Create (RefClass (cArchiveEntry)) to hoEntry
+            Send CreateEntry of hoEntry
+            Set psPathname of hoEntry to "archive-itself.tar"
+            Get ppEntry of hoEntry to pEntry
+            Move (archive_entry_set_filetype (pEntry, AE_IFREG)) to iVoid
+            Move (archive_entry_set_size (pEntry, 0)) to iVoid
+            Move (archive_entry_set_dev (pEntry, 7)) to iVoid
+            Move (archive_entry_set_ino64 (pEntry, 42)) to iVoid
+            Get WriteHeader of hoWriter hoEntry to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "the skipped file is refused"
+
+            // another inode is written
+            Move (archive_entry_set_ino64 (pEntry, 43)) to iVoid
+            Get WriteHeader of hoWriter hoEntry to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "other file is written"
+            Send Destroy of hoEntry
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+    Object oOptionsTest is a cTest
+        Procedure Test
+            Handle hoWriter
+            Integer iResult iSizeLevel1 iSizeLevel9
+            BigInt iSize
+            UChar[] ucOut
+            String sText sContent
+
+            Move (Repeat ("0123456789abcdef", 12800)) to sText
+
+            // SetOption: format option "compression" of the zip writer
+            Get NewWriter to hoWriter
+            Get SetFormatZip of hoWriter to iResult
+            Get SetOption of hoWriter "zip" "compression" "store" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "SetOption zip compression store"
+            Get OpenMemory of hoWriter 1048576 to iResult
+            Get AddText of hoWriter "text.txt" sText to iResult
+            Get CloseWriter of hoWriter to iResult
+            Get GetOutput of hoWriter (&ucOut) to iSize
+            Send Assert (iSize > 204800) ("stored by SetOption:" * String (iSize))
+            Send Destroy of hoWriter
+
+            // SetFormatOption and an empty module name (any module)
+            Get NewWriter to hoWriter
+            Get SetFormatZip of hoWriter to iResult
+            Get SetFormatOption of hoWriter "" "compression" "store" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "SetFormatOption without module"
+            Get OpenMemory of hoWriter 1048576 to iResult
+            Get AddText of hoWriter "text.txt" sText to iResult
+            Get CloseWriter of hoWriter to iResult
+            Get GetOutput of hoWriter (&ucOut) to iSize
+            Send Assert (iSize > 204800) ("stored by SetFormatOption:" * String (iSize))
+            Send Destroy of hoWriter
+
+            // SetOptions with a string
+            Get NewWriter to hoWriter
+            Get SetFormatZip of hoWriter to iResult
+            Get SetOptions of hoWriter "zip:compression=store" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "SetOptions"
+            Get OpenMemory of hoWriter 1048576 to iResult
+            Get AddText of hoWriter "text.txt" sText to iResult
+            Get CloseWriter of hoWriter to iResult
+            Get GetOutput of hoWriter (&ucOut) to iSize
+            Send Assert (iSize > 204800) ("stored by SetOptions:" * String (iSize))
+            Get ReadMemory ucOut "" to iResult
+            Get EntryContent "text.txt" to sContent
+            Send Assert (sContent = sText) "content of the stored zip"
+            Send Destroy of hoWriter
+
+            // SetFilterOption: compression level of the gzip filter. Random-like data would show it better, the pattern
+            // text is enough to see that both levels work and give valid archives.
+            Get NewWriter to hoWriter
+            Get SetFormatUstar of hoWriter to iResult
+            Get AddFilterGzip of hoWriter to iResult
+            Get SetFilterOption of hoWriter "gzip" "compression-level" "1" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "SetFilterOption level 1"
+            Get OpenMemory of hoWriter 1048576 to iResult
+            Get AddText of hoWriter "text.txt" sText to iResult
+            Get CloseWriter of hoWriter to iResult
+            Get GetOutput of hoWriter (&ucOut) to iSize
+            Move iSize to iSizeLevel1
+            Get ReadMemory ucOut "" to iResult
+            Get EntryContent "text.txt" to sContent
+            Send Assert (sContent = sText) "gzip level 1 round trip"
+            Send Destroy of hoWriter
+            Get NewWriter to hoWriter
+            Get SetFormatUstar of hoWriter to iResult
+            Get AddFilterGzip of hoWriter to iResult
+            Get SetFilterOption of hoWriter "gzip" "compression-level" "9" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "SetFilterOption level 9"
+            Get OpenMemory of hoWriter 1048576 to iResult
+            Get AddText of hoWriter "text.txt" sText to iResult
+            Get CloseWriter of hoWriter to iResult
+            Get GetOutput of hoWriter (&ucOut) to iSize
+            Move iSize to iSizeLevel9
+            Send Assert (iSizeLevel9 <= iSizeLevel1) ("level 9" * String (iSizeLevel9) * "level 1" * String (iSizeLevel1))
+            Send Destroy of hoWriter
+
+            // problems
+            Get NewWriter to hoWriter
+            Get SetFormatZip of hoWriter to iResult
+            Get SetOption of hoWriter "zip" "no-such-option" "1" to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "unknown option of a named module"
+            Get SetOption of hoWriter "" "no-such-option" "1" to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "unknown option without module name"
+
+            Get SetOption of hoWriter "zip" "compression" "no-such-method" to iResult
+            Send Assert (iResult < ARCHIVE_WARN) ("invalid option value returned" * String (iResult))
+            // an empty value passes NULL, which switches a boolean option off
+            Get SetOption of hoWriter "zip" "fakecrc32" "" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "boolean option off"
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+    Object oEncryptionTest is a cTest
+        Procedure CheckEncrypted String sMethod
+            Handle hoWriter
+            Integer iResult
+            BigInt iSize
+            UChar[] ucOut
+            String[] sNames
+            Integer[] iEncrypted iDataResults
+            String sContent
+
+            Get NewWriter to hoWriter
+            Get SetFormatZip of hoWriter to iResult
+            Get SetOption of hoWriter "zip" "encryption" sMethod to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult (sMethod * "SetOption encryption")
+            Get SetPassphrase of hoWriter "s3cret-ünï" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult (sMethod * "SetPassphrase")
+            Get OpenMemory of hoWriter 1048576 to iResult
+            Get AddText of hoWriter "secret.txt" "Top secret text" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult (sMethod * "write")
+            Get CloseWriter of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult (sMethod * "close")
+            Get GetOutput of hoWriter (&ucOut) to iSize
+            Send Destroy of hoWriter
+
+            // with the passphrase
+            Get ReadMemory ucOut "s3cret-ünï" to iResult
+            Send AssertIAreEqual 1 iResult (sMethod * "read with passphrase")
+            Get paiEncrypted to iEncrypted
+            Send AssertIAreEqual 1 iEncrypted[0] (sMethod * "entry is encrypted")
+            Get EntryContent "secret.txt" to sContent
+            Send AssertSAreEqual "Top secret text" sContent (sMethod * "decrypted content")
+
+            // without the passphrase: the entry is listed, the data cannot be read
+            Get ReadMemory ucOut "" to iResult
+            Send AssertIAreEqual 1 iResult (sMethod * "read without passphrase lists the entry")
+            Get paiDataResults to iDataResults
+            Send Assert (iDataResults[0] < 0) (sMethod * "data cannot be read without passphrase")
+            Get EntryContent "secret.txt" to sContent
+            Send Assert (sContent <> "Top secret text") (sMethod * "no plain text without passphrase")
+
+            // with a wrong passphrase
+            Get ReadMemory ucOut "wrong passphrase" to iResult
+            Get paiDataResults to iDataResults
+            Send Assert (iDataResults[0] < 0) (sMethod * "data cannot be read with a wrong passphrase")
+        End_Procedure
+
+        Procedure Test
+            Handle hoWriter
+            Integer iResult
+
+            Send CheckEncrypted "zipcrypt"
+            Send CheckEncrypted "aes256"
+            Send CheckEncrypted "aes128"
+
+            // an empty passphrase is refused
+            Get NewWriter to hoWriter
+            Get SetFormatZip of hoWriter to iResult
+            Get SetPassphrase of hoWriter "" to iResult
+            Send Assert (iResult < ARCHIVE_WARN) ("empty passphrase returned" * String (iResult))
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+    Object oOpenFileTest is a cTest
+        Procedure Test
+            Handle hoWriter
+            Integer iResult
+            String sFile
+            String[] sNames sContents
+
+            // a file name with characters outside of the ANSI code page
+            Delegate Get TempFile "arch-ünï-日本語.zip" to sFile
+            Get NewWriter to hoWriter
+            Get SetFormatZip of hoWriter to iResult
+            Get OpenFile of hoWriter sFile to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "OpenFile with a unicode name"
+            Get WriteTwoFiles hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "write"
+            Get CloseWriter of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "close"
+            Send FreeWriter of hoWriter
+            Get ReadFile sFile "" to iResult
+            Send Assert (iResult >= 2) ("read the file back" * String (iResult))
+            Send AssertTwoFiles "unicode file name"
+            EraseFile sFile
+            Send Destroy of hoWriter
+
+            // opening a file in a folder that does not exist fails
+            Get NewWriter to hoWriter
+            Get SetFormatZip of hoWriter to iResult
+            Get OpenFile of hoWriter (sFile + "-no-folder\none\x.zip") to iResult
+            Send Assert (iResult <= ARCHIVE_FAILED) ("open in a missing folder returned" * String (iResult))
+            Get psLastError of hoWriter to sFile
+            Send Assert (sFile <> "") "error text of the failed open"
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+    Object oOpenFileAnsiTest is a cTest
+        Procedure Test
+            Handle hoWriter
+            Integer iResult
+            String sFile
+
+            Delegate Get TempFile "ansi.tar" to sFile
+            Get NewWriter to hoWriter
+            Get SetFormatUstar of hoWriter to iResult
+            Get OpenFileAnsi of hoWriter sFile to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "OpenFileAnsi"
+            Get WriteTwoFiles hoWriter to iResult
+            Get CloseWriter of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "close"
+            Send FreeWriter of hoWriter
+            Get ReadFile sFile "" to iResult
+            Send Assert (iResult >= 2) "read the file back"
+            Send AssertTwoFiles "ansi file name"
+            EraseFile sFile
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+    Object oOpenFdTest is a cTest
+        Procedure Test
+            Handle hoWriter
+            Integer iResult iFd
+            String sFile
+
+            Delegate Get TempFile "fd.zip" to sFile
+            // _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY, _S_IREAD | _S_IWRITE
+            Move (wwtestWOpen (sFile, 33537, 384)) to iFd
+            Send Assert (iFd >= 0) "descriptor of the C runtime"
+            Get NewWriter to hoWriter
+            Get SetFormatZip of hoWriter to iResult
+            Get OpenFd of hoWriter iFd to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "OpenFd"
+            Get WriteTwoFiles hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "write"
+            Get CloseWriter of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "close"
+            Send FreeWriter of hoWriter
+            Move (wwtestClose (iFd)) to iResult
+            Get ReadFile sFile "" to iResult
+            Send Assert (iResult >= 2) "read the file back"
+            Send AssertTwoFiles "descriptor"
+            EraseFile sFile
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+    Object oOpenFilePtrTest is a cTest
+        Procedure Test
+            Handle hoWriter
+            Integer iResult
+            Pointer pFile
+            String sFile
+
+            Delegate Get TempFile "fileptr.tar" to sFile
+            Move (wwtestWFopen (sFile, "wb")) to pFile
+            Send Assert (pFile <> 0) "FILE pointer of the C runtime"
+            Get NewWriter to hoWriter
+            Get SetFormatUstar of hoWriter to iResult
+            Get OpenFilePtr of hoWriter pFile to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "OpenFilePtr"
+            Get WriteTwoFiles hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "write"
+            Get CloseWriter of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "close"
+            Send FreeWriter of hoWriter
+            Move (wwtestFclose (pFile)) to iResult
+            Get ReadFile sFile "" to iResult
+            Send Assert (iResult >= 2) "read the file back"
+            Send AssertTwoFiles "FILE pointer"
+            EraseFile sFile
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+    Object oOpenMemoryTest is a cTest
+        Procedure Test
+            Handle hoWriter
+            Integer iResult
+            BigInt iSize iSize2 iSize3
+            UChar[] ucOut ucOut2 ucFree
+            Boolean bOk
+
+            Get NewWriter to hoWriter
+            Get SetFormatZip of hoWriter to iResult
+            Get OutputSize of hoWriter to iSize
+            Send AssertBIAreEqual 0 iSize "no output before OpenMemory"
+            Get OpenMemory of hoWriter 1048576 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "OpenMemory"
+            Get WriteTwoFiles hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "write"
+            Get CloseWriter of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "close"
+            Get GetOutput of hoWriter (&ucOut) to iSize
+            Send Assert (iSize > 100) "bytes written"
+            Send AssertBIAreEqual iSize (SizeOfArray (ucOut)) "GetOutput result is the array size"
+            Get HasAsciiAt ucOut 0 "PK" to bOk
+            Send Assert bOk "zip signature"
+            Get OutputSize of hoWriter to iSize2
+            Send AssertBIAreEqual iSize iSize2 "OutputSize"
+            Get OutputBytes of hoWriter to ucOut2
+            Send AssertBIAreEqual iSize (SizeOfArray (ucOut2)) "OutputBytes"
+            Get ReadMemory ucOut "" to iResult
+            Send Assert (iResult >= 2) "read back"
+            Send AssertTwoFiles "memory"
+
+            // the output survives FreeWriter
+            Send FreeWriter of hoWriter
+            Get OutputSize of hoWriter to iSize3
+            Send AssertBIAreEqual iSize iSize3 "OutputSize after FreeWriter"
+            Get OutputBytes of hoWriter to ucOut2
+            Send AssertBIAreEqual iSize (SizeOfArray (ucOut2)) "OutputBytes after FreeWriter"
+            Get ReadMemory ucOut2 "" to iResult
+            Send Assert (iResult >= 2) "read back after FreeWriter"
+            Send AssertTwoFiles "memory after free"
+
+            // FreeWriter without CloseWriter finishes the archive
+            Send CreateWriter of hoWriter
+            Get SetFormatZip of hoWriter to iResult
+            Get OpenMemory of hoWriter 1048576 to iResult
+            Get WriteTwoFiles hoWriter to iResult
+            Send FreeWriter of hoWriter
+            Get OutputBytes of hoWriter to ucOut2
+            Get ReadMemory ucOut2 "" to iResult
+            Send Assert (iResult >= 2) "archive finished by FreeWriter"
+            Send AssertTwoFiles "memory freed without close"
+
+            // a second OpenMemory for the same writer and an invalid size are refused
+            Send CreateWriter of hoWriter
+            Get SetFormatZip of hoWriter to iResult
+            Get OpenMemory of hoWriter 0 to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "buffer size 0"
+            Get OpenMemory of hoWriter 100000 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "OpenMemory"
+            Get OpenMemory of hoWriter 100000 to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "second OpenMemory"
+            Send Destroy of hoWriter
+
+            // a buffer that is too small
+            Get NewWriter to hoWriter
+            Get SetFormatZip of hoWriter to iResult
+            Get OpenMemory of hoWriter 200 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "OpenMemory 200 bytes"
+            Get SetZipCompressionStore of hoWriter to iResult
+            Get AddText of hoWriter "big.txt" (Repeat ("0123456789", 500)) to iResult
+            Get CloseWriter of hoWriter to iSize
+            // the failure is reported by the write or at the latest by the close (the data is buffered)
+            Send Assert (iResult < ARCHIVE_OK or iSize < ARCHIVE_OK) "writing more than the buffer holds fails"
+            Get piLastResult of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "the writer is dead"
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+    Object oEntryWritingTest is a cTest
+        Procedure Test
+            Handle hoWriter hoEntry
+            Integer iResult iIndex
+            BigInt iWritten iSize
+            Pointer pEntry
+            Void_Type iVoid
+            UChar[] ucOut ucData ucExpected ucPadded
+            String sData
+            String[] sNames sContents
+            Integer[] iTypes iPerms
+            BigInt[] iSizes iMTimes iSums
+
+            Get NewWriter to hoWriter
+            Get SetFormatPax of hoWriter to iResult
+            Get OpenMemory of hoWriter 1048576 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open"
+
+            // entry 1: header from a cArchiveEntry object, data from a byte array with zero bytes
+            Get Create (RefClass (cArchiveEntry)) to hoEntry
+            Send CreateEntry of hoEntry
+            Set psPathname of hoEntry to "dir/binary-ünï.bin"
+            Get ppEntry of hoEntry to pEntry
+            Move (archive_entry_set_filetype (pEntry, AE_IFREG)) to iVoid
+            Move (archive_entry_set_perm (pEntry, 384)) to iVoid
+            Move (archive_entry_set_size (pEntry, 600)) to iVoid
+            Move (archive_entry_set_mtime (pEntry, 1700000000, 0)) to iVoid
+            Move (ResizeArray (ucData, 600)) to ucData
+            For iIndex from 0 to 599
+                Move (Mod (iIndex * 7, 256)) to ucData[iIndex]
+            Loop
+            Get WriteHeader of hoWriter hoEntry to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "WriteHeader entry 1"
+            Get WriteData of hoWriter ucData to iWritten
+            Send AssertBIAreEqual 600 iWritten "WriteData"
+            Get FinishEntry of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "FinishEntry entry 1"
+
+            // entry 2: text with WriteString in two parts
+            Send CreateEntry of hoEntry
+            Set psPathname of hoEntry to "text.txt"
+            Get ppEntry of hoEntry to pEntry
+            Move (archive_entry_set_filetype (pEntry, AE_IFREG)) to iVoid
+            Move (archive_entry_set_perm (pEntry, 420)) to iVoid
+            Move (archive_entry_set_size (pEntry, 14)) to iVoid
+            Move (archive_entry_set_mtime (pEntry, 1700000001, 0)) to iVoid
+            Get WriteHeader of hoWriter hoEntry to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "WriteHeader entry 2"
+            Get WriteString of hoWriter "Hello " to iWritten
+            Send AssertBIAreEqual 6 iWritten "WriteString part 1"
+            Get WriteString of hoWriter "Wörld.." to iWritten // 7 characters, 8 bytes in UTF-8
+            Send AssertBIAreEqual 8 iWritten "WriteString part 2 counts bytes"
+            Get WriteString of hoWriter "" to iWritten
+            Send AssertBIAreEqual 0 iWritten "WriteString of an empty text"
+
+            // entry 3: WriteDataPointer, shorter than announced: FinishEntry pads with zero bytes
+            Send CreateEntry of hoEntry
+            Set psPathname of hoEntry to "padded.bin"
+            Get ppEntry of hoEntry to pEntry
+            Move (archive_entry_set_filetype (pEntry, AE_IFREG)) to iVoid
+            Move (archive_entry_set_perm (pEntry, 420)) to iVoid
+            Move (archive_entry_set_size (pEntry, 10)) to iVoid
+            Move (archive_entry_set_mtime (pEntry, 1700000002, 0)) to iVoid
+            Get WriteHeader of hoWriter hoEntry to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "WriteHeader entry 3"
+            Move "ABCD" to sData
+            Get WriteDataPointer of hoWriter (AddressOf (sData)) 4 to iWritten
+            Send AssertBIAreEqual 4 iWritten "WriteDataPointer"
+            Get FinishEntry of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "FinishEntry pads"
+
+            // entry 4: more data than announced is not written and reported
+            Send CreateEntry of hoEntry
+            Set psPathname of hoEntry to "short.txt"
+            Get ppEntry of hoEntry to pEntry
+            Move (archive_entry_set_filetype (pEntry, AE_IFREG)) to iVoid
+            Move (archive_entry_set_perm (pEntry, 420)) to iVoid
+            Move (archive_entry_set_size (pEntry, 3)) to iVoid
+            Get WriteHeader of hoWriter hoEntry to iResult
+            Get WriteString of hoWriter "0123456789" to iWritten
+            Send AssertBIAreEqual 3 iWritten "only the announced size is written"
+            Get piLastResult of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "the short write is reported"
+            Send ClearLastResult of hoWriter
+
+            Get CloseWriter of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "close"
+            Get piFileCount of hoWriter to iResult
+            Send AssertIAreEqual 4 iResult "four entries written"
+            Get GetOutput of hoWriter (&ucOut) to iSize
+
+            Get ReadMemory ucOut "" to iResult
+            Send AssertIAreEqual 4 iResult "four entries"
+            Get pasNames to sNames
+            Get pasContents to sContents
+            Get paiPerms to iPerms
+            Get pabiMTimes to iMTimes
+            Get pabiSums to iSums
+            Get pabiSizes to iSizes
+            Send AssertSAreEqual "dir/binary-ünï.bin" sNames[0] "name 1"
+            Send AssertIAreEqual 384 iPerms[0] "permission 1"
+            Send AssertBIAreEqual 1700000000 iMTimes[0] "mtime 1"
+            Send AssertBIAreEqual 600 iSizes[0] "size 1"
+            Get ByteSum ucData to iSize
+            Send AssertBIAreEqual iSize iSums[0] "binary content with zero bytes"
+            Send AssertSAreEqual "text.txt" sNames[1] "name 2"
+            Send AssertSAreEqual "Hello Wörld.." sContents[1] "text content"
+            Send AssertBIAreEqual 1700000001 iMTimes[1] "mtime 2"
+            Send AssertSAreEqual "padded.bin" sNames[2] "name 3"
+            Move (ResizeArray (ucPadded, 10)) to ucPadded
+            Move 65 to ucPadded[0]
+            Move 66 to ucPadded[1]
+            Move 67 to ucPadded[2]
+            Move 68 to ucPadded[3]
+            Get ByteSum ucPadded to iSize
+            Send AssertBIAreEqual iSize iSums[2] "padded content ABCD + 6 zero bytes"
+            Send AssertBIAreEqual 10 iSizes[2] "padded size"
+            Send Destroy of hoEntry
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+    Object oEntryWithoutDataTest is a cTest
+        Procedure Test
+            Handle hoWriter hoEntry
+            Integer iResult
+            Pointer pEntry
+            Void_Type iVoid
+
+            Get NewWriter to hoWriter
+            Get SetFormatUstar of hoWriter to iResult
+            Get OpenMemory of hoWriter 1048576 to iResult
+            // an entry object without entry
+            Get Create (RefClass (cArchiveEntry)) to hoEntry
+            Get WriteHeader of hoWriter hoEntry to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "WriteHeader without an entry"
+            Send Destroy of hoEntry
+            // the raw pointer variant
+            Get WriteHeaderPointer of hoWriter 0 to iResult
+            Send Assert (iResult < ARCHIVE_OK) "WriteHeaderPointer 0"
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+    Object oFailWriterTest is a cTest
+        Procedure Test
+            Handle hoWriter
+            Integer iResult
+            Boolean bHas
+
+            // memory output: libarchive does not close a file output of a failed archive when it is freed
+            Get NewWriter to hoWriter
+            Get SetFormatUstar of hoWriter to iResult
+            Get OpenMemory of hoWriter 100000 to iResult
+            Get AddText of hoWriter "a.txt" "abc" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "write"
+            Get FailWriter of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "FailWriter"
+            // the writer is dead: further writes fail
+            Get AddText of hoWriter "b.txt" "abc" to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "write after FailWriter"
+            Send FreeWriter of hoWriter
+            Get HasHandle of hoWriter to bHas
+            Send AssertFalse bHas "freed"
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+    Object oAddMethodsTest is a cTest
+        Procedure Test
+            Handle hoWriter
+            Integer iResult iIndex
+            BigInt iNow iSize
+            UChar[] ucOut ucData
+            String[] sNames sContents sSymlinks
+            Integer[] iTypes iPerms
+            BigInt[] iSizes iMTimes iSums
+
+            Move (ResizeArray (ucData, 1000)) to ucData
+            For iIndex from 0 to 999
+                Move (Mod (iIndex * 13, 256)) to ucData[iIndex]
+            Loop
+
+            Get NewWriter to hoWriter
+            Get SetFormatPax of hoWriter to iResult
+            Get OpenMemory of hoWriter 1048576 to iResult
+            Get CurrentUnixTime of hoWriter to iNow
+
+            Get AddData of hoWriter "data\bin.dat" ucData to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "AddData"
+            Get AddText of hoWriter "texts\grüße-日本語.txt" "Grüße aus Köln" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "AddText"
+            Set piFilePermission of hoWriter to 384
+            Get AddText of hoWriter "private.txt" "x" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "AddText with another permission"
+            Set piFilePermission of hoWriter to 420
+            Get AddText of hoWriter "empty.txt" "" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "AddText with empty text"
+            Get AddDirectory of hoWriter "folder\sub" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "AddDirectory without slash"
+            Get AddDirectory of hoWriter "folder2/" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "AddDirectory with slash"
+            Set piDirectoryPermission of hoWriter to 448
+            Get AddDirectory of hoWriter "private-dir" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "AddDirectory with another permission"
+            Get AddSymlink of hoWriter "link.txt" "texts/target.txt" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "AddSymlink"
+            Get piFileCount of hoWriter to iResult
+            Send AssertIAreEqual 8 iResult "entries written"
+            Get CloseWriter of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "close"
+            Get GetOutput of hoWriter (&ucOut) to iSize
+
+            Get ReadMemory ucOut "" to iResult
+            Send AssertIAreEqual 8 iResult "read back"
+            Get pasNames to sNames
+            Get pasContents to sContents
+            Get pasSymlinks to sSymlinks
+            Get paiTypes to iTypes
+            Get paiPerms to iPerms
+            Get pabiSizes to iSizes
+            Get pabiMTimes to iMTimes
+            Get pabiSums to iSums
+
+            Send AssertSAreEqual "data/bin.dat" sNames[0] "backslash becomes slash"
+            Send AssertIAreEqual AE_IFREG iTypes[0] "AddData type"
+            Send AssertIAreEqual 420 iPerms[0] "AddData permission"
+            Send AssertBIAreEqual 1000 iSizes[0] "AddData size"
+            Get ByteSum ucData to iSize
+            Send AssertBIAreEqual iSize iSums[0] "AddData content"
+            Send Assert (iMTimes[0] >= iNow and iMTimes[0] <= iNow + 10) ("AddData time stamp is now:" * String (iMTimes[0]) * String (iNow))
+            Send AssertSAreEqual "texts/grüße-日本語.txt" sNames[1] "unicode name"
+            Send AssertSAreEqual "Grüße aus Köln" sContents[1] "AddText content (UTF-8)"
+            Send AssertIAreEqual 384 iPerms[2] "piFilePermission"
+            Send AssertIAreEqual 420 iPerms[3] "piFilePermission restored"
+            Send AssertSAreEqual "empty.txt" sNames[3] "empty file name"
+            Send AssertBIAreEqual 0 iSizes[3] "empty file size"
+            Send AssertSAreEqual "folder/sub/" sNames[4] "AddDirectory adds the slash"
+            Send AssertIAreEqual AE_IFDIR iTypes[4] "directory type"
+            Send AssertIAreEqual 493 iPerms[4] "directory permission"
+            Send AssertSAreEqual "folder2/" sNames[5] "AddDirectory keeps one slash"
+            Send AssertIAreEqual 448 iPerms[6] "piDirectoryPermission"
+            Send AssertSAreEqual "link.txt" sNames[7] "symlink name"
+            Send AssertIAreEqual AE_IFLNK iTypes[7] "symlink type"
+            Send AssertSAreEqual "texts/target.txt" sSymlinks[7] "symlink target"
+
+            // an empty path name is refused
+            Get AddText of hoWriter "" "x" to iResult
+            Send Assert (iResult < ARCHIVE_OK) "AddText with an empty name"
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+    Object oAddFileTest is a cTest
+        Procedure Test
+            Handle hoWriter hFile
+            Integer iResult iBlock iVoid
+            String sFile sFile2 sFile3 sData sContent
+            BigInt iSize iTicks
+            UChar[] ucOut
+            String[] sNames
+            Integer[] iTypes iPerms iNanos
+            BigInt[] iSizes iMTimes
+            Boolean bSame
+
+            // a file of 1500 blocks (1.5 MB: two read chunks), every block is different
+            Delegate Get TempFile "AddFile-ünï.bin" to sFile
+            Move "" to sData
+            For iBlock from 0 to 1499
+                Move (sData + Left ("BLOCK " + String (iBlock) + " " + Repeat ("-", 1024), 1024)) to sData
+            Loop
+            Send WriteTextFile sFile sData
+            // time stamp 1700000000 s + 123456700 ns
+            Move ((1700000000 + 11644473600) * 10000000 + 1234567) to iTicks
+            Move (wwtestCreateFileW (sFile, 256, 7, 0, 3, 128, 0)) to hFile
+            Send Assert (hFile <> INVALID_HANDLE_VALUE) "open the file to set the time"
+            Move (wwtestSetFileTime (hFile, 0, 0, AddressOf (iTicks))) to iVoid
+            Move (wwtestCloseHandle (hFile)) to iVoid
+
+            Delegate Get TempFile "AddFile-second.txt" to sFile2
+            Send WriteTextFile sFile2 "small file"
+            Delegate Get TempFile "AddFile-empty.txt" to sFile3
+            Send WriteTextFile sFile3 ""
+
+            Get NewWriter to hoWriter
+            Get SetFormatPax of hoWriter to iResult
+            Get OpenMemory of hoWriter 4194304 to iResult
+            Get AddFile of hoWriter sFile "data\ünï.bin" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "AddFile with a name"
+            Get AddFile of hoWriter sFile2 "" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "AddFile without a name"
+            Get AddFile of hoWriter sFile3 "empty.txt" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "AddFile of an empty file"
+            Get AddFile of hoWriter (sFile + ".does-not-exist") "x" to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "AddFile of a missing file"
+            Get psLastError of hoWriter to sContent
+            Send Assert (Pos ("does not exist", sContent) > 0) ("error text:" * sContent)
+            Send ClearLastResult of hoWriter
+            Get CloseWriter of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "close"
+            Get GetOutput of hoWriter (&ucOut) to iSize
+            Send Destroy of hoWriter
+
+            Get ReadMemory ucOut "" to iResult
+            Send AssertIAreEqual 3 iResult "three entries"
+            Get pasNames to sNames
+            Get paiTypes to iTypes
+            Get paiPerms to iPerms
+            Get paiNanos to iNanos
+            Get pabiSizes to iSizes
+            Get pabiMTimes to iMTimes
+            Send AssertSAreEqual "data/ünï.bin" sNames[0] "archive name"
+            Send AssertIAreEqual AE_IFREG iTypes[0] "type"
+            Send AssertIAreEqual 420 iPerms[0] "permission"
+            Send AssertBIAreEqual (SizeOfString (sData)) iSizes[0] "size"
+            Send AssertBIAreEqual 1700000000 iMTimes[0] "mtime of the file"
+            Send AssertIAreEqual 123456700 iNanos[0] "mtime nanoseconds of the file"
+            Get EntryContent "data/ünï.bin" to sContent
+            Move (sContent = sData) to bSame
+            Send Assert bSame "content of the file with chunked reading"
+            Send AssertIAreEqual 1536000 (SizeOfString (sContent)) "content size"
+            Send AssertSAreEqual "AddFile-second.txt" sNames[1] "name without path"
+            Get EntryContent "AddFile-second.txt" to sContent
+            Send AssertSAreEqual "small file" sContent "small file content"
+            Send AssertSAreEqual "empty.txt" sNames[2] "empty file"
+            Send AssertBIAreEqual 0 iSizes[2] "empty file size"
+            EraseFile sFile
+            EraseFile sFile2
+            EraseFile sFile3
+        End_Procedure
+    End_Object
+
+    Object oAddFolderTreeTest is a cTest
+        Procedure Test
+            Handle hoWriter
+            Integer iResult
+            String sRoot
+            BigInt iSize
+            UChar[] ucOut
+
+            Get BuildTreeSource to sRoot
+
+            // with a prefix, as tar
+            Get NewWriter to hoWriter
+            Get SetFormatPax of hoWriter to iResult
+            Get OpenMemory of hoWriter 1048576 to iResult
+            Get AddFolderTree of hoWriter sRoot "pkg" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "AddFolderTree with prefix"
+            Get CloseWriter of hoWriter to iResult
+            Get GetOutput of hoWriter (&ucOut) to iSize
+            Send Destroy of hoWriter
+            Get ReadMemory ucOut "" to iResult
+            Send AssertIAreEqual 8 iResult "entries with prefix"
+            Send AssertTreeEntries "pkg/" 8 "tar with prefix"
+
+            // with a prefix with a slash and a folder name with slashes, as zip
+            Get NewWriter to hoWriter
+            Get SetFormatZip of hoWriter to iResult
+            Get OpenMemory of hoWriter 1048576 to iResult
+            Get AddFolderTree of hoWriter (Replace ("\", sRoot, "/")) "pkg/" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "AddFolderTree zip"
+            Get CloseWriter of hoWriter to iResult
+            Get GetOutput of hoWriter (&ucOut) to iSize
+            Send Destroy of hoWriter
+            Get ReadMemory ucOut "" to iResult
+            Send AssertIAreEqual 8 iResult "zip entries with prefix"
+            Send AssertTreeEntries "pkg/" 8 "zip with prefix"
+
+            // without a prefix: no root entry
+            Get NewWriter to hoWriter
+            Get SetFormatUstar of hoWriter to iResult
+            Get OpenMemory of hoWriter 1048576 to iResult
+            Get AddFolderTree of hoWriter sRoot "" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "AddFolderTree without prefix"
+            Get CloseWriter of hoWriter to iResult
+            Get GetOutput of hoWriter (&ucOut) to iSize
+            Send Destroy of hoWriter
+            Get ReadMemory ucOut "" to iResult
+            Send AssertIAreEqual 7 iResult "entries without prefix"
+            Send AssertTreeEntries "" 7 "tar without prefix"
+
+            Send RemoveTree sRoot
+        End_Procedure
+    End_Object
+
+    Object oCreateArchiveTest is a cTest
+        Procedure CheckCreated String sName Integer eFormat Integer eFilter String[] sFiles Integer eBase Integer eExpectedFilter
+            Handle hoWriter
+            Integer iResult iFormat
+            String sFile sContent
+            Boolean bHas
+
+            Get NewWriter to hoWriter
+            Delegate Get TempFile sName to sFile
+            Get CreateArchive of hoWriter sFile sFiles eFormat eFilter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult (sName * "CreateArchive")
+            Get HasHandle of hoWriter to bHas
+            Send AssertFalse bHas (sName * "writer is freed after CreateArchive")
+            Delegate Get ReadFile sFile "" to iResult
+            Send AssertIAreEqual 9 iResult (sName * "single file + TreeSrc/ with 8 entries")
+            Delegate Get piFormat to iFormat
+            Send AssertIAreEqual eBase (iFormat iand ARCHIVE_FORMAT_BASE_MASK) (sName * "format")
+            Delegate Get piFilterCode to iResult
+            Send AssertIAreEqual eExpectedFilter iResult (sName * "filter")
+            Delegate Get EntryContent "single-ünï.txt" to sContent
+            Send AssertSAreEqual "Single file" sContent (sName * "single file stored under its file name")
+            Delegate Send AssertTreeEntries "TreeSrc/" 9 sName
+            EraseFile sFile
+            Send Destroy of hoWriter
+        End_Procedure
+
+        Procedure Test
+            Handle hoWriter
+            Integer iResult
+            String sRoot sSingle sFile
+            String[] sFiles sBad
+            Boolean bHas
+
+            Delegate Get BuildTreeSource to sRoot
+            Delegate Get TempFile "single-ünï.txt" to sSingle
+            Delegate Send WriteTextFile sSingle "Single file"
+            Move sSingle to sFiles[0]
+            Move (Left (sRoot, Length (sRoot) - 1)) to sFiles[1] // folder without trailing backslash
+
+            Send CheckCreated "created.zip" ARCHIVE_FORMAT_ZIP ARCHIVE_FILTER_NONE sFiles ARCHIVE_FORMAT_ZIP ARCHIVE_FILTER_NONE
+            Send CheckCreated "created.tar.gz" ARCHIVE_FORMAT_TAR_PAX_RESTRICTED ARCHIVE_FILTER_GZIP sFiles ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_GZIP
+            Send CheckCreated "created.7z" ARCHIVE_FORMAT_7ZIP ARCHIVE_FILTER_NONE sFiles ARCHIVE_FORMAT_7ZIP ARCHIVE_FILTER_NONE
+            Send CheckCreated "created.tar.xz" ARCHIVE_FORMAT_TAR_USTAR ARCHIVE_FILTER_XZ sFiles ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_XZ
+
+            // a missing file and an invalid format
+            Get NewWriter to hoWriter
+            Move sSingle to sBad[0]
+            Move (sSingle + ".missing") to sBad[1]
+            Delegate Get TempFile "bad.zip" to sFile
+            Get CreateArchive of hoWriter sFile sBad ARCHIVE_FORMAT_ZIP ARCHIVE_FILTER_NONE to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "CreateArchive with a missing file"
+            Get HasHandle of hoWriter to bHas
+            Send AssertFalse bHas "writer is freed after a failure"
+            EraseFile sFile
+            Get CreateArchive of hoWriter sFile sFiles 12345 ARCHIVE_FILTER_NONE to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "CreateArchive with an invalid format"
+            Get CreateArchive of hoWriter sFile sFiles ARCHIVE_FORMAT_ZIP 9999 to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "CreateArchive with an invalid filter"
+            EraseFile sFile
+            Send Destroy of hoWriter
+
+            EraseFile sSingle
+            Delegate Send RemoveTree sRoot
+        End_Procedure
+    End_Object
+
+    Object oErrorHandlingTest is a cTest
+        Procedure Test
+            Handle hoWriter
+            Integer iResult
+            String sError
+
+            // pbRaiseErrors False: the code is returned and remembered
+            Get NewWriter to hoWriter
+            Get SetFormatUstar of hoWriter to iResult
+            Get WriteHeaderPointer of hoWriter 0 to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "header of a null entry"
+            Get piLastResult of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "piLastResult"
+            Get psLastError of hoWriter to sError
+            Send Assert (sError <> "") "psLastError"
+            Send ClearLastResult of hoWriter
+            Get piLastResult of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "piLastResult cleared"
+
+            // writing before the archive is open is a libarchive error
+            Get WriteString of hoWriter "data" to iResult
+            Send Assert (iResult < 0) "writing data before the archive is open fails"
+            Get piLastResult of hoWriter to iResult
+            Send Assert (iResult <= ARCHIVE_FAILED) "the failure is remembered"
+            Get psErrorString of hoWriter to sError
+            Send Assert (sError <> "") "libarchive error text"
+            Get piErrorNumber of hoWriter to iResult
+            Send Assert (iResult <> 0) "libarchive error number"
+            Send ClearError of hoWriter
+            Get psErrorString of hoWriter to sError
+            Send AssertSAreEqual "" sError "ClearError"
+
+            // pbRaiseErrors True: a DataFlex error
+            Set pbRaiseErrors of hoWriter to True
+            Send ExpectError DFERR_PROGRAM
+            Get WriteHeaderPointer of hoWriter 0 to iResult
+            Send UnExpectError DFERR_PROGRAM
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "error raised and code returned"
+            Send Destroy of hoWriter
+        End_Procedure
+    End_Object
+
+
+    // Names with characters outside of the ANSI code page: zip gets hdrcharset=UTF-8 from SetFormatZip (without it
+    // archive.dll corrupts its heap), pax and 7zip store such names as they are.
+    Object oUnicodeNamesTest is a cTest
+        Procedure CheckName Integer iMsg String sLabel
+            Handle hoWriter
+            Integer iResult
+            BigInt iSize
+            UChar[] ucOut
+            String sContent
+
+            Get NewWriter to hoWriter
+            Get iMsg of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "format")
+            Get OpenMemory of hoWriter 1048576 to iResult
+            Get AddText of hoWriter "日本語-ünï/ファイル.txt" "Inhalt: äöü 日本語" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "AddText")
+            Get CloseWriter of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "close")
+            Get GetOutput of hoWriter (&ucOut) to iSize
+            Send Destroy of hoWriter
+            Delegate Get ReadMemory ucOut "" to iResult
+            Send AssertIAreEqual 1 iResult (sLabel * "read back")
+            Delegate Get EntryContent "日本語-ünï/ファイル.txt" to sContent
+            Send AssertSAreEqual "Inhalt: äöü 日本語" sContent (sLabel * "unicode name and content")
+        End_Procedure
+
+        Procedure Test
+            Integer iMsg
+
+            Move (RefFunc (SetFormatZip)) to iMsg
+            Send CheckName iMsg "zip"
+            Move (RefFunc (SetFormat7zip)) to iMsg
+            Send CheckName iMsg "7zip"
+            Move (RefFunc (SetFormatPax)) to iMsg
+            Send CheckName iMsg "pax"
+            Send TestEuro
+        End_Procedure
+
+        // The euro sign is part of the ANSI code page, but without hdrcharset=UTF-8 it already crashed the zip writer.
+        Procedure CheckEuro Integer iMsg String sLabel
+            Handle hoWriter
+            Integer iResult
+            BigInt iSize
+            UChar[] ucOut
+            String sContent
+
+            Get NewWriter to hoWriter
+            Get pbUtf8HeaderCharset of hoWriter to iResult
+            Send AssertIAreEqual 1 iResult (sLabel * "pbUtf8HeaderCharset default")
+            Get iMsg of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "format")
+            Get OpenMemory of hoWriter 1048576 to iResult
+            Get AddText of hoWriter "a-€-b.txt" "5 €" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "AddText")
+            Get CloseWriter of hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "close")
+            Get GetOutput of hoWriter (&ucOut) to iSize
+            Send Destroy of hoWriter
+            Delegate Get ReadMemory ucOut "" to iResult
+            Send AssertIAreEqual 1 iResult (sLabel * "read back")
+            Delegate Get EntryContent "a-€-b.txt" to sContent
+            Send AssertSAreEqual "5 €" sContent (sLabel * "euro sign in name and content")
+        End_Procedure
+
+        Procedure TestEuro
+            Integer iMsg
+
+            Move (RefFunc (SetFormatZip)) to iMsg
+            Send CheckEuro iMsg "euro zip"
+            Move (RefFunc (SetFormatPax)) to iMsg
+            Send CheckEuro iMsg "euro pax"
+            Move (RefFunc (SetFormat7zip)) to iMsg
+            Send CheckEuro iMsg "euro 7zip"
+        End_Procedure
+    End_Object
+
+End_Object

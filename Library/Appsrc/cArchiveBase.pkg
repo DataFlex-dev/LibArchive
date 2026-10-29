@@ -1,0 +1,288 @@
+﻿Use Archive.h.pkg
+
+// Base class of the LibArchive wrapper classes that own a libarchive "struct archive" handle
+// (cArchiveReader, cArchiveWriter, cArchiveDiskReader, cArchiveDiskWriter, cArchiveMatch).
+//
+// Conventions of all wrapper classes:
+//  - Methods return the libarchive result code (ARCHIVE_OK, ARCHIVE_EOF, ARCHIVE_WARN, ARCHIVE_RETRY, ARCHIVE_FAILED,
+//    ARCHIVE_FATAL) unless documented otherwise.
+//  - Every result goes through CheckResult. A result of ARCHIVE_FAILED or worse is remembered in piLastResult and
+//    psLastError and, when pbRaiseErrors is True (default), reported with a DataFlex Error DFERR_PROGRAM.
+//    Set pbRaiseErrors to False to inspect the returned code yourself. Override OnError to handle errors differently.
+//  - Strings are passed to libarchive as UTF-8 (DataFlex strings of programs whose source files have a BOM) and
+//    file names are passed as wide strings.
+//  - Properties that map directly to libarchive getters/setters are implemented with Get/Set so they can be used
+//    as DataFlex properties.
+Class cArchiveBase is a cObject
+    Procedure Construct_Object
+        Forward Send Construct_Object
+
+        // The libarchive handle (struct archive *). 0 when there is none.
+        { DesignTime = False }
+        Property Pointer ppArchive 0
+
+        // True: a result of ARCHIVE_FAILED or ARCHIVE_FATAL raises a DataFlex error (Error DFERR_PROGRAM).
+        Property Boolean pbRaiseErrors True
+
+        // Result and error text of the last method that failed (cleared by ClearLastResult).
+        { DesignTime = False }
+        Property Integer piLastResult ARCHIVE_OK
+        { DesignTime = False }
+        Property String psLastError ""
+    End_Procedure
+
+    // ---- helpers for the subclasses -----------------------------------------------------------------------------
+
+    // Converts a zero terminated string pointer returned by libarchive to a DataFlex string. 0 gives "".
+    // The text is copied; the memory stays owned by libarchive.
+    Function PointerText Pointer pText Returns String
+        If (pText = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerToString (pText))
+    End_Function
+
+    // Converts a zero terminated wide string pointer returned by libarchive to a DataFlex string. 0 gives "".
+    Function PointerWideText Pointer pText Returns String
+        If (pText = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerToWString (pText))
+    End_Function
+
+    Procedure Destroy_Object
+        Send FreeHandle
+        Forward Send Destroy_Object
+    End_Procedure
+
+    // ---- handle -----------------------------------------------------------------------------------------------
+
+    // True when the object has a libarchive handle.
+    Function HasHandle Returns Boolean
+        Function_Return (ppArchive (Self) <> 0)
+    End_Function
+
+    // Releases the libarchive handle (archive_free, which closes the archive when needed). Subclasses that need
+    // another free function (cArchiveMatch) override this. Safe to call when there is no handle.
+    Procedure FreeHandle
+        Pointer pArchive
+        Integer iResult
+
+        Get ppArchive to pArchive
+        If (pArchive <> 0) Begin
+            Move (archive_free (pArchive)) to iResult
+            Set ppArchive to 0
+        End
+    End_Procedure
+
+    // ---- result and error handling ----------------------------------------------------------------------------
+
+    // Hook that is called for every result of ARCHIVE_FAILED or worse. The default raises a DataFlex error when
+    // pbRaiseErrors is True. sOperation names the failing operation.
+    Procedure OnError Integer iResult String sOperation String sErrorText
+        If (pbRaiseErrors (Self)) Begin
+            Error DFERR_PROGRAM (SFormat ("%1 failed (%2): %3", sOperation, String (iResult), sErrorText))
+        End
+    End_Procedure
+
+    // Every wrapper method passes its libarchive result through this function. It stores failures in piLastResult and
+    // psLastError, calls OnError for ARCHIVE_FAILED or worse and returns iResult unchanged.
+    Function CheckResult Integer iResult String sOperation Returns Integer
+        String sErrorText
+
+        If (iResult <= ARCHIVE_FAILED) Begin
+            Get psErrorString to sErrorText
+            Set piLastResult to iResult
+            Set psLastError to sErrorText
+            Send OnError iResult sOperation sErrorText
+        End
+        Function_Return iResult
+    End_Function
+
+    Procedure ClearLastResult
+        Set piLastResult to ARCHIVE_OK
+        Set psLastError to ""
+    End_Procedure
+
+    // Error number of the last failed operation on the handle (archive_errno).
+    { MethodType = Property }
+    Function piErrorNumber Returns Integer
+        Pointer pArchive
+        Get ppArchive to pArchive
+        If (pArchive = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_errno (pArchive))
+    End_Function
+
+    // Error text of the last failed operation on the handle (archive_error_string). Empty when there is none.
+    { MethodType = Property }
+    Function psErrorString Returns String
+        Pointer pArchive
+        Get ppArchive to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerText (Self, archive_error_string (pArchive)))
+    End_Function
+
+    // Clears the error number and error text of the handle (archive_clear_error) and the last result.
+    Procedure ClearError
+        Pointer pArchive
+        Void_Type iVoid
+
+        Get ppArchive to pArchive
+        If (pArchive <> 0) Begin
+            Move (archive_clear_error (pArchive)) to iVoid
+        End
+        Send ClearLastResult
+    End_Procedure
+
+    // Sets the error number and error text of the handle (archive_set_error).
+    Procedure SetError Integer iErrorNumber String sMessage
+        Pointer pArchive
+        String sFormat
+        Void_Type iVoid
+
+        Get ppArchive to pArchive
+        If (pArchive <> 0) Begin
+            Move "%s" to sFormat
+            // The C function is variadic (printf style): the message is the argument of the single %s.
+            Move (archive_set_error (pArchive, iErrorNumber, AddressOf (sFormat), AddressOf (sMessage))) to iVoid
+        End
+    End_Procedure
+
+    // Copies the error number and error text from another wrapper object (archive_copy_error).
+    Procedure CopyError Handle hoSource
+        Pointer pArchive pSource
+        Void_Type iVoid
+
+        Get ppArchive to pArchive
+        Get ppArchive of hoSource to pSource
+        If (pArchive <> 0 and pSource <> 0) Begin
+            Move (archive_copy_error (pArchive, pSource)) to iVoid
+        End
+    End_Procedure
+
+    // ---- archive information ----------------------------------------------------------------------------------
+
+    // Number of entries processed so far (archive_file_count).
+    { MethodType = Property }
+    Function piFileCount Returns Integer
+        Pointer pArchive
+        Get ppArchive to pArchive
+        If (pArchive = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_file_count (pArchive))
+    End_Function
+
+    // Format code (ARCHIVE_FORMAT_*) of the current entry (archive_format).
+    { MethodType = Property }
+    Function peFormat Returns Integer
+        Pointer pArchive
+        Get ppArchive to pArchive
+        If (pArchive = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_format (pArchive))
+    End_Function
+
+    // Human readable format name of the current entry (archive_format_name).
+    { MethodType = Property }
+    Function psFormatName Returns String
+        Pointer pArchive
+        Get ppArchive to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerText (Self, archive_format_name (pArchive)))
+    End_Function
+
+    // Number of filters in the pipeline (archive_filter_count). Filter 0 is the one closest to the format, -1 is the last.
+    { MethodType = Property }
+    Function piFilterCount Returns Integer
+        Pointer pArchive
+        Get ppArchive to pArchive
+        If (pArchive = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_filter_count (pArchive))
+    End_Function
+
+    // Bytes processed by a filter (archive_filter_bytes). iIndex -1 is the last filter.
+    Function FilterBytes Integer iIndex Returns BigInt
+        Pointer pArchive
+        Get ppArchive to pArchive
+        If (pArchive = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_filter_bytes (pArchive, iIndex))
+    End_Function
+
+    // Filter code (ARCHIVE_FILTER_*) of a filter (archive_filter_code). iIndex -1 is the last filter.
+    Function FilterCode Integer iIndex Returns Integer
+        Pointer pArchive
+        Get ppArchive to pArchive
+        If (pArchive = 0) Begin
+            Function_Return 0
+        End
+        Function_Return (archive_filter_code (pArchive, iIndex))
+    End_Function
+
+    // Name of a filter (archive_filter_name). iIndex -1 is the last filter.
+    Function FilterName Integer iIndex Returns String
+        Pointer pArchive
+        Get ppArchive to pArchive
+        If (pArchive = 0) Begin
+            Function_Return ""
+        End
+        Function_Return (PointerText (Self, archive_filter_name (pArchive, iIndex)))
+    End_Function
+
+    // ---- library version (do not need a handle) -----------------------------------------------------------------
+
+    // Version of the loaded DLL as a number: major * 1000000 + minor * 1000 + patch (archive_version_number).
+    { MethodType = Property }
+    Function piVersionNumber Returns Integer
+        Function_Return (archive_version_number ())
+    End_Function
+
+    // "libarchive 3.7.7" (archive_version_string).
+    { MethodType = Property }
+    Function psVersionString Returns String
+        Function_Return (PointerText (Self, archive_version_string ()))
+    End_Function
+
+    // Version of libarchive followed by the libraries it was built with (archive_version_details).
+    { MethodType = Property }
+    Function psVersionDetails Returns String
+        Function_Return (PointerText (Self, archive_version_details ()))
+    End_Function
+
+    // Versions of the compression libraries libarchive was built with; empty when built without (archive_zlib_version etc.).
+    { MethodType = Property }
+    Function psZlibVersion Returns String
+        Function_Return (PointerText (Self, archive_zlib_version ()))
+    End_Function
+
+    { MethodType = Property }
+    Function psLibLzmaVersion Returns String
+        Function_Return (PointerText (Self, archive_liblzma_version ()))
+    End_Function
+
+    { MethodType = Property }
+    Function psBzlibVersion Returns String
+        Function_Return (PointerText (Self, archive_bzlib_version ()))
+    End_Function
+
+    { MethodType = Property }
+    Function psLibLz4Version Returns String
+        Function_Return (PointerText (Self, archive_liblz4_version ()))
+    End_Function
+
+    { MethodType = Property }
+    Function psLibZstdVersion Returns String
+        Function_Return (PointerText (Self, archive_libzstd_version ()))
+    End_Function
+End_Class

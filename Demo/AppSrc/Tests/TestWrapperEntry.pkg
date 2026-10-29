@@ -1,0 +1,1252 @@
+﻿// Tests of the wrapper classes cArchiveEntry and cArchiveLinkResolver. The classes (cArchiveEntry.pkg,
+// cArchiveLinkResolver.pkg) must be Used by the test application before this package is included.
+// Entries are created through the wrapper and verified with the raw archive_entry_* externals, with libarchive
+// round trips (write an archive to memory, read it back) and between wrapper objects.
+Object oWrapperEntryTests is a cArchiveTestFixture
+    Set psTestFixtureName to "WrapperEntry"
+
+    // Wrapper objects the tests work with (declared here because objects with procedures can not be declared in a method).
+    Object oEntry is a cArchiveEntry
+    End_Object
+
+    Object oEntry2 is a cArchiveEntry
+    End_Object
+
+    Object oBorrowed is a cArchiveEntry
+    End_Object
+
+    // Writes a 32 bit little endian value into a byte buffer.
+    Procedure PutUInt32 UChar[] ByRef ucBuf Integer iOffset BigInt iValue
+        Integer iIndex iByte
+        BigInt iRest
+
+        Move iValue to iRest
+        For iIndex from 0 to 3
+            Move (Mod (iRest, 256)) to iByte
+            Move iByte to ucBuf[iOffset + iIndex]
+            Move ((iRest - iByte) / 256) to iRest
+        Loop
+    End_Procedure
+
+    // A string whose second byte is 0xFF, which is never valid in UTF-8 (a DataFlex string literal or Character (255) is
+    // always valid UTF-8, so the byte is patched in).
+    Function InvalidUtf8 Returns String
+        String sBad
+        UChar[] ucBytes
+        Boolean bOk
+
+        Move "abcd" to sBad
+        Move (ResizeArray (ucBytes, 3)) to ucBytes
+        Move 97 to ucBytes[0]
+        Move 255 to ucBytes[1]
+        Move 98 to ucBytes[2]
+        Move (MemCopy (AddressOf (sBad), AddressOf (ucBytes), 3)) to bOk
+        Function_Return sBad
+    End_Function
+
+    // ---- life cycle ---------------------------------------------------------------------------------------------
+
+    Object oLifeCycleTest is a cTest
+        Procedure Test
+            Pointer pRaw pOwn pArchive
+            String sRaw
+            Handle hoClone
+            Boolean bOk
+            Void_Type iVoid
+            Integer iResult
+
+            Send FreeEntry of oEntry // the test objects live as long as the application: start clean when the tests run again
+            Send AssertFalse (HasEntry (oEntry)) "no entry before CreateEntry"
+            Send AssertSAreEqual "" (psPathname (oEntry)) "empty path without entry"
+
+            Send CreateEntry of oEntry
+            Send Assert (HasEntry (oEntry)) "entry after CreateEntry"
+            Send Assert (pbOwnsEntry (oEntry)) "CreateEntry owns the entry"
+            Move (ppEntry (oEntry)) to pOwn
+            Send Assert (pOwn <> 0) "entry pointer"
+
+            // A borrowed entry is not freed by the wrapper.
+            Move (archive_entry_new ()) to pRaw
+            Move "raw.txt" to sRaw
+            Move (archive_entry_set_pathname_utf8 (pRaw, AddressOf (sRaw))) to iVoid
+            Send AttachEntry of oBorrowed pRaw False
+            Send AssertFalse (pbOwnsEntry (oBorrowed)) "borrowed entry is not owned"
+            Send AssertSAreEqual "raw.txt" (psPathname (oBorrowed)) "wrapper reads a raw entry"
+            Send FreeEntry of oBorrowed
+            Send AssertFalse (HasEntry (oBorrowed)) "FreeEntry forgets the entry"
+            Send AssertSAreEqual "raw.txt" (PointerToString (archive_entry_pathname_utf8 (pRaw))) "borrowed entry still valid after FreeEntry"
+            Move (archive_entry_free (pRaw)) to iVoid
+
+            // AttachEntry with bOwns True: the wrapper frees it (no crash, no leak check possible); then re-attach replaces.
+            Move (archive_entry_new ()) to pRaw
+            Send AttachEntry of oBorrowed pRaw True
+            Send Assert (pbOwnsEntry (oBorrowed)) "attached entry owned"
+            Send AssertPAreEqual pRaw (ppEntry (oBorrowed)) "attached pointer"
+            Send FreeEntry of oBorrowed
+
+            // CreateEntryForArchive with a real archive handle and with 0.
+            Move (archive_read_new ()) to pArchive
+            Send CreateEntryForArchive of oBorrowed pArchive
+            Send Assert (HasEntry (oBorrowed)) "entry for archive"
+            Set psPathname of oBorrowed to "for-archive.txt"
+            Send AssertSAreEqual "for-archive.txt" (psPathname (oBorrowed)) "entry for archive works"
+            Send FreeEntry of oBorrowed
+            Move (archive_read_free (pArchive)) to iResult
+            Send CreateEntryForArchive of oBorrowed 0
+            Send Assert (HasEntry (oBorrowed)) "entry for no archive"
+            Send FreeEntry of oBorrowed
+
+            // Clear resets all fields.
+            Set psPathname of oEntry to "clear-me.txt"
+            Set piSize of oEntry to 99
+            Set piUid of oEntry to 5
+            Send Clear of oEntry
+            Send Assert (HasEntry (oEntry)) "Clear keeps the entry"
+            Send AssertSAreEqual "" (psPathname (oEntry)) "Clear empties path"
+            Send AssertFalse (pbSizeIsSet (oEntry)) "Clear unsets size"
+            Send AssertFalse (pbUidIsSet (oEntry)) "Clear unsets uid"
+
+            // CloneEntry makes an independent deep copy.
+            Set psPathname of oEntry to "original.txt"
+            Set piSize of oEntry to 1234
+            Set piMode of oEntry to (AE_IFREG ior 420)
+            Send XattrAddText of oEntry "user.k" "v"
+            Move (CloneEntry (oEntry)) to hoClone
+            Send Assert (hoClone <> 0) "clone handle"
+            Send AssertFalse (hoClone = oEntry) "clone is another object"
+            Send Assert (pbOwnsEntry (hoClone)) "clone owns its entry"
+            Send AssertFalse (ppEntry (hoClone) = ppEntry (oEntry)) "clone has its own entry"
+            Send AssertSAreEqual "original.txt" (psPathname (hoClone)) "clone path"
+            Send AssertBIAreEqual 1234 (piSize (hoClone)) "clone size"
+            Send AssertIAreEqual (AE_IFREG ior 420) (piMode (hoClone)) "clone mode"
+            Send AssertIAreEqual 1 (XattrCount (hoClone)) "clone xattr"
+            Set psPathname of oEntry to "changed.txt"
+            Send AssertSAreEqual "original.txt" (psPathname (hoClone)) "clone independent of original"
+            Send Request_Destroy_Object of hoClone
+            Send AssertSAreEqual "changed.txt" (psPathname (oEntry)) "original survives destroying the clone"
+
+            // An object without entry gives no clone and neutral values.
+            Send FreeEntry of oEntry
+            Move (CloneEntry (oEntry)) to hoClone
+            Send AssertIAreEqual 0 hoClone "no clone without entry"
+            Send AssertBIAreEqual 0 (piSize (oEntry)) "neutral size without entry"
+            Send AssertFalse (pbSizeIsSet (oEntry)) "neutral flag without entry"
+        End_Procedure
+    End_Object
+
+    // ---- names --------------------------------------------------------------------------------------------------
+
+    Object oPathnameTest is a cTest
+        Procedure Test
+            Pointer pEntry
+            Pointer pWriter pReader pRead
+            Integer iResult
+            BigInt iUsed
+            UChar[] ucArchive
+            Void_Type iVoid
+
+            Send CreateEntry of oEntry
+            Move (ppEntry (oEntry)) to pEntry
+
+            Set psPathname of oEntry to "héllo-ünï.txt"
+            Send AssertSAreEqual "héllo-ünï.txt" (psPathname (oEntry)) "UTF-8 round trip"
+            Send AssertSAreEqual "héllo-ünï.txt" (PointerToString (archive_entry_pathname_utf8 (pEntry))) "raw UTF-8 value"
+            Send AssertSAreEqual "héllo-ünï.txt" (psPathnameWide (oEntry)) "wide value"
+
+            Set psPathnameWide of oEntry to "wide-ünï.txt"
+            Send AssertSAreEqual "wide-ünï.txt" (psPathname (oEntry)) "wide setter visible as UTF-8"
+            Send AssertSAreEqual "wide-ünï.txt" (psPathnameWide (oEntry)) "wide round trip"
+
+            Set psPathnameLocale of oEntry to "plain.txt"
+            Send AssertSAreEqual "plain.txt" (psPathname (oEntry)) "locale setter visible as UTF-8"
+            Send AssertSAreEqual "plain.txt" (psPathnameLocale (oEntry)) "locale round trip"
+            Send AssertSAreEqual "plain.txt" (PointerToString (archive_entry_pathname (pEntry))) "raw locale value"
+
+            Send SetPathnameUtf8 of oEntry "set-utf8.txt"
+            Send AssertSAreEqual "set-utf8.txt" (psPathname (oEntry)) "SetPathnameUtf8"
+            Send CopyPathnameLocale of oEntry "copy-locale.txt"
+            Send AssertSAreEqual "copy-locale.txt" (psPathname (oEntry)) "CopyPathnameLocale"
+
+            // Invalid UTF-8 is reported by the property setter.
+            Send ExpectError DFERR_PROGRAM
+            Set psPathname of oEntry to (InvalidUtf8 (Self))
+            Send UnExpectError DFERR_PROGRAM
+            Send AssertSAreEqual "copy-locale.txt" (psPathname (oEntry)) "invalid UTF-8 is not passed to libarchive"
+
+            // Valid text that the ANSI code page can not represent is accepted and read back identically.
+            Set psPathname of oEntry to "日本語/ファイル.txt"
+            Send AssertSAreEqual "日本語/ファイル.txt" (psPathname (oEntry)) "CJK path round trip"
+            Send AssertSAreEqual "日本語/ファイル.txt" (PointerToString (archive_entry_pathname_utf8 (pEntry))) "raw CJK path"
+            Send AssertSAreEqual "日本語/ファイル.txt" (psPathnameWide (oEntry)) "CJK path as wide text"
+            Send CopyPathnameLocale of oEntry "ascii.txt"
+            Set psHardlink of oEntry to "日本語-ハード.txt"
+            Send AssertSAreEqual "日本語-ハード.txt" (psHardlink (oEntry)) "CJK hard link"
+            Set psSymlink of oEntry to "日本語-シンボル.txt"
+            Send AssertSAreEqual "日本語-シンボル.txt" (psSymlink (oEntry)) "CJK symlink"
+            Set psLink of oEntry to "日本語-リンク.txt"
+            Send AssertSAreEqual "日本語-リンク.txt" (psLink (oEntry)) "CJK link"
+            Set psUname of oEntry to "山田"
+            Send AssertSAreEqual "山田" (psUname (oEntry)) "CJK user name"
+            Set psGname of oEntry to "開発"
+            Send AssertSAreEqual "開発" (psGname (oEntry)) "CJK group name"
+            Send Assert (pbLastTextLossless (oEntry) or not (pbLastTextLossless (oEntry))) "pbLastTextLossless readable"
+            Set psPathname of oEntry to "plain-ascii.txt"
+            Send Assert (pbLastTextLossless (oEntry)) "ASCII text converts without loss"
+            Set psPathname of oEntry to "日本語.txt"
+            Send AssertSAreEqual "日本語.txt" (psPathname (oEntry)) "CJK path set again"
+
+            // An entry with a CJK name can be written to an archive and read back.
+            Set psHardlink of oEntry to ""
+            Set psSymlink of oEntry to ""
+            Set piMode of oEntry to (AE_IFREG ior 420)
+            Set piSize of oEntry to 0
+            Move (ResizeArray (ucArchive, 65536)) to ucArchive
+            Move (archive_write_new ()) to pWriter
+            Move (archive_write_set_format (pWriter, ARCHIVE_FORMAT_TAR_PAX_INTERCHANGE)) to iResult
+            Move (archive_write_open_memory (pWriter, AddressOf (ucArchive), 65536, AddressOf (iUsed))) to iResult
+            Move (archive_write_header (pWriter, pEntry)) to iResult
+            Send AssertArchiveOk iResult pWriter "write header of an entry with a CJK name"
+            Move (archive_write_close (pWriter)) to iResult
+            Move (archive_write_free (pWriter)) to iResult
+            Move (archive_read_new ()) to pReader
+            Move (archive_read_support_format_all (pReader)) to iResult
+            Move (archive_read_open_memory (pReader, AddressOf (ucArchive), iUsed)) to iResult
+            Move (archive_read_next_header (pReader, AddressOf (pRead))) to iResult
+            Send AssertArchiveOk iResult pReader "read header of the CJK entry"
+            Send AttachEntry of oBorrowed pRead False
+            Send AssertSAreEqual "日本語.txt" (psPathname (oBorrowed)) "CJK name read back from the archive"
+            Send FreeEntry of oBorrowed
+            Move (archive_read_free (pReader)) to iResult
+
+            Set psPathname of oEntry to ""
+            Send AssertSAreEqual "" (psPathname (oEntry)) "empty string removes the path"
+            Send AssertPAreEqual 0 (archive_entry_pathname_utf8 (pEntry)) "raw path is NULL after removal"
+        End_Procedure
+    End_Object
+
+    Object oOwnerNamesTest is a cTest
+        Procedure Test
+            Pointer pEntry
+
+            Send CreateEntry of oEntry
+            Move (ppEntry (oEntry)) to pEntry
+
+            Set psUname of oEntry to "Jürgen"
+            Send AssertSAreEqual "Jürgen" (psUname (oEntry)) "uname UTF-8"
+            Send AssertSAreEqual "Jürgen" (PointerToString (archive_entry_uname_utf8 (pEntry))) "raw uname UTF-8"
+            Send AssertSAreEqual "Jürgen" (psUnameWide (oEntry)) "uname wide"
+            Set psUnameWide of oEntry to "Zoë"
+            Send AssertSAreEqual "Zoë" (psUname (oEntry)) "uname wide setter"
+            Set psUnameLocale of oEntry to "alice"
+            Send AssertSAreEqual "alice" (psUname (oEntry)) "uname locale setter"
+            Send AssertSAreEqual "alice" (psUnameLocale (oEntry)) "uname locale getter"
+            Send SetUnameUtf8 of oEntry "bob"
+            Send AssertSAreEqual "bob" (psUname (oEntry)) "SetUnameUtf8"
+            Send CopyUnameLocale of oEntry "carol"
+            Send AssertSAreEqual "carol" (psUname (oEntry)) "CopyUnameLocale"
+            Set psUname of oEntry to ""
+            Send AssertSAreEqual "" (psUname (oEntry)) "uname removed"
+
+            Set psGname of oEntry to "Straße"
+            Send AssertSAreEqual "Straße" (psGname (oEntry)) "gname UTF-8"
+            Send AssertSAreEqual "Straße" (PointerToString (archive_entry_gname_utf8 (pEntry))) "raw gname UTF-8"
+            Send AssertSAreEqual "Straße" (psGnameWide (oEntry)) "gname wide"
+            Set psGnameWide of oEntry to "Équipe"
+            Send AssertSAreEqual "Équipe" (psGname (oEntry)) "gname wide setter"
+            Set psGnameLocale of oEntry to "staff"
+            Send AssertSAreEqual "staff" (psGname (oEntry)) "gname locale setter"
+            Send AssertSAreEqual "staff" (psGnameLocale (oEntry)) "gname locale getter"
+            Send SetGnameUtf8 of oEntry "wheel"
+            Send AssertSAreEqual "wheel" (psGname (oEntry)) "SetGnameUtf8"
+            Send CopyGnameLocale of oEntry "users"
+            Send AssertSAreEqual "users" (psGname (oEntry)) "CopyGnameLocale"
+            Set psGname of oEntry to ""
+            Send AssertSAreEqual "" (psGname (oEntry)) "gname removed"
+        End_Procedure
+    End_Object
+
+    Object oSourcePathTest is a cTest
+        Procedure Test
+            Pointer pEntry
+
+            Send CreateEntry of oEntry
+            Move (ppEntry (oEntry)) to pEntry
+            Send AssertSAreEqual "" (psSourcePath (oEntry)) "no source path yet"
+            Set psSourcePath of oEntry to "C:\Temp\ünï\file.txt"
+            Send AssertSAreEqual "C:\Temp\ünï\file.txt" (psSourcePath (oEntry)) "source path round trip"
+            Set psSourcePathLocale of oEntry to "C:\Temp\plain.txt"
+            Send AssertSAreEqual "C:\Temp\plain.txt" (psSourcePathLocale (oEntry)) "locale source path"
+            Send AssertSAreEqual "C:\Temp\plain.txt" (psSourcePath (oEntry)) "locale source path seen as wide"
+            Set psSourcePath of oEntry to ""
+            Send AssertSAreEqual "" (psSourcePath (oEntry)) "source path removed"
+        End_Procedure
+    End_Object
+
+    Object oLinksTest is a cTest
+        Procedure Test
+            Pointer pEntry
+
+            Send CreateEntry of oEntry
+            Move (ppEntry (oEntry)) to pEntry
+            Send AssertFalse (pbHardlinkIsSet (oEntry)) "no hard link yet"
+            Send AssertIAreEqual AE_SYMLINK_TYPE_UNDEFINED (peSymlinkType (oEntry)) "symlink type undefined"
+
+            // symbolic link
+            Set psSymlink of oEntry to "../ziel/däte.txt"
+            Send AssertSAreEqual "../ziel/däte.txt" (psSymlink (oEntry)) "symlink UTF-8"
+            Send AssertSAreEqual "../ziel/däte.txt" (PointerToString (archive_entry_symlink_utf8 (pEntry))) "raw symlink"
+            Send AssertSAreEqual "../ziel/däte.txt" (psSymlinkWide (oEntry)) "symlink wide"
+            Send AssertFalse (pbHardlinkIsSet (oEntry)) "a symlink is no hard link"
+            Send AssertSAreEqual "../ziel/däte.txt" (psLink (oEntry)) "psLink gives the symlink"
+            Set peSymlinkType of oEntry to AE_SYMLINK_TYPE_DIRECTORY
+            Send AssertIAreEqual AE_SYMLINK_TYPE_DIRECTORY (peSymlinkType (oEntry)) "symlink type"
+            Set peSymlinkType of oEntry to AE_SYMLINK_TYPE_FILE
+            Send AssertIAreEqual AE_SYMLINK_TYPE_FILE (peSymlinkType (oEntry)) "symlink type file"
+            Set psSymlinkWide of oEntry to "wide-ü"
+            Send AssertSAreEqual "wide-ü" (psSymlink (oEntry)) "symlink wide setter"
+            Set psSymlinkLocale of oEntry to "locale-target"
+            Send AssertSAreEqual "locale-target" (psSymlink (oEntry)) "symlink locale setter"
+            Send AssertSAreEqual "locale-target" (psSymlinkLocale (oEntry)) "symlink locale getter"
+            Send SetSymlinkUtf8 of oEntry "utf8-target"
+            Send AssertSAreEqual "utf8-target" (psSymlink (oEntry)) "SetSymlinkUtf8"
+            Send CopySymlinkLocale of oEntry "copy-target"
+            Send AssertSAreEqual "copy-target" (psSymlink (oEntry)) "CopySymlinkLocale"
+            Send ClearSymlink of oEntry
+            Send AssertSAreEqual "" (psSymlink (oEntry)) "ClearSymlink"
+            Send AssertSAreEqual "" (psLink (oEntry)) "no link left"
+
+            // hard link (shares one storage with the symlink in libarchive)
+            Set psHardlink of oEntry to "first.txt"
+            Send Assert (pbHardlinkIsSet (oEntry)) "hard link set"
+            Send AssertSAreEqual "first.txt" (psHardlink (oEntry)) "hard link UTF-8"
+            Send AssertSAreEqual "first.txt" (PointerToString (archive_entry_hardlink_utf8 (pEntry))) "raw hard link"
+            Send AssertSAreEqual "first.txt" (psHardlinkWide (oEntry)) "hard link wide"
+            Send AssertSAreEqual "" (psSymlink (oEntry)) "hard link is no symlink"
+            Send AssertSAreEqual "first.txt" (psLink (oEntry)) "psLink gives the hard link"
+            Set psHardlinkWide of oEntry to "wide-hü.txt"
+            Send AssertSAreEqual "wide-hü.txt" (psHardlink (oEntry)) "hard link wide setter"
+            Set psHardlinkLocale of oEntry to "locale-h.txt"
+            Send AssertSAreEqual "locale-h.txt" (psHardlink (oEntry)) "hard link locale setter"
+            Send AssertSAreEqual "locale-h.txt" (psHardlinkLocale (oEntry)) "hard link locale getter"
+            Send SetHardlinkUtf8 of oEntry "utf8-h.txt"
+            Send AssertSAreEqual "utf8-h.txt" (psHardlink (oEntry)) "SetHardlinkUtf8"
+            Send CopyHardlinkLocale of oEntry "copy-h.txt"
+            Send AssertSAreEqual "copy-h.txt" (psHardlink (oEntry)) "CopyHardlinkLocale"
+
+            // the link of the kind that is currently set
+            Set psLink of oEntry to "second.txt"
+            Send AssertSAreEqual "second.txt" (psHardlink (oEntry)) "psLink keeps the hard link kind"
+            Send SetLinkToSymlink of oEntry
+            Send AssertFalse (pbHardlinkIsSet (oEntry)) "SetLinkToSymlink"
+            Send AssertSAreEqual "second.txt" (psSymlink (oEntry)) "link target now a symlink"
+            Send SetLinkToHardlink of oEntry
+            Send Assert (pbHardlinkIsSet (oEntry)) "SetLinkToHardlink"
+            Send AssertSAreEqual "second.txt" (psHardlink (oEntry)) "link target now a hard link"
+            Send SetLinkLocale of oEntry "l-locale"
+            Send AssertSAreEqual "l-locale" (psLink (oEntry)) "SetLinkLocale"
+            Send SetLinkUtf8 of oEntry "l-utf8"
+            Send AssertSAreEqual "l-utf8" (psLink (oEntry)) "SetLinkUtf8"
+            Send CopyLinkLocale of oEntry "l-copy"
+            Send AssertSAreEqual "l-copy" (psLink (oEntry)) "CopyLinkLocale"
+            Send CopyLinkWide of oEntry "l-wide-ü"
+            Send AssertSAreEqual "l-wide-ü" (psLink (oEntry)) "CopyLinkWide"
+            Send ClearHardlink of oEntry
+            Send AssertFalse (pbHardlinkIsSet (oEntry)) "ClearHardlink"
+            Send AssertSAreEqual "" (psHardlink (oEntry)) "hard link removed"
+            Set psHardlink of oEntry to "again.txt"
+            Set psHardlink of oEntry to ""
+            Send AssertFalse (pbHardlinkIsSet (oEntry)) "empty string removes the hard link"
+
+            // invalid UTF-8 in the link setter
+            Send ExpectError DFERR_PROGRAM
+            Set psLink of oEntry to (InvalidUtf8 (Self))
+            Send UnExpectError DFERR_PROGRAM
+        End_Procedure
+    End_Object
+
+    // ---- times --------------------------------------------------------------------------------------------------
+
+    Object oTimesTest is a cTest
+        Procedure Test
+            Pointer pEntry
+
+            Send CreateEntry of oEntry
+            Move (ppEntry (oEntry)) to pEntry
+
+            // atime
+            Send AssertFalse (pbAtimeIsSet (oEntry)) "atime not set"
+            Set piAtime of oEntry to 1700000100
+            Send Assert (pbAtimeIsSet (oEntry)) "atime set"
+            Send AssertBIAreEqual 1700000100 (piAtime (oEntry)) "atime seconds"
+            Send AssertBIAreEqual 1700000100 (archive_entry_atime (pEntry)) "raw atime"
+            Send AssertIAreEqual 0 (piAtimeNsec (oEntry)) "atime nsec 0"
+            Set piAtimeNsec of oEntry to 123456789
+            Send AssertIAreEqual 123456789 (piAtimeNsec (oEntry)) "atime nsec"
+            Send AssertBIAreEqual 1700000100 (piAtime (oEntry)) "seconds kept when nsec set"
+            Send SetAtime of oEntry 1800000000 5
+            Send AssertBIAreEqual 1800000000 (piAtime (oEntry)) "SetAtime seconds"
+            Send AssertIAreEqual 5 (piAtimeNsec (oEntry)) "SetAtime nsec"
+            Send UnsetAtime of oEntry
+            Send AssertFalse (pbAtimeIsSet (oEntry)) "UnsetAtime"
+
+            // birthtime
+            Send AssertFalse (pbBirthtimeIsSet (oEntry)) "birthtime not set"
+            Set piBirthtime of oEntry to 1600000000
+            Send Assert (pbBirthtimeIsSet (oEntry)) "birthtime set"
+            Send AssertBIAreEqual 1600000000 (piBirthtime (oEntry)) "birthtime seconds"
+            Send AssertBIAreEqual 1600000000 (archive_entry_birthtime (pEntry)) "raw birthtime"
+            Set piBirthtimeNsec of oEntry to 987654321
+            Send AssertIAreEqual 987654321 (piBirthtimeNsec (oEntry)) "birthtime nsec"
+            Send AssertBIAreEqual 1600000000 (piBirthtime (oEntry)) "birthtime seconds kept"
+            Send SetBirthtime of oEntry 1610000000 6
+            Send AssertBIAreEqual 1610000000 (piBirthtime (oEntry)) "SetBirthtime seconds"
+            Send AssertIAreEqual 6 (piBirthtimeNsec (oEntry)) "SetBirthtime nsec"
+            Send UnsetBirthtime of oEntry
+            Send AssertFalse (pbBirthtimeIsSet (oEntry)) "UnsetBirthtime"
+
+            // ctime
+            Send AssertFalse (pbCtimeIsSet (oEntry)) "ctime not set"
+            Set piCtime of oEntry to 1500000000
+            Send Assert (pbCtimeIsSet (oEntry)) "ctime set"
+            Send AssertBIAreEqual 1500000000 (piCtime (oEntry)) "ctime seconds"
+            Send AssertBIAreEqual 1500000000 (archive_entry_ctime (pEntry)) "raw ctime"
+            Set piCtimeNsec of oEntry to 111222333
+            Send AssertIAreEqual 111222333 (piCtimeNsec (oEntry)) "ctime nsec"
+            Send AssertBIAreEqual 1500000000 (piCtime (oEntry)) "ctime seconds kept"
+            Send SetCtime of oEntry 1510000000 7
+            Send AssertBIAreEqual 1510000000 (piCtime (oEntry)) "SetCtime seconds"
+            Send AssertIAreEqual 7 (piCtimeNsec (oEntry)) "SetCtime nsec"
+            Send UnsetCtime of oEntry
+            Send AssertFalse (pbCtimeIsSet (oEntry)) "UnsetCtime"
+
+            // mtime
+            Send AssertFalse (pbMtimeIsSet (oEntry)) "mtime not set"
+            Set piMtime of oEntry to 1700000000
+            Send Assert (pbMtimeIsSet (oEntry)) "mtime set"
+            Send AssertBIAreEqual 1700000000 (piMtime (oEntry)) "mtime seconds"
+            Send AssertBIAreEqual 1700000000 (archive_entry_mtime (pEntry)) "raw mtime"
+            Set piMtimeNsec of oEntry to 444555666
+            Send AssertIAreEqual 444555666 (piMtimeNsec (oEntry)) "mtime nsec"
+            Send AssertBIAreEqual 1700000000 (piMtime (oEntry)) "mtime seconds kept"
+            Send SetMtime of oEntry 1710000000 8
+            Send AssertBIAreEqual 1710000000 (piMtime (oEntry)) "SetMtime seconds"
+            Send AssertIAreEqual 8 (piMtimeNsec (oEntry)) "SetMtime nsec"
+            Send UnsetMtime of oEntry
+            Send AssertFalse (pbMtimeIsSet (oEntry)) "UnsetMtime"
+
+            // the four times are independent
+            Send SetAtime of oEntry 1 1
+            Send SetBirthtime of oEntry 2 2
+            Send SetCtime of oEntry 3 3
+            Send SetMtime of oEntry 4 4
+            Send AssertBIAreEqual 1 (piAtime (oEntry)) "independent atime"
+            Send AssertBIAreEqual 2 (piBirthtime (oEntry)) "independent birthtime"
+            Send AssertBIAreEqual 3 (piCtime (oEntry)) "independent ctime"
+            Send AssertBIAreEqual 4 (piMtime (oEntry)) "independent mtime"
+        End_Procedure
+    End_Object
+
+    // ---- device, inode, link count -------------------------------------------------------------------------------
+
+    Object oDeviceInodeTest is a cTest
+        Procedure Test
+            Pointer pEntry
+
+            Send CreateEntry of oEntry
+            Move (ppEntry (oEntry)) to pEntry
+            Send AssertFalse (pbDevIsSet (oEntry)) "dev not set"
+            Send AssertFalse (pbInoIsSet (oEntry)) "ino not set"
+            Send AssertFalse (pbRdevIsSet (oEntry)) "rdev not set"
+
+            Set piDev of oEntry to 12345
+            Send Assert (pbDevIsSet (oEntry)) "dev set"
+            Send AssertUIAreEqual 12345 (piDev (oEntry)) "dev"
+            Send AssertUIAreEqual 12345 (archive_entry_dev (pEntry)) "raw dev"
+
+            Send CreateEntry of oEntry
+            Move (ppEntry (oEntry)) to pEntry
+            Set piDevMajor of oEntry to 8
+            Set piDevMinor of oEntry to 17
+            Send AssertUIAreEqual 8 (piDevMajor (oEntry)) "dev major"
+            Send AssertUIAreEqual 17 (piDevMinor (oEntry)) "dev minor"
+            Send AssertUIAreEqual 8 (archive_entry_devmajor (pEntry)) "raw dev major"
+            Send AssertUIAreEqual 17 (archive_entry_devminor (pEntry)) "raw dev minor"
+
+            Set piIno of oEntry to 5000000000
+            Send Assert (pbInoIsSet (oEntry)) "ino set"
+            Send AssertBIAreEqual 5000000000 (piIno (oEntry)) "64 bit ino"
+            Send AssertBIAreEqual 5000000000 (archive_entry_ino64 (pEntry)) "raw ino64"
+            Set piInoLegacy of oEntry to 777
+            Send AssertBIAreEqual 777 (piInoLegacy (oEntry)) "legacy ino"
+            Send AssertBIAreEqual 777 (piIno (oEntry)) "legacy ino visible as 64 bit"
+            Send AssertBIAreEqual 777 (archive_entry_ino (pEntry)) "raw ino"
+
+            Set piNlink of oEntry to 3
+            Send AssertUIAreEqual 3 (piNlink (oEntry)) "nlink"
+            Send AssertUIAreEqual 3 (archive_entry_nlink (pEntry)) "raw nlink"
+
+            Set piRdev of oEntry to 513
+            Send Assert (pbRdevIsSet (oEntry)) "rdev set"
+            Send AssertUIAreEqual 513 (piRdev (oEntry)) "rdev"
+            Send AssertUIAreEqual 513 (archive_entry_rdev (pEntry)) "raw rdev"
+
+            Send CreateEntry of oEntry
+            Move (ppEntry (oEntry)) to pEntry
+            Set piRdevMajor of oEntry to 4
+            Set piRdevMinor of oEntry to 2
+            Send AssertUIAreEqual 4 (piRdevMajor (oEntry)) "rdev major"
+            Send AssertUIAreEqual 2 (piRdevMinor (oEntry)) "rdev minor"
+            Send AssertUIAreEqual 4 (archive_entry_rdevmajor (pEntry)) "raw rdev major"
+            Send AssertUIAreEqual 2 (archive_entry_rdevminor (pEntry)) "raw rdev minor"
+        End_Procedure
+    End_Object
+
+    // ---- type, mode, size, owner ----------------------------------------------------------------------------------
+
+    Object oModeTest is a cTest
+        Procedure Test
+            Pointer pEntry
+
+            Send CreateEntry of oEntry
+            Move (ppEntry (oEntry)) to pEntry
+            Send AssertFalse (pbFileTypeIsSet (oEntry)) "file type not set"
+            Send AssertFalse (pbPermIsSet (oEntry)) "perm not set"
+
+            Set peFileType of oEntry to AE_IFREG
+            Send Assert (pbFileTypeIsSet (oEntry)) "file type set"
+            Send AssertIAreEqual AE_IFREG (peFileType (oEntry)) "file type"
+            Send AssertIAreEqual AE_IFREG (archive_entry_filetype (pEntry)) "raw file type"
+            Set piPerm of oEntry to 420
+            Send Assert (pbPermIsSet (oEntry)) "perm set"
+            Send AssertIAreEqual 420 (piPerm (oEntry)) "perm"
+            Send AssertIAreEqual 420 (archive_entry_perm (pEntry)) "raw perm"
+            Send AssertIAreEqual (AE_IFREG ior 420) (piMode (oEntry)) "mode combines type and perm"
+            Send AssertIAreEqual (AE_IFREG ior 420) (archive_entry_mode (pEntry)) "raw mode"
+            Send AssertSAreEqual "-rw-r--r-- " (psStrMode (oEntry)) "strmode of a regular file"
+
+            Set piMode of oEntry to (AE_IFDIR ior 493)
+            Send AssertIAreEqual AE_IFDIR (peFileType (oEntry)) "mode sets the type"
+            Send AssertIAreEqual 493 (piPerm (oEntry)) "mode sets the perm"
+            Send AssertSAreEqual "drwxr-xr-x " (psStrMode (oEntry)) "strmode of a directory"
+
+            Set peFileType of oEntry to AE_IFLNK
+            Send AssertIAreEqual AE_IFLNK (peFileType (oEntry)) "symlink type"
+            Send AssertIAreEqual 493 (piPerm (oEntry)) "perm kept when type changes"
+        End_Procedure
+    End_Object
+
+    Object oSizeOwnerTest is a cTest
+        Procedure Test
+            Pointer pEntry
+
+            Send CreateEntry of oEntry
+            Move (ppEntry (oEntry)) to pEntry
+
+            Send AssertFalse (pbSizeIsSet (oEntry)) "size not set"
+            Set piSize of oEntry to 5000000000
+            Send Assert (pbSizeIsSet (oEntry)) "size set"
+            Send AssertBIAreEqual 5000000000 (piSize (oEntry)) "size beyond 32 bit"
+            Send AssertBIAreEqual 5000000000 (archive_entry_size (pEntry)) "raw size"
+            Send UnsetSize of oEntry
+            Send AssertFalse (pbSizeIsSet (oEntry)) "UnsetSize"
+
+            Send AssertFalse (pbUidIsSet (oEntry)) "uid not set"
+            Send AssertFalse (pbGidIsSet (oEntry)) "gid not set"
+            Set piUid of oEntry to 1000
+            Set piGid of oEntry to 2000
+            Send Assert (pbUidIsSet (oEntry)) "uid set"
+            Send Assert (pbGidIsSet (oEntry)) "gid set"
+            Send AssertBIAreEqual 1000 (piUid (oEntry)) "uid"
+            Send AssertBIAreEqual 2000 (piGid (oEntry)) "gid"
+            Send AssertBIAreEqual 1000 (archive_entry_uid (pEntry)) "raw uid"
+            Send AssertBIAreEqual 2000 (archive_entry_gid (pEntry)) "raw gid"
+
+            // encryption flags
+            Send AssertFalse (pbDataEncrypted (oEntry)) "data not encrypted"
+            Send AssertFalse (pbMetadataEncrypted (oEntry)) "metadata not encrypted"
+            Send AssertFalse (pbEncrypted (oEntry)) "not encrypted"
+            Set pbDataEncrypted of oEntry to True
+            Send Assert (pbDataEncrypted (oEntry)) "data encrypted"
+            Send AssertFalse (pbMetadataEncrypted (oEntry)) "metadata still plain"
+            Send Assert (pbEncrypted (oEntry)) "encrypted when data is"
+            Send Assert (archive_entry_is_data_encrypted (pEntry) = 1) "raw data encrypted flag"
+            Set pbDataEncrypted of oEntry to False
+            Send AssertFalse (pbEncrypted (oEntry)) "plain again"
+            Set pbMetadataEncrypted of oEntry to True
+            Send Assert (pbMetadataEncrypted (oEntry)) "metadata encrypted"
+            Send AssertFalse (pbDataEncrypted (oEntry)) "data still plain"
+            Send Assert (pbEncrypted (oEntry)) "encrypted when metadata is"
+            Send Assert (archive_entry_is_metadata_encrypted (pEntry) = 1) "raw metadata encrypted flag"
+        End_Procedure
+    End_Object
+
+    // ---- file flags ---------------------------------------------------------------------------------------------
+    // The file flag names are platform dependent in libarchive; on Windows they map to file attributes
+    // ("hidden" = FILE_ATTRIBUTE_HIDDEN 2, "rdonly" = FILE_ATTRIBUTE_READONLY 1, "system" = 4).
+
+    Object oFFlagsTest is a cTest
+        Procedure Test
+            Pointer pEntry
+            UInteger iSet iClear
+            String sBad
+            Void_Type iVoid
+
+            Send CreateEntry of oEntry
+            Move (ppEntry (oEntry)) to pEntry
+            Send AssertUIAreEqual 0 (piFFlagsSet (oEntry)) "no flags set"
+            Send AssertUIAreEqual 0 (piFFlagsClear (oEntry)) "no flags cleared"
+            Send AssertSAreEqual "" (psFFlagsText (oEntry)) "no flags text"
+
+            Send SetFFlags of oEntry 6 9
+            Send AssertUIAreEqual 6 (piFFlagsSet (oEntry)) "set bits"
+            Send AssertUIAreEqual 9 (piFFlagsClear (oEntry)) "clear bits"
+            Move (archive_entry_fflags (pEntry, AddressOf (iSet), AddressOf (iClear))) to iVoid
+            Send AssertUIAreEqual 6 iSet "raw set bits"
+            Send AssertUIAreEqual 9 iClear "raw clear bits"
+            Set piFFlagsSet of oEntry to 3
+            Send AssertUIAreEqual 3 (piFFlagsSet (oEntry)) "set bits changed"
+            Send AssertUIAreEqual 9 (piFFlagsClear (oEntry)) "clear bits kept"
+            Set piFFlagsClear of oEntry to 12
+            Send AssertUIAreEqual 3 (piFFlagsSet (oEntry)) "set bits kept"
+            Send AssertUIAreEqual 12 (piFFlagsClear (oEntry)) "clear bits changed"
+
+            // text
+            Send SetFFlags of oEntry 0 0
+            Get CopyFFlagsText of oEntry "nohidden" to sBad
+            Send AssertSAreEqual "" sBad "valid flag text"
+            Send AssertUIAreEqual 0 (piFFlagsSet (oEntry)) "nohidden sets nothing"
+            Send AssertUIAreEqual 2 (piFFlagsClear (oEntry)) "nohidden clears bit 2"
+            Send AssertSAreEqual "nohidden" (psFFlagsText (oEntry)) "flags text"
+            Get CopyFFlagsText of oEntry "hidden" to sBad
+            Send AssertSAreEqual "" sBad "valid positive flag text"
+            Send AssertUIAreEqual 2 (piFFlagsSet (oEntry)) "hidden sets bit 2"
+            Send AssertUIAreEqual 0 (piFFlagsClear (oEntry)) "hidden clears nothing"
+            Get CopyFFlagsText of oEntry "bogusflag" to sBad
+            Send AssertSAreEqual "bogusflag" sBad "invalid token returned"
+            Get CopyFFlagsTextLen of oEntry "nordonly,nosystem" 8 to sBad
+            Send AssertSAreEqual "" sBad "valid text with length"
+            Send AssertUIAreEqual 1 (piFFlagsClear (oEntry)) "only the first 8 bytes used"
+            Get CopyFFlagsTextWide of oEntry "nosystem" to sBad
+            Send AssertSAreEqual "" sBad "valid wide text"
+            Send AssertUIAreEqual 4 (piFFlagsClear (oEntry)) "wide text clears bit 4"
+            Get CopyFFlagsTextWide of oEntry "wrongflag" to sBad
+            Send AssertSAreEqual "wrongflag" sBad "invalid wide token returned"
+            Set psFFlagsText of oEntry to "hidden"
+            Send AssertUIAreEqual 2 (piFFlagsSet (oEntry)) "text setter"
+            Send ExpectError DFERR_PROGRAM
+            Set psFFlagsText of oEntry to "unknownflag"
+            Send UnExpectError DFERR_PROGRAM
+            Get CopyFFlagsText of oEntry "" to sBad
+            Send AssertUIAreEqual 0 (piFFlagsSet (oEntry)) "empty text clears the flags"
+        End_Procedure
+    End_Object
+
+    // ---- stat and platform data -------------------------------------------------------------------------------------
+
+    Object oStatTest is a cTest
+        Procedure Test
+            Pointer pStat
+            UChar[] ucInfo
+
+            Send CreateEntry of oEntry
+            Set piSize of oEntry to 4321
+            Set piMode of oEntry to (AE_IFREG ior 420)
+            Set piUid of oEntry to 7
+            Set piGid of oEntry to 8
+            Send SetMtime of oEntry 1700000000 0
+            Send SetAtime of oEntry 1700000100 0
+            Move (StatPointer (oEntry)) to pStat
+            Send Assert (pStat <> 0) "stat pointer"
+
+            Send CreateEntry of oEntry2
+            Send CopyStat of oEntry2 pStat
+            Send AssertBIAreEqual 4321 (piSize (oEntry2)) "stat size"
+            Send AssertIAreEqual (AE_IFREG ior 420) (piMode (oEntry2)) "stat mode"
+            Send AssertBIAreEqual 7 (piUid (oEntry2)) "stat uid"
+            Send AssertBIAreEqual 8 (piGid (oEntry2)) "stat gid"
+            Send AssertBIAreEqual 1700000000 (piMtime (oEntry2)) "stat mtime"
+            Send AssertBIAreEqual 1700000100 (piAtime (oEntry2)) "stat atime"
+
+            // BY_HANDLE_FILE_INFORMATION: attributes, 3 FILETIMEs (creation, access, write), volume serial,
+            // size high/low, link count, index high/low.
+            Move (ResizeArray (ucInfo, 52)) to ucInfo
+            Send PutUInt32 (&ucInfo) 4 3329032192
+            Send PutUInt32 (&ucInfo) 8 31070023
+            Send PutUInt32 (&ucInfo) 12 34064896
+            Send PutUInt32 (&ucInfo) 16 31070024
+            Send PutUInt32 (&ucInfo) 20 3329032192
+            Send PutUInt32 (&ucInfo) 24 31070023
+            Send PutUInt32 (&ucInfo) 28 99
+            Send PutUInt32 (&ucInfo) 32 0
+            Send PutUInt32 (&ucInfo) 36 1234
+            Send PutUInt32 (&ucInfo) 40 2
+            Send PutUInt32 (&ucInfo) 44 0
+            Send PutUInt32 (&ucInfo) 48 4242
+            Send CreateEntry of oEntry2
+            Send CopyBhfi of oEntry2 (AddressOf (ucInfo))
+            Send AssertBIAreEqual 1700000100 (piAtime (oEntry2)) "bhfi atime"
+            Send AssertBIAreEqual 1700000000 (piMtime (oEntry2)) "bhfi mtime"
+            Send AssertBIAreEqual 1234 (piSize (oEntry2)) "bhfi size"
+            Send AssertBIAreEqual 4242 (piIno (oEntry2)) "bhfi ino"
+            Send AssertUIAreEqual 2 (piNlink (oEntry2)) "bhfi link count"
+        End_Procedure
+    End_Object
+
+    Object oMacMetadataTest is a cTest
+        Procedure Test
+            UChar[] ucData ucResult
+            Integer iIndex
+
+            Send CreateEntry of oEntry
+            Move (MacMetadata (oEntry)) to ucResult
+            Send AssertIAreEqual 0 (SizeOfArray (ucResult)) "no mac metadata"
+            Move (ResizeArray (ucData, 10)) to ucData
+            For iIndex from 0 to 9
+                Move (iIndex * 3 + 1) to ucData[iIndex]
+            Loop
+            Send SetMacMetadata of oEntry ucData
+            Move (MacMetadata (oEntry)) to ucResult
+            Send AssertIAreEqual 10 (SizeOfArray (ucResult)) "mac metadata size"
+            For iIndex from 0 to 9
+                Send AssertIAreEqual (iIndex * 3 + 1) ucResult[iIndex] "mac metadata byte"
+            Loop
+            Move (ResizeArray (ucData, 0)) to ucData
+            Send SetMacMetadata of oEntry ucData
+            Move (MacMetadata (oEntry)) to ucResult
+            Send AssertIAreEqual 0 (SizeOfArray (ucResult)) "mac metadata removed"
+        End_Procedure
+    End_Object
+
+    // ---- digest (provided by the mtree reader) ----------------------------------------------------------------------
+
+    Object oDigestTest is a cTest
+        Procedure Test
+            Pointer pArchive pEntry
+            Integer iResult
+            String sMtree
+
+            Send CreateEntry of oEntry
+            Send AssertSAreEqual "" (Digest (oEntry, ARCHIVE_ENTRY_DIGEST_MD5)) "no digest in a new entry"
+            Send AssertIAreEqual 16 (DigestLength (oEntry, ARCHIVE_ENTRY_DIGEST_MD5)) "MD5 length"
+            Send AssertIAreEqual 20 (DigestLength (oEntry, ARCHIVE_ENTRY_DIGEST_SHA1)) "SHA1 length"
+            Send AssertIAreEqual 20 (DigestLength (oEntry, ARCHIVE_ENTRY_DIGEST_RMD160)) "RMD160 length"
+            Send AssertIAreEqual 32 (DigestLength (oEntry, ARCHIVE_ENTRY_DIGEST_SHA256)) "SHA256 length"
+            Send AssertIAreEqual 48 (DigestLength (oEntry, ARCHIVE_ENTRY_DIGEST_SHA384)) "SHA384 length"
+            Send AssertIAreEqual 64 (DigestLength (oEntry, ARCHIVE_ENTRY_DIGEST_SHA512)) "SHA512 length"
+            Send AssertIAreEqual 0 (DigestLength (oEntry, 99)) "unknown type length"
+
+            Move ("#mtree" + (Character (10)) + "./data.bin type=file size=3 md5digest=d41d8cd98f00b204e9800998ecf8427e sha1digest=da39a3ee5e6b4b0d3255bfef95601890afd80709" + (Character (10))) to sMtree
+            Move (archive_read_new ()) to pArchive
+            Move (archive_read_support_format_mtree (pArchive)) to iResult
+            Move (archive_read_open_memory (pArchive, AddressOf (sMtree), SizeOfString (sMtree))) to iResult
+            Send AssertArchiveOk iResult pArchive "open mtree"
+            Move (archive_read_next_header (pArchive, AddressOf (pEntry))) to iResult
+            Send AssertArchiveOk iResult pArchive "read mtree header"
+            Send AttachEntry of oBorrowed pEntry False
+            Send AssertSAreEqual "./data.bin" (psPathname (oBorrowed)) "mtree entry name"
+            Send AssertSAreEqual "d41d8cd98f00b204e9800998ecf8427e" (Digest (oBorrowed, ARCHIVE_ENTRY_DIGEST_MD5)) "MD5 digest"
+            Send AssertSAreEqual "da39a3ee5e6b4b0d3255bfef95601890afd80709" (Digest (oBorrowed, ARCHIVE_ENTRY_DIGEST_SHA1)) "SHA1 digest"
+            Send AssertSAreEqual "" (Digest (oBorrowed, ARCHIVE_ENTRY_DIGEST_SHA256)) "no SHA256 digest"
+            Send AssertSAreEqual "" (Digest (oBorrowed, 99)) "unknown digest type"
+            Send FreeEntry of oBorrowed
+            Move (archive_read_free (pArchive)) to iResult
+        End_Procedure
+    End_Object
+
+    // ---- ACL ----------------------------------------------------------------------------------------------------
+
+    Object oAclPosixTest is a cTest
+        Procedure Test
+            Integer iResult iCount iIndex
+            tArchiveEntryAcl stAcl
+            tArchiveEntryAcl[] astAcl
+            String sText
+
+            Send CreateEntry of oEntry
+            Set piMode of oEntry to (AE_IFREG ior 420)
+            Send AssertIAreEqual 0 (AclTypes (oEntry)) "no ACL yet"
+            Send AssertIAreEqual 0 (AclCount (oEntry, ARCHIVE_ENTRY_ACL_TYPE_ACCESS)) "no ACL entries"
+            Send Assert (AclPointer (oEntry) <> 0) "ACL object pointer"
+
+            Get AclAddEntry of oEntry ARCHIVE_ENTRY_ACL_TYPE_ACCESS 6 ARCHIVE_ENTRY_ACL_USER 1010 "bob" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "add user entry"
+            Get AclAddEntry of oEntry ARCHIVE_ENTRY_ACL_TYPE_ACCESS 4 ARCHIVE_ENTRY_ACL_GROUP 2020 "staff" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "add group entry"
+            Get AclAddEntry of oEntry ARCHIVE_ENTRY_ACL_TYPE_ACCESS 6 ARCHIVE_ENTRY_ACL_MASK 0 "" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "add mask entry"
+            Send AssertIAreEqual ARCHIVE_ENTRY_ACL_TYPE_ACCESS (AclTypes (oEntry)) "ACL types"
+            // user, group, mask + the owner/group/other entries of the mode
+            Send AssertIAreEqual 6 (AclCount (oEntry, ARCHIVE_ENTRY_ACL_TYPE_ACCESS)) "ACL count"
+            Send AssertIAreEqual 0 (AclCount (oEntry, ARCHIVE_ENTRY_ACL_TYPE_DEFAULT)) "no default ACL"
+
+            Get AclReset of oEntry ARCHIVE_ENTRY_ACL_TYPE_ACCESS to iCount
+            Send AssertIAreEqual 6 iCount "AclReset count"
+            Get AclNext of oEntry ARCHIVE_ENTRY_ACL_TYPE_ACCESS to stAcl
+            Send AssertIAreEqual ARCHIVE_ENTRY_ACL_TYPE_ACCESS stAcl.eType "first entry type"
+            Send AssertIAreEqual ARCHIVE_ENTRY_ACL_USER_OBJ stAcl.eTag "first entry is the owner"
+            Send AssertIAreEqual 6 stAcl.iPermset "owner rw- from the mode"
+
+            Get AclEntries of oEntry ARCHIVE_ENTRY_ACL_TYPE_ACCESS to astAcl
+            Send AssertIAreEqual 6 (SizeOfArray (astAcl)) "AclEntries count"
+            Send AssertIAreEqual ARCHIVE_ENTRY_ACL_GROUP_OBJ astAcl[1].eTag "second entry is the owning group"
+            Send AssertIAreEqual ARCHIVE_ENTRY_ACL_OTHER astAcl[2].eTag "third entry is other"
+            Send AssertIAreEqual ARCHIVE_ENTRY_ACL_USER astAcl[3].eTag "first extended entry tag"
+            Send AssertIAreEqual 1010 astAcl[3].iQualifier "user qualifier"
+            Send AssertSAreEqual "bob" astAcl[3].sName "user name"
+            Send AssertIAreEqual 6 astAcl[3].iPermset "user permset"
+            Send AssertIAreEqual ARCHIVE_ENTRY_ACL_GROUP astAcl[4].eTag "second extended entry tag"
+            Send AssertIAreEqual 2020 astAcl[4].iQualifier "group qualifier"
+            Send AssertSAreEqual "staff" astAcl[4].sName "group name"
+            Send AssertIAreEqual 4 astAcl[4].iPermset "group permset"
+            Send AssertIAreEqual ARCHIVE_ENTRY_ACL_MASK astAcl[5].eTag "last entry is the mask"
+
+            // enumeration end
+            Get AclReset of oEntry ARCHIVE_ENTRY_ACL_TYPE_ACCESS to iCount
+            For iIndex from 1 to 6
+                Get AclNext of oEntry ARCHIVE_ENTRY_ACL_TYPE_ACCESS to stAcl
+                Send Assert (stAcl.eType <> 0) "entry of the enumeration"
+            Loop
+            Get AclNext of oEntry ARCHIVE_ENTRY_ACL_TYPE_ACCESS to stAcl
+            Send AssertIAreEqual 0 stAcl.eType "AclNext ends after the last entry"
+
+            // text
+            Get AclToText of oEntry (ARCHIVE_ENTRY_ACL_TYPE_ACCESS ior ARCHIVE_ENTRY_ACL_STYLE_SEPARATOR_COMMA) to sText
+            Send AssertSAreEqual "user::rw-,group::r--,other::r--,user:bob:rw-,group:staff:r--,mask::rw-" sText "ACL text"
+            Get AclToText of oEntry (ARCHIVE_ENTRY_ACL_TYPE_ACCESS ior ARCHIVE_ENTRY_ACL_STYLE_SEPARATOR_COMMA ior ARCHIVE_ENTRY_ACL_STYLE_EXTRA_ID) to sText
+            Send AssertSAreEqual "user::rw-,group::r--,other::r--,user:bob:rw-:1010,group:staff:r--:2020,mask::rw-" sText "ACL text with ids"
+            Get AclToTextWide of oEntry (ARCHIVE_ENTRY_ACL_TYPE_ACCESS ior ARCHIVE_ENTRY_ACL_STYLE_SEPARATOR_COMMA) to sText
+            Send AssertSAreEqual "user::rw-,group::r--,other::r--,user:bob:rw-,group:staff:r--,mask::rw-" sText "ACL wide text"
+            Get AclToText of oEntry ARCHIVE_ENTRY_ACL_TYPE_DEFAULT to sText
+            Send AssertSAreEqual "" sText "no default ACL text"
+            Get AclTextLegacy of oEntry ARCHIVE_ENTRY_ACL_TYPE_ACCESS to sText
+            Send Assert (Pos ("user:bob:", sText) > 0) "legacy ACL text mentions bob"
+            Get AclTextLegacyWide of oEntry ARCHIVE_ENTRY_ACL_TYPE_ACCESS to sText
+            Send Assert (Pos ("user:bob:", sText) > 0) "legacy wide ACL text mentions bob"
+
+            // clear and parse from text
+            Send AclClear of oEntry
+            Send AssertIAreEqual 0 (AclTypes (oEntry)) "ACL cleared"
+            Send AssertIAreEqual 0 (AclCount (oEntry, ARCHIVE_ENTRY_ACL_TYPE_ACCESS)) "no entries after clear"
+            Get AclFromText of oEntry "user::rwx,user:alice:r-x,group::r-x,mask::r-x,other::r-x" ARCHIVE_ENTRY_ACL_TYPE_ACCESS to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "ACL from text"
+            Send AssertIAreEqual ARCHIVE_ENTRY_ACL_TYPE_ACCESS (AclTypes (oEntry)) "types after from text"
+            Send AssertIAreEqual 5 (AclCount (oEntry, ARCHIVE_ENTRY_ACL_TYPE_ACCESS)) "count after from text"
+            Get AclEntries of oEntry ARCHIVE_ENTRY_ACL_TYPE_ACCESS to astAcl
+            Send AssertSAreEqual "alice" astAcl[3].sName "parsed user name"
+            Send AssertIAreEqual 5 astAcl[3].iPermset "parsed user permset r-x"
+            Send AssertIAreEqual 493 (piPerm (oEntry)) "owner/group/other went into the mode (rwxr-xr-x)"
+            Send AclClear of oEntry
+            Get AclFromTextWide of oEntry "user::rw-,user:dora:r--,group::r--,mask::rw-,other::---" ARCHIVE_ENTRY_ACL_TYPE_ACCESS to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "ACL from wide text"
+            Get AclEntries of oEntry ARCHIVE_ENTRY_ACL_TYPE_ACCESS to astAcl
+            Send AssertSAreEqual "dora" astAcl[3].sName "parsed wide user name"
+
+            // the wide add variant
+            Send AclClear of oEntry
+            Get AclAddEntryWide of oEntry ARCHIVE_ENTRY_ACL_TYPE_ACCESS 6 ARCHIVE_ENTRY_ACL_USER 1011 "Jürgen" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "wide add"
+            Get AclEntries of oEntry ARCHIVE_ENTRY_ACL_TYPE_ACCESS to astAcl
+            Move astAcl[SizeOfArray (astAcl) - 1] to stAcl
+            Send AssertSAreEqual "Jürgen" stAcl.sName "wide name round trip"
+
+            // errors
+            Send AclClear of oEntry
+            Send ExpectError DFERR_PROGRAM
+            Get AclAddEntry of oEntry 12345 6 ARCHIVE_ENTRY_ACL_USER 1 "x" to iResult
+            Send UnExpectError DFERR_PROGRAM
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "invalid ACL type"
+            Set pbRaiseErrors of oEntry to False
+            Get AclAddEntry of oEntry 12345 6 ARCHIVE_ENTRY_ACL_USER 1 "x" to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "invalid ACL type without errors"
+            Set pbRaiseErrors of oEntry to True
+        End_Procedure
+    End_Object
+
+    Object oAclNfs4Test is a cTest
+        Procedure Test
+            Integer iResult
+            tArchiveEntryAcl[] astAcl
+            String sText
+
+            Send CreateEntry of oEntry
+            Get AclAddEntry of oEntry ARCHIVE_ENTRY_ACL_TYPE_ALLOW (ARCHIVE_ENTRY_ACL_READ_DATA ior ARCHIVE_ENTRY_ACL_EXECUTE) ARCHIVE_ENTRY_ACL_EVERYONE 0 "" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "add NFSv4 entry"
+            Get AclAddEntry of oEntry ARCHIVE_ENTRY_ACL_TYPE_DENY ARCHIVE_ENTRY_ACL_WRITE_DATA ARCHIVE_ENTRY_ACL_USER 500 "mallory" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "add NFSv4 deny entry"
+            Send AssertIAreEqual (ARCHIVE_ENTRY_ACL_TYPE_ALLOW ior ARCHIVE_ENTRY_ACL_TYPE_DENY) (AclTypes (oEntry)) "NFSv4 types"
+            Send AssertIAreEqual 2 (AclCount (oEntry, ARCHIVE_ENTRY_ACL_TYPE_NFS4)) "NFSv4 count"
+            Send AssertIAreEqual 1 (AclCount (oEntry, ARCHIVE_ENTRY_ACL_TYPE_DENY)) "NFSv4 deny count"
+            Send AssertIAreEqual 0 (AclCount (oEntry, ARCHIVE_ENTRY_ACL_TYPE_ACCESS)) "no POSIX entries"
+            Get AclEntries of oEntry ARCHIVE_ENTRY_ACL_TYPE_NFS4 to astAcl
+            Send AssertIAreEqual 2 (SizeOfArray (astAcl)) "NFSv4 entries"
+            Send AssertIAreEqual ARCHIVE_ENTRY_ACL_TYPE_ALLOW astAcl[0].eType "allow type"
+            Send AssertIAreEqual ARCHIVE_ENTRY_ACL_EVERYONE astAcl[0].eTag "everyone tag"
+            Send AssertIAreEqual (ARCHIVE_ENTRY_ACL_READ_DATA ior ARCHIVE_ENTRY_ACL_EXECUTE) astAcl[0].iPermset "allow permset"
+            Send AssertIAreEqual ARCHIVE_ENTRY_ACL_TYPE_DENY astAcl[1].eType "deny type"
+            Send AssertSAreEqual "mallory" astAcl[1].sName "deny name"
+            Get AclToText of oEntry (ARCHIVE_ENTRY_ACL_TYPE_NFS4 ior ARCHIVE_ENTRY_ACL_STYLE_SEPARATOR_COMMA) to sText
+            Send Assert (Pos ("everyone@:", sText) = 1) "NFSv4 text starts with everyone@"
+            Send Assert (Pos (":allow", sText) > 0) "NFSv4 text has allow"
+            Send Assert (Pos ("user:mallory:", sText) > 0) "NFSv4 text has mallory"
+            Send Assert (Pos (":deny", sText) > 0) "NFSv4 text has deny"
+            Send AclClear of oEntry
+            Get AclFromText of oEntry sText ARCHIVE_ENTRY_ACL_TYPE_NFS4 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "NFSv4 text round trip parses"
+            Send AssertIAreEqual 2 (AclCount (oEntry, ARCHIVE_ENTRY_ACL_TYPE_NFS4)) "NFSv4 count after round trip"
+        End_Procedure
+    End_Object
+
+    // ---- extended attributes ----------------------------------------------------------------------------------------
+
+    Object oXattrTest is a cTest
+        Procedure Test
+            Integer iCount
+            UChar[] ucValue
+            tArchiveEntryXattr stXattr
+            tArchiveEntryXattr[] astXattr
+
+            Send CreateEntry of oEntry
+            Send AssertIAreEqual 0 (XattrCount (oEntry)) "no xattrs"
+            Move (ResizeArray (ucValue, 4)) to ucValue
+            Move 1 to ucValue[0]
+            Move 0 to ucValue[1]
+            Move 255 to ucValue[2]
+            Move 7 to ucValue[3]
+            Send XattrAdd of oEntry "user.binary" ucValue
+            Send XattrAddText of oEntry "user.comment" "hello"
+            Move (ResizeArray (ucValue, 0)) to ucValue
+            Send XattrAdd of oEntry "user.empty" ucValue
+            Send AssertIAreEqual 3 (XattrCount (oEntry)) "three xattrs"
+
+            Get XattrReset of oEntry to iCount
+            Send AssertIAreEqual 3 iCount "XattrReset count"
+            Get XattrNext of oEntry to stXattr
+            // libarchive lists the attributes in reverse order of adding
+            Send AssertSAreEqual "user.empty" stXattr.sName "first xattr name (last added)"
+            Send AssertIAreEqual 0 (SizeOfArray (stXattr.ucValue)) "empty value"
+            Get XattrNext of oEntry to stXattr
+            Send AssertSAreEqual "user.comment" stXattr.sName "second xattr name"
+            Get XattrNext of oEntry to stXattr
+            Send AssertSAreEqual "user.binary" stXattr.sName "third xattr name"
+            Send AssertIAreEqual 4 (SizeOfArray (stXattr.ucValue)) "binary value size"
+            Move stXattr.ucValue to ucValue
+            Send AssertIAreEqual 1 ucValue[0] "binary byte 0"
+            Send AssertIAreEqual 0 ucValue[1] "binary byte 1 (zero byte kept)"
+            Send AssertIAreEqual 255 ucValue[2] "binary byte 2"
+            Send AssertIAreEqual 7 ucValue[3] "binary byte 3"
+
+            Get XattrEntries of oEntry to astXattr
+            Send AssertIAreEqual 3 (SizeOfArray (astXattr)) "XattrEntries count"
+            Send AssertSAreEqual "user.empty" astXattr[0].sName "first name"
+            Move astXattr[0].ucValue to ucValue
+            Send AssertIAreEqual 0 (SizeOfArray (ucValue)) "empty value"
+            Send AssertSAreEqual "user.comment" astXattr[1].sName "second name"
+            Move astXattr[1].ucValue to ucValue
+            Send AssertIAreEqual 5 (SizeOfArray (ucValue)) "text value size"
+            Send AssertIAreEqual (Ascii ("h")) ucValue[0] "text value first byte"
+            Send AssertSAreEqual "user.binary" astXattr[2].sName "third name"
+
+            // enumeration end
+            Get XattrReset of oEntry to iCount
+            Get XattrNext of oEntry to stXattr
+            Get XattrNext of oEntry to stXattr
+            Get XattrNext of oEntry to stXattr
+            Get XattrNext of oEntry to stXattr
+            Send AssertSAreEqual "" stXattr.sName "end of xattrs"
+
+            Send XattrClear of oEntry
+            Send AssertIAreEqual 0 (XattrCount (oEntry)) "xattrs cleared"
+        End_Procedure
+    End_Object
+
+    // ---- sparse regions ---------------------------------------------------------------------------------------------
+
+    Object oSparseTest is a cTest
+        Procedure Test
+            Integer iCount
+            tArchiveEntrySparse stSparse
+            tArchiveEntrySparse[] astSparse
+
+            Send CreateEntry of oEntry
+            Send AssertIAreEqual 0 (SparseCount (oEntry)) "no sparse regions"
+            // libarchive ignores regions that lie beyond the entry size
+            Send SparseAdd of oEntry 0 100
+            Send AssertIAreEqual 0 (SparseCount (oEntry)) "region beyond the size is ignored"
+            Set piSize of oEntry to 6000000000
+            Send SparseAdd of oEntry 0 100
+            Send SparseAdd of oEntry 4096 200
+            Send SparseAdd of oEntry 5000000000 300
+            Send AssertIAreEqual 3 (SparseCount (oEntry)) "three regions"
+            Get SparseReset of oEntry to iCount
+            Send AssertIAreEqual 3 iCount "SparseReset count"
+            Get SparseNext of oEntry to stSparse
+            Send AssertBIAreEqual 0 stSparse.iOffset "first offset"
+            Send AssertBIAreEqual 100 stSparse.iLength "first length"
+            Get SparseEntries of oEntry to astSparse
+            Send AssertIAreEqual 3 (SizeOfArray (astSparse)) "SparseEntries count"
+            Send AssertBIAreEqual 4096 astSparse[1].iOffset "second offset"
+            Send AssertBIAreEqual 200 astSparse[1].iLength "second length"
+            Send AssertBIAreEqual 5000000000 astSparse[2].iOffset "third offset (64 bit)"
+            Send AssertBIAreEqual 300 astSparse[2].iLength "third length"
+            Get SparseReset of oEntry to iCount
+            Get SparseNext of oEntry to stSparse
+            Get SparseNext of oEntry to stSparse
+            Get SparseNext of oEntry to stSparse
+            Get SparseNext of oEntry to stSparse
+            Send AssertBIAreEqual -1 stSparse.iLength "end of sparse regions"
+            Send SparseClear of oEntry
+            Send AssertIAreEqual 0 (SparseCount (oEntry)) "sparse regions cleared"
+        End_Procedure
+    End_Object
+
+    // ---- round trip through an archive --------------------------------------------------------------------------------
+
+    Object oArchiveRoundTripTest is a cTest
+        Procedure Test
+            Pointer pWriter pReader pRead
+            Integer iResult iIndex
+            String sNames
+            BigInt iUsed
+            UChar[] ucArchive
+            tArchiveEntryAcl[] astAcl
+            tArchiveEntryXattr[] astXattr
+
+            // Describe an entry only through the wrapper ...
+            Send CreateEntry of oEntry
+            Set psPathname of oEntry to "dir/héllo-ünï.txt"
+            Set piMode of oEntry to (AE_IFREG ior 420)
+            Set piSize of oEntry to 0
+            Set piUid of oEntry to 1001
+            Set piGid of oEntry to 2002
+            Set psUname of oEntry to "alice"
+            Set psGname of oEntry to "staff"
+            Send SetMtime of oEntry 1700000000 123456789
+            Send XattrAddText of oEntry "user.comment" "hi there"
+            Get AclAddEntry of oEntry ARCHIVE_ENTRY_ACL_TYPE_ACCESS 6 ARCHIVE_ENTRY_ACL_USER 1010 "bob" to iResult
+            Get AclAddEntry of oEntry ARCHIVE_ENTRY_ACL_TYPE_ACCESS 6 ARCHIVE_ENTRY_ACL_MASK 0 "" to iResult
+
+            // ... write it as pax archive into memory ...
+            Move (ResizeArray (ucArchive, 65536)) to ucArchive
+            Move (archive_write_new ()) to pWriter
+            Move (archive_write_set_format (pWriter, ARCHIVE_FORMAT_TAR_PAX_INTERCHANGE)) to iResult
+            Send AssertArchiveOk iResult pWriter "set pax format"
+            Move (archive_write_open_memory (pWriter, AddressOf (ucArchive), 65536, AddressOf (iUsed))) to iResult
+            Send AssertArchiveOk iResult pWriter "open memory"
+            Move (archive_write_header (pWriter, ppEntry (oEntry))) to iResult
+            Send AssertArchiveOk iResult pWriter "write header of a wrapper entry"
+            Move (archive_write_close (pWriter)) to iResult
+            Move (archive_write_free (pWriter)) to iResult
+            Send Assert (iUsed > 0) "archive has bytes"
+
+            // ... and read it back through a borrowed wrapper object.
+            Move (archive_read_new ()) to pReader
+            Move (archive_read_support_format_all (pReader)) to iResult
+            Move (archive_read_open_memory (pReader, AddressOf (ucArchive), iUsed)) to iResult
+            Send AssertArchiveOk iResult pReader "open archive"
+            Move (archive_read_next_header (pReader, AddressOf (pRead))) to iResult
+            Send AssertArchiveOk iResult pReader "read header"
+            Send AttachEntry of oBorrowed pRead False
+            Send AssertSAreEqual "dir/héllo-ünï.txt" (psPathname (oBorrowed)) "path"
+            Send AssertIAreEqual (AE_IFREG ior 420) (piMode (oBorrowed)) "mode"
+            Send AssertBIAreEqual 0 (piSize (oBorrowed)) "size"
+            Send AssertBIAreEqual 1001 (piUid (oBorrowed)) "uid"
+            Send AssertBIAreEqual 2002 (piGid (oBorrowed)) "gid"
+            Send AssertSAreEqual "alice" (psUname (oBorrowed)) "uname"
+            Send AssertSAreEqual "staff" (psGname (oBorrowed)) "gname"
+            Send AssertBIAreEqual 1700000000 (piMtime (oBorrowed)) "mtime"
+            Send AssertIAreEqual 123456789 (piMtimeNsec (oBorrowed)) "mtime nsec"
+            Get XattrEntries of oBorrowed to astXattr
+            For iIndex from 0 to (SizeOfArray (astXattr) - 1)
+                Move (sNames + astXattr[iIndex].sName + ";") to sNames
+            Loop
+            // libarchive writes the attribute in two pax header forms (SCHILY.xattr and LIBARCHIVE.xattr) and a reader reports both
+            Send Assert (SizeOfArray (astXattr) >= 1) ("xattr present, names: " + sNames)
+            Send AssertSAreEqual "user.comment" astXattr[0].sName "xattr name"
+            Move astXattr[0].ucValue to ucArchive
+            Send AssertIAreEqual 8 (SizeOfArray (ucArchive)) "xattr value size"
+            Get AclEntries of oBorrowed ARCHIVE_ENTRY_ACL_TYPE_ACCESS to astAcl
+            Send AssertIAreEqual 5 (SizeOfArray (astAcl)) "ACL entries"
+            Send AssertSAreEqual "bob" astAcl[3].sName "ACL user"
+            Send FreeEntry of oBorrowed
+            Move (archive_read_free (pReader)) to iResult
+        End_Procedure
+    End_Object
+End_Object
+
+// ---- cArchiveLinkResolver --------------------------------------------------------------------------------------------
+
+Object oWrapperLinkResolverTests is a cArchiveTestFixture
+    Set psTestFixtureName to "WrapperLinkResolver"
+
+    Object oResolver is a cArchiveLinkResolver
+    End_Object
+
+    Object oIn is a cArchiveEntry
+    End_Object
+
+    Object oOut is a cArchiveEntry
+    End_Object
+
+    Object oSecond is a cArchiveEntry
+    End_Object
+
+    // Makes oIn a regular file with the given name, device, inode, link count and size.
+    Procedure PrepareFile String sName Integer iIno Integer iLinks
+        Send CreateEntry of oIn
+        Set psPathname of oIn to sName
+        Set piMode of oIn to (AE_IFREG ior 420)
+        Set piDev of oIn to 1
+        Set piIno of oIn to iIno
+        Set piNlink of oIn to iLinks
+        Set piSize of oIn to 10
+    End_Procedure
+
+    Object oLifeCycleTest is a cTest
+        Procedure Test
+            Send AssertFalse (HasResolver (oResolver)) "no resolver yet"
+            Send CreateResolver of oResolver
+            Send Assert (HasResolver (oResolver)) "resolver created"
+            Send Assert (ppResolver (oResolver) <> 0) "resolver pointer"
+            Send FreeResolver of oResolver
+            Send AssertFalse (HasResolver (oResolver)) "resolver freed"
+            Send FreeResolver of oResolver
+            // SetStrategy creates the resolver on demand.
+            Send SetStrategy of oResolver ARCHIVE_FORMAT_TAR
+            Send Assert (HasResolver (oResolver)) "SetStrategy creates the resolver"
+            Send FreeResolver of oResolver
+
+            // without a resolver Linkify reports an error
+            Send PrepareFile of oIn "a.txt" 5 1
+            Send ExpectError DFERR_PROGRAM
+            Send AssertIAreEqual 0 (Linkify (oResolver, oIn, oOut, 0)) "no resolver"
+            Send UnExpectError DFERR_PROGRAM
+        End_Procedure
+    End_Object
+
+    Object oTarStrategyTest is a cTest
+        Procedure Test
+            Integer iCount iLinks
+            Pointer pFirst
+
+            Send SetStrategy of oResolver ARCHIVE_FORMAT_TAR
+
+            // A file with one link is passed through unchanged.
+            Send PrepareFile of oIn "single.txt" 1 1
+            Move (ppEntry (oIn)) to pFirst
+            Get Linkify of oResolver oIn oOut 0 to iCount
+            Send AssertIAreEqual 1 iCount "single file: one entry to write"
+            Send AssertSAreEqual "single.txt" (psPathname (oOut)) "single file unchanged"
+            Send AssertPAreEqual pFirst (ppEntry (oOut)) "the entry itself is returned"
+            Send Assert (pbOwnsEntry (oOut)) "output owns the entry"
+            Send AssertFalse (HasEntry (oIn)) "input object is emptied"
+            Send AssertFalse (pbHardlinkIsSet (oOut)) "no hard link"
+
+            // First file of a hard link group: written as is. Second: becomes a hard link without data.
+            Send PrepareFile of oIn "a.txt" 5 2
+            Get Linkify of oResolver oIn oOut 0 to iCount
+            Send AssertIAreEqual 1 iCount "first link: one entry"
+            Send AssertSAreEqual "a.txt" (psPathname (oOut)) "first link path"
+            Send AssertFalse (pbHardlinkIsSet (oOut)) "first link is a regular file"
+            Send Assert (pbSizeIsSet (oOut)) "first link keeps its size"
+            Send PrepareFile of oIn "b.txt" 5 2
+            Get Linkify of oResolver oIn oOut 0 to iCount
+            Send AssertIAreEqual 1 iCount "second link: one entry"
+            Send AssertSAreEqual "b.txt" (psPathname (oOut)) "second link path"
+            Send Assert (pbHardlinkIsSet (oOut)) "second link is a hard link"
+            Send AssertSAreEqual "a.txt" (psHardlink (oOut)) "second link points to the first"
+            Send AssertFalse (pbSizeIsSet (oOut)) "second link has no data"
+
+            // A borrowed entry is cloned, the original stays valid.
+            Send PrepareFile of oIn "c.txt" 6 1
+            Move (ppEntry (oIn)) to pFirst
+            Set pbOwnsEntry of oIn to False
+            Get Linkify of oResolver oIn oOut 0 to iCount
+            Send AssertIAreEqual 1 iCount "borrowed entry: one entry"
+            Send AssertSAreEqual "c.txt" (psPathname (oOut)) "borrowed entry path"
+            Send AssertFalse (ppEntry (oOut) = pFirst) "borrowed entry was cloned"
+            Send AssertPAreEqual pFirst (ppEntry (oIn)) "borrowed entry still attached to the input"
+            Set pbOwnsEntry of oIn to True
+
+            // partial links: one file of a group of three that never saw its other links
+            Send PrepareFile of oIn "p1.txt" 77 3
+            Get Linkify of oResolver oIn oOut 0 to iCount
+            Send AssertIAreEqual 1 iCount "partial group: first entry written"
+            Get PartialLinks of oResolver oSecond (&iLinks) to iCount
+            Send Assert (iCount = 1) "partial links found one group"
+            Send AssertSAreEqual "p1.txt" (psPathname (oSecond)) "partial link entry"
+            Send AssertIAreEqual 2 iLinks "two links were never seen"
+            Send Assert (pbOwnsEntry (oSecond)) "partial entry owned by the output"
+            Get PartialLinks of oResolver oSecond (&iLinks) to iCount
+            Send AssertIAreEqual 0 iCount "no more partial links"
+            Send AssertFalse (HasEntry (oSecond)) "output emptied at the end"
+            Send AssertIAreEqual 0 iLinks "no links at the end"
+        End_Procedure
+    End_Object
+
+    Object oCpioStrategyTest is a cTest
+        Procedure Test
+            Integer iCount
+            Boolean bMore
+
+            Send SetStrategy of oResolver ARCHIVE_FORMAT_CPIO_SVR4_NOCRC
+
+            // The SVR4 strategy holds the first link back until the last link arrives.
+            Send PrepareFile of oIn "a.txt" 9 2
+            Get Linkify of oResolver oIn oOut oSecond to iCount
+            Send AssertIAreEqual 0 iCount "first link is deferred"
+            Send AssertFalse (HasEntry (oOut)) "nothing returned for the first link"
+            Send AssertFalse (HasEntry (oIn)) "input object emptied"
+
+            Send PrepareFile of oIn "b.txt" 9 2
+            Get Linkify of oResolver oIn oOut oSecond to iCount
+            Send AssertIAreEqual 2 iCount "last link: two entries"
+            Send AssertSAreEqual "a.txt" (psPathname (oOut)) "the deferred entry comes back first"
+            Send Assert (pbHardlinkIsSet (oOut)) "deferred entry became a hard link"
+            Send AssertFalse (pbSizeIsSet (oOut)) "deferred entry carries no data"
+            Send AssertSAreEqual "b.txt" (psPathname (oSecond)) "the last link carries the data"
+            Send Assert (pbSizeIsSet (oSecond)) "the last link keeps its size"
+            Send Assert (pbOwnsEntry (oSecond)) "second output owns its entry"
+
+            // Flush returns deferred entries of groups that never completed.
+            Send PrepareFile of oIn "lonely.txt" 50 3
+            Get Linkify of oResolver oIn oOut 0 to iCount
+            Send AssertIAreEqual 0 iCount "incomplete group is deferred"
+            Get Flush of oResolver oOut to bMore
+            Send Assert bMore "flush returns the deferred entry"
+            Send AssertSAreEqual "lonely.txt" (psPathname (oOut)) "flushed entry"
+            Get Flush of oResolver oOut to bMore
+            Send AssertFalse bMore "nothing more to flush"
+            Send AssertFalse (HasEntry (oOut)) "output emptied after the last flush"
+
+            // entries still held by the resolver are freed with it
+            Send PrepareFile of oIn "held.txt" 60 2
+            Get Linkify of oResolver oIn oOut 0 to iCount
+            Send AssertIAreEqual 0 iCount "deferred again"
+            Send FreeResolver of oResolver
+            Send AssertFalse (HasResolver (oResolver)) "freed with a deferred entry"
+        End_Procedure
+    End_Object
+
+    Object oOtherStrategyTest is a cTest
+        Procedure Test
+            Integer iCount
+
+            // Formats like zip/ar leave entries unchanged.
+            Send SetStrategy of oResolver ARCHIVE_FORMAT_ZIP
+            Send PrepareFile of oIn "z1.txt" 3 2
+            Get Linkify of oResolver oIn oOut 0 to iCount
+            Send AssertIAreEqual 1 iCount "zip strategy: entry returned"
+            Send PrepareFile of oIn "z2.txt" 3 2
+            Get Linkify of oResolver oIn oOut 0 to iCount
+            Send AssertIAreEqual 1 iCount "zip strategy: second entry returned"
+            Send AssertFalse (pbHardlinkIsSet (oOut)) "zip strategy leaves hard links alone"
+            Send AssertSAreEqual "z2.txt" (psPathname (oOut)) "zip strategy path"
+            // Linkify of an input object without entry and no deferred entries returns nothing
+            Send FreeEntry of oIn
+            Get Linkify of oResolver oIn oOut 0 to iCount
+            Send AssertIAreEqual 0 iCount "empty input"
+            Send AssertFalse (HasEntry (oOut)) "output emptied for an empty input"
+            Send FreeResolver of oResolver
+        End_Procedure
+    End_Object
+End_Object

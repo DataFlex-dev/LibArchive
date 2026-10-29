@@ -1,0 +1,1297 @@
+﻿// Tests for the archive_match_* functions (ArchiveMatch.h.pkg) and archive_utility_string_sort. Entries for the
+// matcher are created with archive_entry_new and the entry setters, or read from the sample archive.
+// The matcher functions take the callback-free path only; see the declaration comments.
+External_Function MatchTestRemoveDirectoryW "RemoveDirectoryW" kernel32.dll ;
+    Pointer lpPathName ;
+    Returns Integer
+
+Object oMatchTests is a cArchiveTestFixture
+    Set psTestFixtureName to "Match"
+
+    // ---- helpers -------------------------------------------------------------------------------------------------
+
+    // Creates an entry with a pathname and an mtime. The caller frees it with archive_entry_free.
+    Function NewEntry String sPath BigInt iMTime Returns Pointer
+        Pointer pEntry
+        Void_Type iVoid
+
+        Move (archive_entry_new ()) to pEntry
+        Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sPath))) to iVoid
+        Move (archive_entry_set_mtime (pEntry, iMTime, 0)) to iVoid
+        Function_Return pEntry
+    End_Function
+
+    // Creates an entry with owner information. The caller frees it with archive_entry_free.
+    Function NewOwnerEntry String sPath BigInt iUid BigInt iGid String sUname String sGname Returns Pointer
+        Pointer pEntry
+        Void_Type iVoid
+
+        Move (archive_entry_new ()) to pEntry
+        Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sPath))) to iVoid
+        Move (archive_entry_set_uid (pEntry, iUid)) to iVoid
+        Move (archive_entry_set_gid (pEntry, iGid)) to iVoid
+        If (SizeOfString (sUname) > 0) Begin
+            Move (archive_entry_set_uname_utf8 (pEntry, AddressOf (sUname))) to iVoid
+        End
+        If (SizeOfString (sGname) > 0) Begin
+            Move (archive_entry_set_gname_utf8 (pEntry, AddressOf (sGname))) to iVoid
+        End
+        Function_Return pEntry
+    End_Function
+
+    // archive_match_path_excluded for a pathname.
+    Function PathExcluded Pointer pMatch String sPath Returns Integer
+        Pointer pEntry
+        Integer iResult
+        Void_Type iVoid
+
+        Get NewEntry sPath 1700000000 to pEntry
+        Move (archive_match_path_excluded (pMatch, pEntry)) to iResult
+        Move (archive_entry_free (pEntry)) to iVoid
+        Function_Return iResult
+    End_Function
+
+    // archive_match_time_excluded for an entry with the given mtime.
+    Function MTimeExcluded Pointer pMatch BigInt iMTime Returns Integer
+        Pointer pEntry
+        Integer iResult
+        Void_Type iVoid
+
+        Get NewEntry "time.txt" iMTime to pEntry
+        Move (archive_match_time_excluded (pMatch, pEntry)) to iResult
+        Move (archive_entry_free (pEntry)) to iVoid
+        Function_Return iResult
+    End_Function
+
+    // archive_match_time_excluded for an entry with the given ctime (its mtime is not set).
+    Function CTimeExcluded Pointer pMatch BigInt iCTime Returns Integer
+        Pointer pEntry
+        Integer iResult
+        Void_Type iVoid
+
+        Move (archive_entry_new ()) to pEntry
+        Move (archive_entry_set_ctime (pEntry, iCTime, 0)) to iVoid
+        Move (archive_match_time_excluded (pMatch, pEntry)) to iResult
+        Move (archive_entry_free (pEntry)) to iVoid
+        Function_Return iResult
+    End_Function
+
+    // archive_match_owner_excluded for an entry with the given owner information.
+    Function OwnerExcluded Pointer pMatch BigInt iUid BigInt iGid String sUname String sGname Returns Integer
+        Pointer pEntry
+        Integer iResult
+        Void_Type iVoid
+
+        Get NewOwnerEntry "owner.txt" iUid iGid sUname sGname to pEntry
+        Move (archive_match_owner_excluded (pMatch, pEntry)) to iResult
+        Move (archive_entry_free (pEntry)) to iVoid
+        Function_Return iResult
+    End_Function
+
+    // Writes sContent byte for byte (NUL bytes included) to a new file, using libarchive's raw format writer.
+    Function WriteRawFile String sFile String sContent Returns Integer
+        Pointer pArchive pEntry
+        Integer iResult
+        BigInt iWritten
+        WString wsFile
+        Void_Type iVoid
+
+        Move sFile to wsFile
+        Move (archive_write_new ()) to pArchive
+        Move (archive_write_set_format_raw (pArchive)) to iResult
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_write_open_filename_w (pArchive, AddressOf (wsFile))) to iResult
+        End
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_entry_new ()) to pEntry
+            Move (archive_entry_set_filetype (pEntry, AE_IFREG)) to iVoid
+            Move (archive_entry_set_size (pEntry, SizeOfString (sContent))) to iVoid
+            Move (archive_write_header (pArchive, pEntry)) to iResult
+            If (iResult = ARCHIVE_OK) Begin
+                Move (archive_write_data (pArchive, AddressOf (sContent), SizeOfString (sContent))) to iWritten
+                If (iWritten <> SizeOfString (sContent)) Begin
+                    Move ARCHIVE_FATAL to iResult
+                End
+            End
+            Move (archive_entry_free (pEntry)) to iVoid
+        End
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_write_close (pArchive)) to iResult
+        End
+        Move (archive_write_free (pArchive)) to iVoid
+        Function_Return iResult
+    End_Function
+
+    // ---- tests ---------------------------------------------------------------------------------------------------
+
+    // archive_match_new / archive_match_free; a matcher without conditions excludes nothing.
+    Object oNewFreeTest is a cTest
+        Procedure Test
+            Pointer pMatch pEntry
+            Integer iResult
+            Void_Type iVoid
+
+            Move (archive_match_new ()) to pMatch
+            Send Assert (pMatch <> 0) "archive_match_new returns a handle"
+            Delegate Get NewEntry "hello.txt" 1700000000 to pEntry
+            Move (archive_match_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 0 iResult "excluded without conditions"
+            Move (archive_match_path_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 0 iResult "path_excluded without patterns"
+            Move (archive_match_time_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 0 iResult "time_excluded without time conditions"
+            Move (archive_match_owner_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 0 iResult "owner_excluded without owner conditions"
+            Move (archive_match_path_unmatched_inclusions (pMatch)) to iResult
+            Send AssertIAreEqual 0 iResult "no inclusion patterns, nothing unmatched"
+            Move (archive_entry_free (pEntry)) to iVoid
+            Move (archive_match_free (pMatch)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "archive_match_free"
+        End_Procedure
+    End_Object
+
+    // archive_match_exclude_pattern.
+    Object oExcludePatternTest is a cTest
+        Procedure Test
+            Pointer pMatch
+            Integer iResult
+            String sPattern
+            Void_Type iVoid
+
+            Move (archive_match_new ()) to pMatch
+            Move "hello.txt" to sPattern
+            Move (archive_match_exclude_pattern (pMatch, AddressOf (sPattern))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "exclude_pattern hello.txt"
+            Delegate Get PathExcluded pMatch "hello.txt" to iResult
+            Send AssertIAreEqual 1 iResult "hello.txt is excluded"
+            Delegate Get PathExcluded pMatch "docs/nested.txt" to iResult
+            Send AssertIAreEqual 0 iResult "docs/nested.txt is not excluded"
+            Delegate Get PathExcluded pMatch "docs/" to iResult
+            Send AssertIAreEqual 0 iResult "docs/ is not excluded"
+            Move (archive_match_free (pMatch)) to iResult
+
+            // wildcard pattern: "*" also matches across directory separators
+            Move (archive_match_new ()) to pMatch
+            Move "*.txt" to sPattern
+            Move (archive_match_exclude_pattern (pMatch, AddressOf (sPattern))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "exclude_pattern *.txt"
+            Delegate Get PathExcluded pMatch "hello.txt" to iResult
+            Send AssertIAreEqual 1 iResult "*.txt excludes hello.txt"
+            Delegate Get PathExcluded pMatch "docs/nested.txt" to iResult
+            Send AssertIAreEqual 1 iResult "*.txt excludes docs/nested.txt"
+            Delegate Get PathExcluded pMatch "docs/readme.md" to iResult
+            Send AssertIAreEqual 0 iResult "*.txt keeps docs/readme.md"
+            Move (archive_match_free (pMatch)) to iResult
+
+            // a pattern without a leading anchor matches from any directory level
+            Move (archive_match_new ()) to pMatch
+            Move "nested.txt" to sPattern
+            Move (archive_match_exclude_pattern (pMatch, AddressOf (sPattern))) to iResult
+            Delegate Get PathExcluded pMatch "docs/nested.txt" to iResult
+            Send AssertIAreEqual 1 iResult "nested.txt excludes docs/nested.txt (no start anchor)"
+            Delegate Get PathExcluded pMatch "docs/nested.txt.bak" to iResult
+            Send AssertIAreEqual 0 iResult "nested.txt keeps docs/nested.txt.bak"
+            Move (archive_match_free (pMatch)) to iResult
+
+            // The narrow pattern is interpreted in the locale code page, not UTF-8 (unicode patterns belong to the
+            // _w variant): a bracket expression and "?" work on ASCII names.
+            Move (archive_match_new ()) to pMatch
+            Move "h[a-f]llo.t?t" to sPattern
+            Move (archive_match_exclude_pattern (pMatch, AddressOf (sPattern))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "exclude_pattern with bracket expression"
+            Delegate Get PathExcluded pMatch "hello.txt" to iResult
+            Send AssertIAreEqual 1 iResult "h[a-f]llo.t?t excludes hello.txt"
+            Delegate Get PathExcluded pMatch "hxllo.txt" to iResult
+            Send AssertIAreEqual 0 iResult "h[a-f]llo.t?t keeps hxllo.txt"
+            Move (archive_match_free (pMatch)) to iResult
+        End_Procedure
+    End_Object
+
+    // archive_match_exclude_pattern_w.
+    Object oExcludePatternWideTest is a cTest
+        Procedure Test
+            Pointer pMatch
+            Integer iResult
+            WString wsPattern
+
+            Move (archive_match_new ()) to pMatch
+            Move "docs/*.txt" to wsPattern
+            Move (archive_match_exclude_pattern_w (pMatch, AddressOf (wsPattern))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "exclude_pattern_w"
+            Delegate Get PathExcluded pMatch "docs/nested.txt" to iResult
+            Send AssertIAreEqual 1 iResult "docs/nested.txt is excluded"
+            Delegate Get PathExcluded pMatch "hello.txt" to iResult
+            Send AssertIAreEqual 0 iResult "hello.txt is not excluded"
+            Move (archive_match_free (pMatch)) to iResult
+
+            Move (archive_match_new ()) to pMatch
+            Move "héllo*" to wsPattern
+            Move (archive_match_exclude_pattern_w (pMatch, AddressOf (wsPattern))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "exclude_pattern_w unicode"
+            Delegate Get PathExcluded pMatch "héllo-ünï.txt" to iResult
+            Send AssertIAreEqual 1 iResult "unicode name is excluded"
+            Delegate Get PathExcluded pMatch "hello.txt" to iResult
+            Send AssertIAreEqual 0 iResult "hello.txt is not excluded"
+            Move (archive_match_free (pMatch)) to iResult
+        End_Procedure
+    End_Object
+
+    // archive_match_exclude_pattern_from_file and _w, newline and NUL separated.
+    Object oExcludePatternFromFileTest is a cTest
+        Procedure Test
+            Pointer pMatch
+            Integer iResult
+            String sFile sLf sNul
+            WString wsFile
+
+            Move (Character (10)) to sLf
+            Move (Character (0)) to sNul
+
+            // newline separated
+            Delegate Get TempFile "exclude-lf.txt" to sFile
+            Delegate Get WriteRawFile sFile ("hello.txt" + sLf + "docs/*.md" + sLf) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "write pattern file"
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_exclude_pattern_from_file (pMatch, AddressOf (sFile), 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "exclude_pattern_from_file (newline)"
+            Delegate Get PathExcluded pMatch "hello.txt" to iResult
+            Send AssertIAreEqual 1 iResult "hello.txt excluded by first line"
+            Delegate Get PathExcluded pMatch "docs/guide.md" to iResult
+            Send AssertIAreEqual 1 iResult "docs/guide.md excluded by second line"
+            Delegate Get PathExcluded pMatch "docs/nested.txt" to iResult
+            Send AssertIAreEqual 0 iResult "docs/nested.txt not excluded"
+            Move (archive_match_free (pMatch)) to iResult
+            EraseFile sFile
+
+            // NUL separated: a newline is then part of the pattern, so "a b" style names survive
+            Delegate Get TempFile "exclude-nul.txt" to sFile
+            Delegate Get WriteRawFile sFile ("hello.txt" + sNul + "docs/*.md" + sNul) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "write NUL separated pattern file"
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_exclude_pattern_from_file (pMatch, AddressOf (sFile), 1)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "exclude_pattern_from_file (NUL)"
+            Delegate Get PathExcluded pMatch "hello.txt" to iResult
+            Send AssertIAreEqual 1 iResult "NUL file: hello.txt excluded"
+            Delegate Get PathExcluded pMatch "docs/guide.md" to iResult
+            Send AssertIAreEqual 1 iResult "NUL file: docs/guide.md excluded"
+            Delegate Get PathExcluded pMatch "docs/nested.txt" to iResult
+            Send AssertIAreEqual 0 iResult "NUL file: docs/nested.txt not excluded"
+            Move (archive_match_free (pMatch)) to iResult
+            EraseFile sFile
+
+            // wide file name, newline separated
+            Delegate Get TempFile "exclude-lf-w.txt" to sFile
+            Delegate Get WriteRawFile sFile ("docs/nested.txt" + sLf) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "write pattern file (wide)"
+            Move sFile to wsFile
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_exclude_pattern_from_file_w (pMatch, AddressOf (wsFile), 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "exclude_pattern_from_file_w (newline)"
+            Delegate Get PathExcluded pMatch "docs/nested.txt" to iResult
+            Send AssertIAreEqual 1 iResult "wide: docs/nested.txt excluded"
+            Delegate Get PathExcluded pMatch "hello.txt" to iResult
+            Send AssertIAreEqual 0 iResult "wide: hello.txt not excluded"
+            Move (archive_match_free (pMatch)) to iResult
+            EraseFile sFile
+
+            // wide file name, NUL separated
+            Delegate Get TempFile "exclude-nul-w.txt" to sFile
+            Delegate Get WriteRawFile sFile ("hello.txt" + sNul + "docs/nested.txt" + sNul) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "write NUL separated pattern file (wide)"
+            Move sFile to wsFile
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_exclude_pattern_from_file_w (pMatch, AddressOf (wsFile), 1)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "exclude_pattern_from_file_w (NUL)"
+            Delegate Get PathExcluded pMatch "hello.txt" to iResult
+            Send AssertIAreEqual 1 iResult "wide NUL: hello.txt excluded"
+            Delegate Get PathExcluded pMatch "docs/nested.txt" to iResult
+            Send AssertIAreEqual 1 iResult "wide NUL: docs/nested.txt excluded"
+            Delegate Get PathExcluded pMatch "docs/other.txt" to iResult
+            Send AssertIAreEqual 0 iResult "wide NUL: docs/other.txt not excluded"
+            Move (archive_match_free (pMatch)) to iResult
+            EraseFile sFile
+
+            // a missing file is an error
+            Delegate Get TempFile "does-not-exist.txt" to sFile
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_exclude_pattern_from_file (pMatch, AddressOf (sFile), 0)) to iResult
+            Send Assert (iResult < ARCHIVE_OK) "missing pattern file fails"
+            Move (archive_match_free (pMatch)) to iResult
+        End_Procedure
+    End_Object
+
+    // archive_match_include_pattern: only matching entries pass.
+    Object oIncludePatternTest is a cTest
+        Procedure Test
+            Pointer pMatch
+            Integer iResult
+            String sPattern
+
+            Move (archive_match_new ()) to pMatch
+            Move "hello.txt" to sPattern
+            Move (archive_match_include_pattern (pMatch, AddressOf (sPattern))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_pattern hello.txt"
+            Delegate Get PathExcluded pMatch "hello.txt" to iResult
+            Send AssertIAreEqual 0 iResult "hello.txt is included"
+            Delegate Get PathExcluded pMatch "docs/nested.txt" to iResult
+            Send AssertIAreEqual 1 iResult "docs/nested.txt is not included, so excluded"
+            Move "*.md" to sPattern
+            Move (archive_match_include_pattern (pMatch, AddressOf (sPattern))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "second include_pattern"
+            Delegate Get PathExcluded pMatch "docs/readme.md" to iResult
+            Send AssertIAreEqual 0 iResult "docs/readme.md is included by the second pattern"
+            Delegate Get PathExcluded pMatch "docs/nested.txt" to iResult
+            Send AssertIAreEqual 1 iResult "docs/nested.txt is still excluded"
+            Move (archive_match_free (pMatch)) to iResult
+
+            // exclusion wins over inclusion
+            Move (archive_match_new ()) to pMatch
+            Move "docs" to sPattern
+            Move (archive_match_include_pattern (pMatch, AddressOf (sPattern))) to iResult
+            Move "*.txt" to sPattern
+            Move (archive_match_exclude_pattern (pMatch, AddressOf (sPattern))) to iResult
+            Delegate Get PathExcluded pMatch "docs/readme.md" to iResult
+            Send AssertIAreEqual 0 iResult "docs/readme.md included"
+            Delegate Get PathExcluded pMatch "docs/nested.txt" to iResult
+            Send AssertIAreEqual 1 iResult "docs/nested.txt matches the exclusion"
+            Move (archive_match_free (pMatch)) to iResult
+        End_Procedure
+    End_Object
+
+    // archive_match_include_pattern_w.
+    Object oIncludePatternWideTest is a cTest
+        Procedure Test
+            Pointer pMatch
+            Integer iResult
+            WString wsPattern
+
+            Move (archive_match_new ()) to pMatch
+            Move "héllo*" to wsPattern
+            Move (archive_match_include_pattern_w (pMatch, AddressOf (wsPattern))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_pattern_w"
+            Delegate Get PathExcluded pMatch "héllo-ünï.txt" to iResult
+            Send AssertIAreEqual 0 iResult "unicode name is included"
+            Delegate Get PathExcluded pMatch "hello.txt" to iResult
+            Send AssertIAreEqual 1 iResult "hello.txt is not included"
+            Move (archive_match_free (pMatch)) to iResult
+        End_Procedure
+    End_Object
+
+    // archive_match_include_pattern_from_file and _w, newline and NUL separated.
+    Object oIncludePatternFromFileTest is a cTest
+        Procedure Test
+            Pointer pMatch
+            Integer iResult
+            String sFile sLf sNul
+            WString wsFile
+
+            Move (Character (10)) to sLf
+            Move (Character (0)) to sNul
+
+            Delegate Get TempFile "include-lf.txt" to sFile
+            Delegate Get WriteRawFile sFile ("hello.txt" + sLf + "docs/*.md" + sLf) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "write pattern file"
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_include_pattern_from_file (pMatch, AddressOf (sFile), 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_pattern_from_file (newline)"
+            Delegate Get PathExcluded pMatch "hello.txt" to iResult
+            Send AssertIAreEqual 0 iResult "hello.txt included"
+            Delegate Get PathExcluded pMatch "docs/guide.md" to iResult
+            Send AssertIAreEqual 0 iResult "docs/guide.md included"
+            Delegate Get PathExcluded pMatch "docs/nested.txt" to iResult
+            Send AssertIAreEqual 1 iResult "docs/nested.txt not included"
+            Move (archive_match_free (pMatch)) to iResult
+            EraseFile sFile
+
+            Delegate Get TempFile "include-nul.txt" to sFile
+            Delegate Get WriteRawFile sFile ("hello.txt" + sNul + "docs/*.md" + sNul) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "write NUL separated pattern file"
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_include_pattern_from_file (pMatch, AddressOf (sFile), 1)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_pattern_from_file (NUL)"
+            Delegate Get PathExcluded pMatch "hello.txt" to iResult
+            Send AssertIAreEqual 0 iResult "NUL file: hello.txt included"
+            Delegate Get PathExcluded pMatch "docs/guide.md" to iResult
+            Send AssertIAreEqual 0 iResult "NUL file: docs/guide.md included"
+            Delegate Get PathExcluded pMatch "docs/nested.txt" to iResult
+            Send AssertIAreEqual 1 iResult "NUL file: docs/nested.txt not included"
+            Move (archive_match_free (pMatch)) to iResult
+            EraseFile sFile
+
+            Delegate Get TempFile "include-lf-w.txt" to sFile
+            Delegate Get WriteRawFile sFile ("docs/nested.txt" + sLf) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "write pattern file (wide)"
+            Move sFile to wsFile
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_include_pattern_from_file_w (pMatch, AddressOf (wsFile), 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_pattern_from_file_w (newline)"
+            Delegate Get PathExcluded pMatch "docs/nested.txt" to iResult
+            Send AssertIAreEqual 0 iResult "wide: docs/nested.txt included"
+            Delegate Get PathExcluded pMatch "hello.txt" to iResult
+            Send AssertIAreEqual 1 iResult "wide: hello.txt not included"
+            Move (archive_match_free (pMatch)) to iResult
+            EraseFile sFile
+
+            Delegate Get TempFile "include-nul-w.txt" to sFile
+            Delegate Get WriteRawFile sFile ("hello.txt" + sNul + "docs/nested.txt" + sNul) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "write NUL separated pattern file (wide)"
+            Move sFile to wsFile
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_include_pattern_from_file_w (pMatch, AddressOf (wsFile), 1)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_pattern_from_file_w (NUL)"
+            Delegate Get PathExcluded pMatch "hello.txt" to iResult
+            Send AssertIAreEqual 0 iResult "wide NUL: hello.txt included"
+            Delegate Get PathExcluded pMatch "docs/nested.txt" to iResult
+            Send AssertIAreEqual 0 iResult "wide NUL: docs/nested.txt included"
+            Delegate Get PathExcluded pMatch "docs/other.txt" to iResult
+            Send AssertIAreEqual 1 iResult "wide NUL: docs/other.txt not included"
+            Move (archive_match_free (pMatch)) to iResult
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    // archive_match_path_unmatched_inclusions and archive_match_path_unmatched_inclusions_next.
+    Object oUnmatchedInclusionsTest is a cTest
+        Procedure Test
+            Pointer pMatch pText
+            Integer iResult iCount
+            String sPattern sText
+
+            Move (archive_match_new ()) to pMatch
+            Move "hello.txt" to sPattern
+            Move (archive_match_include_pattern (pMatch, AddressOf (sPattern))) to iResult
+            Move "missing.bin" to sPattern
+            Move (archive_match_include_pattern (pMatch, AddressOf (sPattern))) to iResult
+            Move "other.bin" to sPattern
+            Move (archive_match_include_pattern (pMatch, AddressOf (sPattern))) to iResult
+            Move (archive_match_path_unmatched_inclusions (pMatch)) to iCount
+            Send AssertIAreEqual 3 iCount "all 3 inclusion patterns unmatched at the start"
+            Delegate Get PathExcluded pMatch "hello.txt" to iResult
+            Send AssertIAreEqual 0 iResult "hello.txt is included"
+            Move (archive_match_path_unmatched_inclusions (pMatch)) to iCount
+            Send AssertIAreEqual 2 iCount "2 unmatched after hello.txt matched"
+
+            Move 0 to pText
+            Move (archive_match_path_unmatched_inclusions_next (pMatch, AddressOf (pText))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "first unmatched pattern"
+            Send Assert (pText <> 0) "first unmatched pattern pointer"
+            If (pText <> 0) Begin
+                Move (PointerToString (pText)) to sText
+                Send AssertSAreEqual "missing.bin" sText "first unmatched pattern text"
+            End
+            Move 0 to pText
+            Move (archive_match_path_unmatched_inclusions_next (pMatch, AddressOf (pText))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "second unmatched pattern"
+            If (pText <> 0) Begin
+                Move (PointerToString (pText)) to sText
+                Send AssertSAreEqual "other.bin" sText "second unmatched pattern text"
+            End
+            Move (archive_match_path_unmatched_inclusions_next (pMatch, AddressOf (pText))) to iResult
+            Send AssertIAreEqual ARCHIVE_EOF iResult "no more unmatched patterns"
+            Move (archive_match_free (pMatch)) to iResult
+        End_Procedure
+    End_Object
+
+    // archive_match_path_unmatched_inclusions_next_w.
+    Object oUnmatchedInclusionsWideTest is a cTest
+        Procedure Test
+            Pointer pMatch pText
+            Integer iResult iCount
+            WString wsPattern
+            String sText
+
+            Move (archive_match_new ()) to pMatch
+            Move "héllo.txt" to wsPattern
+            Move (archive_match_include_pattern_w (pMatch, AddressOf (wsPattern))) to iResult
+            Move "ünmatched.bin" to wsPattern
+            Move (archive_match_include_pattern_w (pMatch, AddressOf (wsPattern))) to iResult
+            Delegate Get PathExcluded pMatch "héllo.txt" to iResult
+            Send AssertIAreEqual 0 iResult "héllo.txt is included"
+            Move (archive_match_path_unmatched_inclusions (pMatch)) to iCount
+            Send AssertIAreEqual 1 iCount "one unmatched pattern"
+
+            Move 0 to pText
+            Move (archive_match_path_unmatched_inclusions_next_w (pMatch, AddressOf (pText))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "unmatched pattern (wide)"
+            Send Assert (pText <> 0) "unmatched pattern pointer (wide)"
+            If (pText <> 0) Begin
+                Move (PointerToWString (pText)) to sText
+                Send AssertSAreEqual "ünmatched.bin" sText "unmatched pattern text (wide)"
+            End
+            Move (archive_match_path_unmatched_inclusions_next_w (pMatch, AddressOf (pText))) to iResult
+            Send AssertIAreEqual ARCHIVE_EOF iResult "no more unmatched patterns (wide)"
+            Move (archive_match_free (pMatch)) to iResult
+        End_Procedure
+    End_Object
+
+    // archive_match_set_inclusion_recursion: a directory include pattern also includes its content by default.
+    Object oInclusionRecursionTest is a cTest
+        Procedure Test
+            Pointer pMatch
+            Integer iResult
+            String sPattern
+
+            // default: recursion enabled
+            Move (archive_match_new ()) to pMatch
+            Move "docs" to sPattern
+            Move (archive_match_include_pattern (pMatch, AddressOf (sPattern))) to iResult
+            Delegate Get PathExcluded pMatch "docs" to iResult
+            Send AssertIAreEqual 0 iResult "recursion on: docs included"
+            Delegate Get PathExcluded pMatch "docs/nested.txt" to iResult
+            Send AssertIAreEqual 0 iResult "recursion on: docs/nested.txt included"
+            Delegate Get PathExcluded pMatch "docs/sub/deep.txt" to iResult
+            Send AssertIAreEqual 0 iResult "recursion on: docs/sub/deep.txt included"
+            Delegate Get PathExcluded pMatch "documents/a.txt" to iResult
+            Send AssertIAreEqual 1 iResult "recursion on: documents/a.txt is another directory"
+            Delegate Get PathExcluded pMatch "hello.txt" to iResult
+            Send AssertIAreEqual 1 iResult "recursion on: hello.txt not included"
+            Move (archive_match_free (pMatch)) to iResult
+
+            // explicitly enabled behaves like the default
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_set_inclusion_recursion (pMatch, 1)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "set_inclusion_recursion on"
+            Move (archive_match_include_pattern (pMatch, AddressOf (sPattern))) to iResult
+            Delegate Get PathExcluded pMatch "docs/nested.txt" to iResult
+            Send AssertIAreEqual 0 iResult "explicit recursion on: docs/nested.txt included"
+            Move (archive_match_free (pMatch)) to iResult
+
+            // recursion disabled: only the directory itself matches
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_set_inclusion_recursion (pMatch, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "set_inclusion_recursion off"
+            Move (archive_match_include_pattern (pMatch, AddressOf (sPattern))) to iResult
+            Delegate Get PathExcluded pMatch "docs" to iResult
+            Send AssertIAreEqual 0 iResult "recursion off: docs included"
+            Delegate Get PathExcluded pMatch "docs/nested.txt" to iResult
+            Send AssertIAreEqual 1 iResult "recursion off: docs/nested.txt excluded"
+            Delegate Get PathExcluded pMatch "docs/sub/deep.txt" to iResult
+            Send AssertIAreEqual 1 iResult "recursion off: docs/sub/deep.txt excluded"
+            Move (archive_match_free (pMatch)) to iResult
+        End_Procedure
+    End_Object
+
+    // archive_match_include_time with mtime and ctime and the NEWER / OLDER / EQUAL flags.
+    Object oIncludeTimeTest is a cTest
+        Procedure Test
+            Pointer pMatch
+            Integer iResult iNewer iOlder iEqualFlag
+            BigInt iTime
+
+            Move 1700000000 to iTime
+
+            // mtime NEWER: entries must be newer than the time, equal is excluded
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_include_time (pMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_NEWER, iTime, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_time mtime newer"
+            Delegate Get MTimeExcluded pMatch 1700000001 to iResult
+            Send AssertIAreEqual 0 iResult "NEWER: 1 second newer is included"
+            Delegate Get MTimeExcluded pMatch 1700000000 to iResult
+            Send AssertIAreEqual 1 iResult "NEWER: equal is excluded"
+            Delegate Get MTimeExcluded pMatch 1699999999 to iResult
+            Send AssertIAreEqual 1 iResult "NEWER: older is excluded"
+            Move (archive_match_free (pMatch)) to iResult
+
+            // mtime NEWER or EQUAL
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_include_time (pMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_NEWER + ARCHIVE_MATCH_EQUAL, iTime, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_time mtime newer+equal"
+            Delegate Get MTimeExcluded pMatch 1700000001 to iResult
+            Send AssertIAreEqual 0 iResult "NEWER+EQUAL: newer is included"
+            Delegate Get MTimeExcluded pMatch 1700000000 to iResult
+            Send AssertIAreEqual 0 iResult "NEWER+EQUAL: equal is included"
+            Delegate Get MTimeExcluded pMatch 1699999999 to iResult
+            Send AssertIAreEqual 1 iResult "NEWER+EQUAL: older is excluded"
+            Move (archive_match_free (pMatch)) to iResult
+
+            // mtime OLDER
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_include_time (pMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_OLDER, iTime, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_time mtime older"
+            Delegate Get MTimeExcluded pMatch 1699999999 to iResult
+            Send AssertIAreEqual 0 iResult "OLDER: older is included"
+            Delegate Get MTimeExcluded pMatch 1700000000 to iResult
+            Send AssertIAreEqual 1 iResult "OLDER: equal is excluded"
+            Delegate Get MTimeExcluded pMatch 1700000001 to iResult
+            Send AssertIAreEqual 1 iResult "OLDER: newer is excluded"
+            Move (archive_match_free (pMatch)) to iResult
+
+            // mtime OLDER or EQUAL
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_include_time (pMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_OLDER + ARCHIVE_MATCH_EQUAL, iTime, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_time mtime older+equal"
+            Delegate Get MTimeExcluded pMatch 1699999999 to iResult
+            Send AssertIAreEqual 0 iResult "OLDER+EQUAL: older is included"
+            Delegate Get MTimeExcluded pMatch 1700000000 to iResult
+            Send AssertIAreEqual 0 iResult "OLDER+EQUAL: equal is included"
+            Delegate Get MTimeExcluded pMatch 1700000001 to iResult
+            Send AssertIAreEqual 1 iResult "OLDER+EQUAL: newer is excluded"
+            Move (archive_match_free (pMatch)) to iResult
+
+            // mtime EQUAL only
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_include_time (pMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_EQUAL, iTime, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_time mtime equal"
+            Delegate Get MTimeExcluded pMatch 1700000000 to iResult
+            Send AssertIAreEqual 0 iResult "EQUAL: equal is included"
+            Delegate Get MTimeExcluded pMatch 1700000001 to iResult
+            Send AssertIAreEqual 1 iResult "EQUAL: newer is excluded"
+            Delegate Get MTimeExcluded pMatch 1699999999 to iResult
+            Send AssertIAreEqual 1 iResult "EQUAL: older is excluded"
+            Move (archive_match_free (pMatch)) to iResult
+
+            // ctime NEWER
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_include_time (pMatch, ARCHIVE_MATCH_CTIME + ARCHIVE_MATCH_NEWER, iTime, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_time ctime newer"
+            Delegate Get CTimeExcluded pMatch 1700000100 to iResult
+            Send AssertIAreEqual 0 iResult "ctime NEWER: newer is included"
+            Delegate Get CTimeExcluded pMatch 1699999900 to iResult
+            Send AssertIAreEqual 1 iResult "ctime NEWER: older is excluded"
+            Move (archive_match_free (pMatch)) to iResult
+
+            // ctime OLDER
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_include_time (pMatch, ARCHIVE_MATCH_CTIME + ARCHIVE_MATCH_OLDER, iTime, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_time ctime older"
+            Delegate Get CTimeExcluded pMatch 1699999900 to iResult
+            Send AssertIAreEqual 0 iResult "ctime OLDER: older is included"
+            Delegate Get CTimeExcluded pMatch 1700000100 to iResult
+            Send AssertIAreEqual 1 iResult "ctime OLDER: newer is excluded"
+            Move (archive_match_free (pMatch)) to iResult
+
+            // nanoseconds are compared too
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_include_time (pMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_NEWER, iTime, 500000000)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_time with nanoseconds"
+            Delegate Get MTimeExcluded pMatch 1700000000 to iResult
+            Send AssertIAreEqual 1 iResult "same second but 0 ns is older than 0.5 s"
+            Delegate Get MTimeExcluded pMatch 1700000001 to iResult
+            Send AssertIAreEqual 0 iResult "next second is newer"
+            Move (archive_match_free (pMatch)) to iResult
+
+            // invalid flags are rejected
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_include_time (pMatch, ARCHIVE_MATCH_NEWER, iTime, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "no MTIME/CTIME flag fails"
+            Move (archive_match_include_time (pMatch, ARCHIVE_MATCH_MTIME, iTime, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "no NEWER/OLDER/EQUAL flag fails"
+            Move (archive_match_free (pMatch)) to iResult
+        End_Procedure
+    End_Object
+
+    // archive_match_include_date (narrow date strings).
+    Object oIncludeDateTest is a cTest
+        Procedure Test
+            Pointer pMatch
+            Integer iResult
+            String sDate
+
+            Move (archive_match_new ()) to pMatch
+            Move "2023-11-14 22:13:20 UTC" to sDate
+            Move (archive_match_include_date (pMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_NEWER, AddressOf (sDate))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_date ISO string"
+            Delegate Get MTimeExcluded pMatch 1700000001 to iResult
+            Send AssertIAreEqual 0 iResult "ISO date: newer is included"
+            Delegate Get MTimeExcluded pMatch 1700000000 to iResult
+            Send AssertIAreEqual 1 iResult "ISO date: equal is excluded"
+            Delegate Get MTimeExcluded pMatch 1699999999 to iResult
+            Send AssertIAreEqual 1 iResult "ISO date: older is excluded"
+            Move (archive_match_free (pMatch)) to iResult
+
+            Move (archive_match_new ()) to pMatch
+            Move "2023-11-14 22:13:20 UTC" to sDate
+            Move (archive_match_include_date (pMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_OLDER + ARCHIVE_MATCH_EQUAL, AddressOf (sDate))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_date older+equal"
+            Delegate Get MTimeExcluded pMatch 1700000000 to iResult
+            Send AssertIAreEqual 0 iResult "older+equal: equal is included"
+            Delegate Get MTimeExcluded pMatch 1700000001 to iResult
+            Send AssertIAreEqual 1 iResult "older+equal: newer is excluded"
+            Move (archive_match_free (pMatch)) to iResult
+
+            // ctime
+            Move (archive_match_new ()) to pMatch
+            Move "2023-11-14 22:13:20 UTC" to sDate
+            Move (archive_match_include_date (pMatch, ARCHIVE_MATCH_CTIME + ARCHIVE_MATCH_NEWER, AddressOf (sDate))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_date ctime"
+            Delegate Get CTimeExcluded pMatch 1700000100 to iResult
+            Send AssertIAreEqual 0 iResult "ctime: newer is included"
+            Delegate Get CTimeExcluded pMatch 1699999900 to iResult
+            Send AssertIAreEqual 1 iResult "ctime: older is excluded"
+            Move (archive_match_free (pMatch)) to iResult
+
+            // RFC 2822 style date with a numeric zone
+            Move (archive_match_new ()) to pMatch
+            Move "Tue, 14 Nov 2023 22:13:20 +0000" to sDate
+            Move (archive_match_include_date (pMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_NEWER, AddressOf (sDate))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_date RFC 2822 string"
+            Delegate Get MTimeExcluded pMatch 1700000001 to iResult
+            Send AssertIAreEqual 0 iResult "RFC 2822 date: newer is included"
+            Delegate Get MTimeExcluded pMatch 1699999999 to iResult
+            Send AssertIAreEqual 1 iResult "RFC 2822 date: older is excluded"
+            Move (archive_match_free (pMatch)) to iResult
+
+            // slashes and the GMT zone name
+            Move (archive_match_new ()) to pMatch
+            Move "2023/11/14 22:13:20 GMT" to sDate
+            Move (archive_match_include_date (pMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_NEWER, AddressOf (sDate))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_date with slashes and GMT"
+            Delegate Get MTimeExcluded pMatch 1700000001 to iResult
+            Send AssertIAreEqual 0 iResult "GMT date: newer is included"
+            Delegate Get MTimeExcluded pMatch 1699999999 to iResult
+            Send AssertIAreEqual 1 iResult "GMT date: older is excluded"
+            Move (archive_match_free (pMatch)) to iResult
+
+            // a date without a zone is local time (result depends on the time zone, only acceptance is asserted)
+            Move (archive_match_new ()) to pMatch
+            Move "2023-11-14 22:13:20" to sDate
+            Move (archive_match_include_date (pMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_NEWER, AddressOf (sDate))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_date without zone (local time)"
+            Move (archive_match_free (pMatch)) to iResult
+
+            // epoch seconds ("1700000000", "@1700000000") and ISO 8601 with a T separator are not understood
+            Move (archive_match_new ()) to pMatch
+            Move "1700000000" to sDate
+            Move (archive_match_include_date (pMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_NEWER, AddressOf (sDate))) to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "plain epoch seconds are rejected"
+            Move "@1700000000" to sDate
+            Move (archive_match_include_date (pMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_NEWER, AddressOf (sDate))) to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "@epoch is rejected"
+            Move "2023-11-14T22:13:20Z" to sDate
+            Move (archive_match_include_date (pMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_NEWER, AddressOf (sDate))) to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "ISO 8601 with T separator is rejected"
+            Move (archive_match_free (pMatch)) to iResult
+
+            // an unparsable date fails
+            Move (archive_match_new ()) to pMatch
+            Move "this is not a date" to sDate
+            Move (archive_match_include_date (pMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_NEWER, AddressOf (sDate))) to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "unparsable date fails"
+            Move (archive_match_free (pMatch)) to iResult
+        End_Procedure
+    End_Object
+
+    // archive_match_include_date_w.
+    Object oIncludeDateWideTest is a cTest
+        Procedure Test
+            Pointer pMatch
+            Integer iResult
+            WString wsDate
+
+            Move (archive_match_new ()) to pMatch
+            Move "2023-11-14 22:13:20 UTC" to wsDate
+            Move (archive_match_include_date_w (pMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_NEWER, AddressOf (wsDate))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_date_w ISO string"
+            Delegate Get MTimeExcluded pMatch 1700000001 to iResult
+            Send AssertIAreEqual 0 iResult "newer is included"
+            Delegate Get MTimeExcluded pMatch 1700000000 to iResult
+            Send AssertIAreEqual 1 iResult "equal is excluded"
+            Delegate Get MTimeExcluded pMatch 1699999999 to iResult
+            Send AssertIAreEqual 1 iResult "older is excluded"
+            Move (archive_match_free (pMatch)) to iResult
+
+            Move (archive_match_new ()) to pMatch
+            Move "not a date either" to wsDate
+            Move (archive_match_include_date_w (pMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_NEWER, AddressOf (wsDate))) to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "unparsable date fails (wide)"
+            Move (archive_match_free (pMatch)) to iResult
+        End_Procedure
+    End_Object
+
+    // archive_match_include_file_time and _w: the time stamps of a real file in the temp folder.
+    Object oIncludeFileTimeTest is a cTest
+        Procedure Test
+            Pointer pMatch
+            Integer iResult
+            String sFile
+            WString wsFile
+
+            Delegate Get TempFile "filetime.txt" to sFile
+            Delegate Get WriteRawFile sFile "file time" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "write time stamp file"
+            Move sFile to wsFile
+
+            // the file was just written: 1700000000 (2023) is older, 4102444800 (2100) is newer
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_include_file_time (pMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_NEWER, AddressOf (sFile))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_file_time mtime newer"
+            Delegate Get MTimeExcluded pMatch 4102444800 to iResult
+            Send AssertIAreEqual 0 iResult "mtime 2100 is newer than the file"
+            Delegate Get MTimeExcluded pMatch 1700000000 to iResult
+            Send AssertIAreEqual 1 iResult "mtime 2023 is older than the file"
+            Move (archive_match_free (pMatch)) to iResult
+
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_include_file_time (pMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_OLDER, AddressOf (sFile))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_file_time mtime older"
+            Delegate Get MTimeExcluded pMatch 1700000000 to iResult
+            Send AssertIAreEqual 0 iResult "mtime 2023 is older than the file"
+            Delegate Get MTimeExcluded pMatch 4102444800 to iResult
+            Send AssertIAreEqual 1 iResult "mtime 2100 is not older than the file"
+            Move (archive_match_free (pMatch)) to iResult
+
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_include_file_time (pMatch, ARCHIVE_MATCH_CTIME + ARCHIVE_MATCH_NEWER, AddressOf (sFile))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_file_time ctime newer"
+            Delegate Get CTimeExcluded pMatch 4102444800 to iResult
+            Send AssertIAreEqual 0 iResult "ctime 2100 is newer than the file"
+            Delegate Get CTimeExcluded pMatch 1700000000 to iResult
+            Send AssertIAreEqual 1 iResult "ctime 2023 is older than the file"
+            Move (archive_match_free (pMatch)) to iResult
+
+            // wide file name
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_include_file_time_w (pMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_NEWER, AddressOf (wsFile))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_file_time_w mtime newer"
+            Delegate Get MTimeExcluded pMatch 4102444800 to iResult
+            Send AssertIAreEqual 0 iResult "wide: mtime 2100 is newer than the file"
+            Delegate Get MTimeExcluded pMatch 1700000000 to iResult
+            Send AssertIAreEqual 1 iResult "wide: mtime 2023 is older than the file"
+            Move (archive_match_free (pMatch)) to iResult
+
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_include_file_time_w (pMatch, ARCHIVE_MATCH_CTIME + ARCHIVE_MATCH_OLDER, AddressOf (wsFile))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_file_time_w ctime older"
+            Delegate Get CTimeExcluded pMatch 1700000000 to iResult
+            Send AssertIAreEqual 0 iResult "wide: ctime 2023 is older than the file"
+            Delegate Get CTimeExcluded pMatch 4102444800 to iResult
+            Send AssertIAreEqual 1 iResult "wide: ctime 2100 is not older than the file"
+            Move (archive_match_free (pMatch)) to iResult
+            EraseFile sFile
+
+            // a missing file fails
+            Delegate Get TempFile "no-such-file.txt" to sFile
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_include_file_time (pMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_NEWER, AddressOf (sFile))) to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "missing file fails"
+            Move (archive_match_free (pMatch)) to iResult
+        End_Procedure
+    End_Object
+
+    // archive_match_exclude_entry: entries with the same pathname as the given entry that are newer / older / equal.
+    Object oExcludeEntryTest is a cTest
+        Procedure Test
+            Pointer pMatch pReference pEntry
+            Integer iResult
+            Void_Type iVoid
+
+            Delegate Get NewEntry "hello.txt" 1700000000 to pReference
+
+            // exclude entries newer than the reference
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_exclude_entry (pMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_NEWER, pReference)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "exclude_entry mtime newer"
+            Delegate Get NewEntry "hello.txt" 1700000100 to pEntry
+            Move (archive_match_time_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 1 iResult "hello.txt newer than the reference is excluded"
+            Move (archive_entry_free (pEntry)) to iVoid
+            Delegate Get NewEntry "hello.txt" 1700000000 to pEntry
+            Move (archive_match_time_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 0 iResult "hello.txt equal to the reference is not excluded"
+            Move (archive_entry_free (pEntry)) to iVoid
+            Delegate Get NewEntry "hello.txt" 1699999900 to pEntry
+            Move (archive_match_time_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 0 iResult "hello.txt older than the reference is not excluded"
+            Move (archive_entry_free (pEntry)) to iVoid
+            Delegate Get NewEntry "other.txt" 1700000100 to pEntry
+            Move (archive_match_time_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 0 iResult "an entry with another pathname is not excluded"
+            Move (archive_entry_free (pEntry)) to iVoid
+            Move (archive_match_free (pMatch)) to iResult
+
+            // exclude entries older than or equal to the reference
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_exclude_entry (pMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_OLDER + ARCHIVE_MATCH_EQUAL, pReference)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "exclude_entry mtime older+equal"
+            Delegate Get NewEntry "hello.txt" 1699999900 to pEntry
+            Move (archive_match_time_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 1 iResult "older is excluded"
+            Move (archive_entry_free (pEntry)) to iVoid
+            Delegate Get NewEntry "hello.txt" 1700000000 to pEntry
+            Move (archive_match_time_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 1 iResult "equal is excluded"
+            Move (archive_match_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 1 iResult "archive_match_excluded reports the same"
+            Move (archive_entry_free (pEntry)) to iVoid
+            Delegate Get NewEntry "hello.txt" 1700000100 to pEntry
+            Move (archive_match_time_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 0 iResult "newer is not excluded"
+            Move (archive_entry_free (pEntry)) to iVoid
+            Move (archive_match_free (pMatch)) to iResult
+
+            // exclude entries equal to the reference
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_exclude_entry (pMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_EQUAL, pReference)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "exclude_entry mtime equal"
+            Delegate Get NewEntry "hello.txt" 1700000000 to pEntry
+            Move (archive_match_time_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 1 iResult "equal is excluded"
+            Move (archive_entry_free (pEntry)) to iVoid
+            Delegate Get NewEntry "hello.txt" 1700000001 to pEntry
+            Move (archive_match_time_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 0 iResult "newer is not excluded"
+            Move (archive_entry_free (pEntry)) to iVoid
+            Move (archive_match_free (pMatch)) to iResult
+
+            Move (archive_entry_free (pReference)) to iVoid
+        End_Procedure
+    End_Object
+
+    // archive_match_include_uid / _gid / _uname / _gname and archive_match_owner_excluded.
+    Object oIncludeOwnerIdTest is a cTest
+        Procedure Test
+            Pointer pMatch
+            Integer iResult
+
+            // user ids
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_include_uid (pMatch, 1000)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_uid 1000"
+            Move (archive_match_include_uid (pMatch, 1001)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_uid 1001"
+            Delegate Get OwnerExcluded pMatch 1000 0 "" "" to iResult
+            Send AssertIAreEqual 0 iResult "uid 1000 is included"
+            Delegate Get OwnerExcluded pMatch 1001 5 "" "" to iResult
+            Send AssertIAreEqual 0 iResult "uid 1001 is included"
+            Delegate Get OwnerExcluded pMatch 1002 0 "" "" to iResult
+            Send AssertIAreEqual 1 iResult "uid 1002 is excluded"
+            Delegate Get OwnerExcluded pMatch 0 0 "" "" to iResult
+            Send AssertIAreEqual 1 iResult "uid 0 is excluded"
+            Move (archive_match_free (pMatch)) to iResult
+
+            // group ids
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_include_gid (pMatch, 50)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_gid 50"
+            Move (archive_match_include_gid (pMatch, 60)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_gid 60"
+            Delegate Get OwnerExcluded pMatch 1 50 "" "" to iResult
+            Send AssertIAreEqual 0 iResult "gid 50 is included"
+            Delegate Get OwnerExcluded pMatch 1 60 "" "" to iResult
+            Send AssertIAreEqual 0 iResult "gid 60 is included"
+            Delegate Get OwnerExcluded pMatch 1 51 "" "" to iResult
+            Send AssertIAreEqual 1 iResult "gid 51 is excluded"
+            Move (archive_match_free (pMatch)) to iResult
+
+            // user id and group id together: both lists must match
+            Move (archive_match_new ()) to pMatch
+            Move (archive_match_include_uid (pMatch, 1000)) to iResult
+            Move (archive_match_include_gid (pMatch, 50)) to iResult
+            Delegate Get OwnerExcluded pMatch 1000 50 "" "" to iResult
+            Send AssertIAreEqual 0 iResult "uid and gid match"
+            Delegate Get OwnerExcluded pMatch 1000 51 "" "" to iResult
+            Send AssertIAreEqual 1 iResult "uid matches, gid does not"
+            Delegate Get OwnerExcluded pMatch 1001 50 "" "" to iResult
+            Send AssertIAreEqual 1 iResult "gid matches, uid does not"
+            Move (archive_match_free (pMatch)) to iResult
+        End_Procedure
+    End_Object
+
+    // archive_match_include_uname / _gname (narrow).
+    Object oIncludeOwnerNameTest is a cTest
+        Procedure Test
+            Pointer pMatch
+            Integer iResult
+            String sName
+
+            Move (archive_match_new ()) to pMatch
+            Move "alice" to sName
+            Move (archive_match_include_uname (pMatch, AddressOf (sName))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_uname alice"
+            Move "bob" to sName
+            Move (archive_match_include_uname (pMatch, AddressOf (sName))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_uname bob"
+            Delegate Get OwnerExcluded pMatch 1 1 "alice" "" to iResult
+            Send AssertIAreEqual 0 iResult "alice is included"
+            Delegate Get OwnerExcluded pMatch 1 1 "bob" "" to iResult
+            Send AssertIAreEqual 0 iResult "bob is included"
+            Delegate Get OwnerExcluded pMatch 1 1 "carol" "" to iResult
+            Send AssertIAreEqual 1 iResult "carol is excluded"
+            Delegate Get OwnerExcluded pMatch 1 1 "" "" to iResult
+            Send AssertIAreEqual 1 iResult "an entry without user name is excluded"
+            Move (archive_match_free (pMatch)) to iResult
+
+            Move (archive_match_new ()) to pMatch
+            Move "staff" to sName
+            Move (archive_match_include_gname (pMatch, AddressOf (sName))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_gname staff"
+            Move "wheel" to sName
+            Move (archive_match_include_gname (pMatch, AddressOf (sName))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_gname wheel"
+            Delegate Get OwnerExcluded pMatch 1 1 "" "staff" to iResult
+            Send AssertIAreEqual 0 iResult "staff is included"
+            Delegate Get OwnerExcluded pMatch 1 1 "" "wheel" to iResult
+            Send AssertIAreEqual 0 iResult "wheel is included"
+            Delegate Get OwnerExcluded pMatch 1 1 "" "users" to iResult
+            Send AssertIAreEqual 1 iResult "users is excluded"
+            Move (archive_match_free (pMatch)) to iResult
+
+            // user name and group name together
+            Move (archive_match_new ()) to pMatch
+            Move "alice" to sName
+            Move (archive_match_include_uname (pMatch, AddressOf (sName))) to iResult
+            Move "staff" to sName
+            Move (archive_match_include_gname (pMatch, AddressOf (sName))) to iResult
+            Delegate Get OwnerExcluded pMatch 1 1 "alice" "staff" to iResult
+            Send AssertIAreEqual 0 iResult "alice:staff is included"
+            Delegate Get OwnerExcluded pMatch 1 1 "alice" "users" to iResult
+            Send AssertIAreEqual 1 iResult "alice:users is excluded"
+            Delegate Get OwnerExcluded pMatch 1 1 "bob" "staff" to iResult
+            Send AssertIAreEqual 1 iResult "bob:staff is excluded"
+            Move (archive_match_free (pMatch)) to iResult
+        End_Procedure
+    End_Object
+
+    // archive_match_include_uname_w / _gname_w.
+    Object oIncludeOwnerNameWideTest is a cTest
+        Procedure Test
+            Pointer pMatch
+            Integer iResult
+            WString wsName
+
+            Move (archive_match_new ()) to pMatch
+            Move "jürgen" to wsName
+            Move (archive_match_include_uname_w (pMatch, AddressOf (wsName))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_uname_w"
+            Delegate Get OwnerExcluded pMatch 1 1 "jürgen" "" to iResult
+            Send AssertIAreEqual 0 iResult "jürgen is included"
+            Delegate Get OwnerExcluded pMatch 1 1 "juergen" "" to iResult
+            Send AssertIAreEqual 1 iResult "juergen is excluded"
+            Move (archive_match_free (pMatch)) to iResult
+
+            Move (archive_match_new ()) to pMatch
+            Move "grüppe" to wsName
+            Move (archive_match_include_gname_w (pMatch, AddressOf (wsName))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "include_gname_w"
+            Delegate Get OwnerExcluded pMatch 1 1 "" "grüppe" to iResult
+            Send AssertIAreEqual 0 iResult "grüppe is included"
+            Delegate Get OwnerExcluded pMatch 1 1 "" "gruppe" to iResult
+            Send AssertIAreEqual 1 iResult "gruppe is excluded"
+            Move (archive_match_free (pMatch)) to iResult
+        End_Procedure
+    End_Object
+
+    // archive_match_excluded combines the path, time and owner conditions.
+    Object oExcludedCombinedTest is a cTest
+        Procedure Test
+            Pointer pMatch pEntry
+            Integer iResult
+            String sPattern sPathA sPathB
+            Void_Type iVoid
+
+            Move "a.txt" to sPathA
+            Move "a.bin" to sPathB
+            Move (archive_match_new ()) to pMatch
+            Move "*.txt" to sPattern
+            Move (archive_match_include_pattern (pMatch, AddressOf (sPattern))) to iResult
+            Move (archive_match_include_time (pMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_NEWER, 1700000000, 0)) to iResult
+            Move (archive_match_include_uid (pMatch, 1000)) to iResult
+
+            // matches all three conditions
+            Move (archive_entry_new ()) to pEntry
+            Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sPathA))) to iVoid
+            Move (archive_entry_set_mtime (pEntry, 1700000100, 0)) to iVoid
+            Move (archive_entry_set_uid (pEntry, 1000)) to iVoid
+            Move (archive_match_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 0 iResult "all conditions met: not excluded"
+            Move (archive_match_path_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 0 iResult "path_excluded 0"
+            Move (archive_match_time_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 0 iResult "time_excluded 0"
+            Move (archive_match_owner_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 0 iResult "owner_excluded 0"
+
+            // wrong owner
+            Move (archive_entry_set_uid (pEntry, 7)) to iVoid
+            Move (archive_match_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 1 iResult "owner does not match: excluded"
+            Move (archive_match_owner_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 1 iResult "owner_excluded 1"
+            Move (archive_match_path_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 0 iResult "path_excluded still 0"
+
+            // wrong time
+            Move (archive_entry_set_uid (pEntry, 1000)) to iVoid
+            Move (archive_entry_set_mtime (pEntry, 1600000000, 0)) to iVoid
+            Move (archive_match_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 1 iResult "time does not match: excluded"
+            Move (archive_match_time_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 1 iResult "time_excluded 1"
+            Move (archive_match_owner_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 0 iResult "owner_excluded still 0"
+
+            // wrong path
+            Move (archive_entry_set_mtime (pEntry, 1700000100, 0)) to iVoid
+            Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sPathB))) to iVoid
+            Move (archive_match_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 1 iResult "path does not match: excluded"
+            Move (archive_match_path_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 1 iResult "path_excluded 1"
+            Move (archive_match_time_excluded (pMatch, pEntry)) to iResult
+            Send AssertIAreEqual 0 iResult "time_excluded still 0"
+
+            Move (archive_entry_free (pEntry)) to iVoid
+            Move (archive_match_free (pMatch)) to iResult
+        End_Procedure
+    End_Object
+
+    // The matcher applied to the entries of a real (sample) archive that is read with libarchive.
+    Object oSampleArchiveEntriesTest is a cTest
+        Procedure Test
+            Pointer pReader pEntry pPathMatch pTimeMatch pOwnerMatch pAllMatch
+            Integer iResult iIndex iCount iExpectedPath iExpectedAll
+            UChar[] ucArchive
+            String sName sPattern
+
+            Delegate Get BuildSampleArchiveMemory ARCHIVE_FORMAT_TAR (&ucArchive) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "build sample tar"
+
+            // path: exclude all *.txt (hello.txt, docs/nested.txt, the unicode name stay out, docs/ remains)
+            Move (archive_match_new ()) to pPathMatch
+            Move "*.txt" to sPattern
+            Move (archive_match_exclude_pattern (pPathMatch, AddressOf (sPattern))) to iResult
+            // time: only entries newer than the sample mtime, so none
+            Move (archive_match_new ()) to pTimeMatch
+            Move (archive_match_include_time (pTimeMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_NEWER, 1700000000, 0)) to iResult
+            // owner: the sample entries have uid 0, only uid 1000 is wanted
+            Move (archive_match_new ()) to pOwnerMatch
+            Move (archive_match_include_uid (pOwnerMatch, 1000)) to iResult
+            // all: include the docs directory, recursion on
+            Move (archive_match_new ()) to pAllMatch
+            Move "docs" to sPattern
+            Move (archive_match_include_pattern (pAllMatch, AddressOf (sPattern))) to iResult
+            Move (archive_match_include_time (pAllMatch, ARCHIVE_MATCH_MTIME + ARCHIVE_MATCH_EQUAL, 1700000000, 0)) to iResult
+            Move (archive_match_include_uid (pAllMatch, 0)) to iResult
+
+            Move (archive_read_new ()) to pReader
+            Move (archive_read_support_format_all (pReader)) to iResult
+            Move (archive_read_support_filter_all (pReader)) to iResult
+            Move (archive_read_open_memory (pReader, AddressOf (ucArchive), SizeOfArray (ucArchive))) to iResult
+            Delegate Send AssertArchiveOk iResult pReader "open sample tar"
+
+            Delegate Get SampleEntryCount to iCount
+            For iIndex from 0 to (iCount - 1)
+                Move (archive_read_next_header (pReader, AddressOf (pEntry))) to iResult
+                Send AssertIAreEqual ARCHIVE_OK iResult "next header"
+                Delegate Get SampleEntryName iIndex to sName
+
+                Move 1 to iExpectedPath
+                Move 1 to iExpectedAll
+                If (iIndex = 1) Begin
+                    Move 0 to iExpectedPath
+                End
+                If (iIndex = 1 or iIndex = 2) Begin
+                    Move 0 to iExpectedAll
+                End
+                Move (archive_match_path_excluded (pPathMatch, pEntry)) to iResult
+                // only docs/ (index 1) is not a *.txt file
+                Send AssertIAreEqual iExpectedPath iResult (sName * "path_excluded")
+
+                Move (archive_match_time_excluded (pTimeMatch, pEntry)) to iResult
+                Send AssertIAreEqual 1 iResult (sName * "time_excluded (mtime equal to the limit)")
+
+                Move (archive_match_owner_excluded (pOwnerMatch, pEntry)) to iResult
+                Send AssertIAreEqual 1 iResult (sName * "owner_excluded (uid 0)")
+
+                Move (archive_match_excluded (pAllMatch, pEntry)) to iResult
+                // docs/ and docs/nested.txt are included, hello.txt and the unicode name are not
+                Send AssertIAreEqual iExpectedAll iResult (sName * "excluded (all conditions)")
+            Loop
+            Move (archive_read_next_header (pReader, AddressOf (pEntry))) to iResult
+            Send AssertIAreEqual ARCHIVE_EOF iResult "end of archive"
+            Move (archive_read_free (pReader)) to iResult
+
+            Move (archive_match_free (pPathMatch)) to iResult
+            Move (archive_match_free (pTimeMatch)) to iResult
+            Move (archive_match_free (pOwnerMatch)) to iResult
+            Move (archive_match_free (pAllMatch)) to iResult
+        End_Procedure
+    End_Object
+
+    // archive_read_disk_set_matching: a matcher that excludes the *.txt files makes the disk reader skip them.
+    Object oReadDiskMatchingTest is a cTest
+        Procedure Test
+            Pointer pDisk pMatch pEntry
+            Integer iResult iFound
+            String sFolder sFile sPattern sName
+            WString wsFolder
+
+            Delegate Get TempFolder to sFolder
+            Move (sFolder + "matchdisk\") to sFolder
+            Move (CreateDirectoryRecursive (sFolder)) to iResult
+            Delegate Get WriteRawFile (sFolder + "keep.bin") "bin" to iResult
+            Delegate Get WriteRawFile (sFolder + "skip.txt") "txt" to iResult
+
+            Move (archive_match_new ()) to pMatch
+            Move "*.txt" to sPattern
+            Move (archive_match_exclude_pattern (pMatch, AddressOf (sPattern))) to iResult
+            Move (archive_read_disk_new ()) to pDisk
+            Move (archive_read_disk_set_matching (pDisk, pMatch, 0, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "read_disk_set_matching"
+
+            Move (Left (sFolder, SizeOfString (sFolder) - 1)) to sFile
+            Move sFile to wsFolder
+            Move (archive_read_disk_open_w (pDisk, AddressOf (wsFolder))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "read_disk_open_w"
+            Move 0 to iFound
+            Move 0 to iResult
+            While (iResult = ARCHIVE_OK)
+                Move (archive_read_next_header (pDisk, AddressOf (pEntry))) to iResult
+                If (iResult = ARCHIVE_OK) Begin
+                    Move (PointerToString (archive_entry_pathname_utf8 (pEntry))) to sName
+                    If (Lowercase (Right (sName, 8)) = "skip.txt") Begin
+                        Send AssertFalse True "skip.txt must be filtered out by the matcher"
+                    End
+                    If (Lowercase (Right (sName, 8)) = "keep.bin") Begin
+                        Increment iFound
+                    End
+                    Move (archive_read_disk_descend (pDisk)) to iResult
+                    Move ARCHIVE_OK to iResult
+                End
+            Loop
+            Send AssertIAreEqual 1 iFound "keep.bin is returned by the disk reader"
+            Move (archive_read_free (pDisk)) to iResult
+            Move (archive_match_free (pMatch)) to iResult
+            EraseFile (sFolder + "keep.bin")
+            EraseFile (sFolder + "skip.txt")
+            Move (MatchTestRemoveDirectoryW (AddressOf (wsFolder))) to iResult
+        End_Procedure
+    End_Object
+
+    // archive_utility_string_sort sorts a NUL terminated array of char pointers.
+    Object oStringSortTest is a cTest
+        Procedure Test
+            Pointer pText
+            Integer iResult iIndex
+            String s1 s2 s3 s4 sText
+            BigInt[] biPtrs
+
+            Move "pear" to s1
+            Move "apple" to s2
+            Move "mango" to s3
+            Move "banana" to s4
+            Move (ResizeArray (biPtrs, 5)) to biPtrs
+            Move (AddressOf (s1)) to biPtrs[0]
+            Move (AddressOf (s2)) to biPtrs[1]
+            Move (AddressOf (s3)) to biPtrs[2]
+            Move (AddressOf (s4)) to biPtrs[3]
+            Move 0 to biPtrs[4]
+
+            Move (archive_utility_string_sort (AddressOf (biPtrs))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "archive_utility_string_sort"
+            Move biPtrs[0] to pText
+            Move (PointerToString (pText)) to sText
+            Send AssertSAreEqual "apple" sText "sorted 0"
+            Move biPtrs[1] to pText
+            Move (PointerToString (pText)) to sText
+            Send AssertSAreEqual "banana" sText "sorted 1"
+            Move biPtrs[2] to pText
+            Move (PointerToString (pText)) to sText
+            Send AssertSAreEqual "mango" sText "sorted 2"
+            Move biPtrs[3] to pText
+            Move (PointerToString (pText)) to sText
+            Send AssertSAreEqual "pear" sText "sorted 3"
+            Send AssertIAreEqual 0 biPtrs[4] "terminator stays"
+        End_Procedure
+    End_Object
+End_Object

@@ -1,0 +1,124 @@
+﻿// Tests for the original cFilesArchiver class (it uses the renamed external functions such as
+// archive_entry_set_pathname_utf8).
+Object oFilesArchiverTests is a cArchiveTestFixture
+    Set psTestFixtureName to "FilesArchiver"
+
+    Object oFilesArchiver is a cFilesArchiver
+    End_Object
+
+    // Creates a small text file and returns its full name.
+    Function CreateTextFile String sName String sText Returns String
+        String sFile
+        Integer iChannel
+
+        Get TempFile sName to sFile
+        Move (Seq_New_Channel ()) to iChannel
+        Direct_Output channel iChannel ("BINARY:" + sFile)
+        Write channel iChannel sText
+        Close_Output channel iChannel
+        Send Seq_Release_Channel iChannel
+        Function_Return sFile
+    End_Function
+
+    // Lists the entry names of an archive file (read with raw libarchive functions).
+    Function EntryNames String sArchiveFile Returns String[]
+        String[] sNames
+        Pointer pArchive pEntry
+        Integer iResult
+        WString wsFile
+
+        Move sArchiveFile to wsFile
+        Move (archive_read_new ()) to pArchive
+        Move (archive_read_support_format_all (pArchive)) to iResult
+        Move (archive_read_support_filter_all (pArchive)) to iResult
+        Move (archive_read_open_filename_w (pArchive, AddressOf (wsFile), 10240)) to iResult
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_read_next_header (pArchive, AddressOf (pEntry))) to iResult
+            While (iResult = ARCHIVE_OK)
+                Move (PointerToString (archive_entry_pathname_utf8 (pEntry))) to sNames[SizeOfArray (sNames)]
+                Move (archive_read_next_header (pArchive, AddressOf (pEntry))) to iResult
+            Loop
+        End
+        Move (archive_read_free (pArchive)) to iResult
+        Function_Return sNames
+    End_Function
+
+    Object oWriteZipTest is a cTest
+        Procedure Test
+            String sFile sZip
+            String[] sNames
+            Integer iAttr
+
+            Delegate Get CreateTextFile "fa_hello.txt" "Hello from cFilesArchiver" to sFile
+            Delegate Get TempFile "fa_test.zip" to sZip
+
+            Send Init of oFilesArchiver
+            Set peArchiveFormat of oFilesArchiver to ARCHIVE_FORMAT_ZIP
+            Set psArchiveFileName of oFilesArchiver to sZip
+            Send AddFileToArchive of oFilesArchiver sFile
+            Send WriteFilesToArchive of oFilesArchiver
+
+            Move (GetFileAttributes (sZip)) to iAttr
+            Send Assert (iAttr <> INVALID_FILE_ATTRIBUTES) "archive file created"
+            Delegate Get EntryNames sZip to sNames
+            Send AssertIAreEqual 1 (SizeOfArray (sNames)) "one entry"
+            Send AssertSAreEqual "fa_hello.txt" sNames[0] "entry name"
+
+            EraseFile sFile
+            EraseFile sZip
+        End_Procedure
+    End_Object
+
+    Object oWriteFormatsTest is a cTest
+        Procedure Test
+            String sFile sArchive
+            String[] sNames
+            Integer[] eFormats
+            Integer iFormat iCount
+
+            Delegate Get CreateTextFile "fa_formats.txt" "Content" to sFile
+            Move ARCHIVE_FORMAT_TAR_USTAR to eFormats[0]
+            Move ARCHIVE_FORMAT_TAR_GNUTAR to eFormats[1]
+            Move ARCHIVE_FORMAT_7ZIP to eFormats[2]
+            Move ARCHIVE_FORMAT_CPIO_POSIX to eFormats[3]
+            Move ARCHIVE_FORMAT_AR_BSD to eFormats[4]
+            Move ARCHIVE_FORMAT_AR_GNU to eFormats[5]
+            Move (SizeOfArray (eFormats)) to iCount
+            For iFormat from 0 to (iCount - 1)
+                Delegate Get TempFile "fa_formats.arc" to sArchive
+                Send Init of oFilesArchiver
+                Set peArchiveFormat of oFilesArchiver to eFormats[iFormat]
+                Set psArchiveFileName of oFilesArchiver to sArchive
+                Send AddFileToArchive of oFilesArchiver sFile
+                Send WriteFilesToArchive of oFilesArchiver
+                Delegate Get EntryNames sArchive to sNames
+                Send AssertIAreEqual 1 (SizeOfArray (sNames)) ("one entry, format" * String (eFormats[iFormat]))
+                If (SizeOfArray (sNames) = 1) Begin
+                    Send AssertSAreEqual "fa_formats.txt" sNames[0] ("entry name, format" * String (eFormats[iFormat]))
+                End
+                EraseFile sArchive
+            Loop
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    Object oFormatListTest is a cTest
+        Procedure Test
+            tArchiveFormat[] ArchiveFormats
+            Integer iElement iCount iZipFormat
+            Boolean bFound
+
+            Get pArchiveFormats of oFilesArchiver to ArchiveFormats
+            Move (SizeOfArray (ArchiveFormats)) to iCount
+            Send AssertIAreEqual 32 iCount "number of listed formats"
+            For iElement from 0 to (iCount - 1)
+                If (ArchiveFormats[iElement].sFormat = "zip") Begin
+                    Move True to bFound
+                    Move ArchiveFormats[iElement].eFormat to iZipFormat
+                End
+            Loop
+            Send Assert bFound "zip is in the list"
+            Send AssertIAreEqual ARCHIVE_FORMAT_ZIP iZipFormat "zip format code"
+        End_Procedure
+    End_Object
+End_Object
