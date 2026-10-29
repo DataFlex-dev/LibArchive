@@ -1,7 +1,7 @@
 {
     "dependencies": [
-        "../Library/LibArchive.sws",
-        "DataFlex-dev/DFUnit#1.1.0"
+        "DataFlex-dev/DFUnit#1.1.0",
+        "DataFlex-dev/LibArchive#1.0.1"
     ],
     "description": "LibArchive Demo workspace",
     "df": 26.0,

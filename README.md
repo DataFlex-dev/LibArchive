@@ -11,9 +11,7 @@ See: https://github.com/libarchive/libarchive
 
 The library in this repository contains a Windows demo / test application that let you select or enter file and folder names and choose what archive to use.
 
-Not all functions that are present in the DLL are included yet or available with a test program/code
-
-No unit testing available yet either.
+The demo workspace contains the unit tests application
 
 ###### External Components
 
@@ -33,4 +31,4 @@ If applicable, list the external components used in the table below:
 
 | Product  | Version           |
 | -------- | ----------------- |
-| DataFlex | 25.0              |
+| DataFlex | 26.0              |

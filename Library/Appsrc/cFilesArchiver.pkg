@@ -1,5 +1,4 @@
 ﻿Use Archive.h.pkg
-Use Libraries\DateAndTime\Library\AppSrc\Classes\cDateTimeHandler.pkg
 
 Struct tArchiveFormat
     String sFormat
@@ -25,9 +24,6 @@ Class cFilesArchiver is a cObject
         Property Pointer ppArchive
         { DesignTime = False }
         Property tArchiveFormat[] pArchiveFormats
-
-        Object oDateTimeHandler is a cDateTimeHandler
-        End_Object
 
         Send CreateArchiveFormats
     End_Procedure
@@ -295,17 +291,24 @@ Class cFilesArchiver is a cObject
         End
     End_Procedure
 
+    // Creation time of a file or folder as Unix time (seconds since 1970-01-01 UTC). 0 when it cannot be read.
     Function FileFolderCreationUnixDateTime String sFolderPath Returns Integer
         Handle hFileFind
         Integer iVoid
         tWin32FindDataW Win32FindData
-        DateTime dtFolderCreated
+        BigInt iTicks iHigh iLow
         Integer iUnixTime
 
+        Move 0 to iUnixTime
         Move (winFindFirstFileW (sFolderPath, AddressOf(Win32FindData))) to hFileFind
         If (hFileFind <> INVALID_HANDLE_VALUE) Begin
-            Get FileTimeToDateTime of oDateTimeHandler Win32FindData.ftCreationTime to dtFolderCreated
-            Get DateTimeToUnixTime of oDateTimeHandler dtFolderCreated to iUnixTime
+            // FILETIME: 100 nanosecond ticks since 1601-01-01; 116444736000000000 ticks are the offset to 1970-01-01.
+            Move Win32FindData.ftCreationTime.dwHighDateTime to iHigh
+            Move Win32FindData.ftCreationTime.dwLowDateTime to iLow
+            Move ((iHigh * 4294967296) + iLow) to iTicks
+            If (iTicks >= 116444736000000000) Begin
+                Move ((iTicks - 116444736000000000) / 10000000) to iUnixTime
+            End
             Move (winFindClose (hFileFind)) to iVoid
         End
 
