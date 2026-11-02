@@ -7,11 +7,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-$demoRoot = Join-Path $repoRoot 'Demo'
-$workspace = Join-Path $demoRoot 'LibArchive Demo.sws'
-$fixtureRoot = Join-Path $demoRoot 'Programs\TestTemp\ArchiveReaderTests'
-$testExe = Join-Path $demoRoot 'Programs\LibArchiveTests64.exe'
-$nativeRoot = Join-Path $demoRoot 'Programs'
+$testRoot = Join-Path $repoRoot 'unittests'
+$workspace = Join-Path $testRoot 'unittests.sws'
+$fixtureRoot = Join-Path $testRoot 'Programs\TestTemp\ArchiveReaderTests'
+$testExe = Join-Path $testRoot 'Programs\LibArchiveTests64.exe'
+$nativeRoot = Join-Path $testRoot 'Programs'
 $resultsFile = Join-Path $fixtureRoot 'results.xml'
 
 Add-Type -AssemblyName System.IO.Compression
@@ -307,7 +307,7 @@ function Corrupt-CompressedPayload {
 }
 
 # Keep all generated and extracted data under one verified, disposable root.
-$expectedFixtureRoot = [IO.Path]::GetFullPath((Join-Path $demoRoot 'Programs\TestTemp\ArchiveReaderTests'))
+$expectedFixtureRoot = [IO.Path]::GetFullPath((Join-Path $testRoot 'Programs\TestTemp\ArchiveReaderTests'))
 if ([IO.Path]::GetFullPath($fixtureRoot) -ne $expectedFixtureRoot) {
     throw 'Refusing to clean an unexpected fixture path.'
 }
@@ -501,7 +501,7 @@ try {
     Corrupt-CompressedPayload $corruptPath
 
     # If traversal ever regresses, the crafted path still lands inside this
-    # disposable fixture root rather than beside it in Demo\Programs\TestTemp.
+    # disposable fixture root rather than beside it in unittests\Programs\TestTemp.
     New-Item -ItemType Directory -Path (Join-Path $fixtureRoot 'sandbox') | Out-Null
 
     & $DfCli build $workspace --target 'LibArchiveTests.src' --toolchain $Toolchain --rebuild
@@ -512,7 +512,7 @@ try {
     $savedPath = $env:PATH
     try {
         $env:PATH = $nativeRoot + [IO.Path]::PathSeparator + $savedPath
-        $process = Start-Process -FilePath $testExe -WorkingDirectory $demoRoot -Wait -PassThru `
+        $process = Start-Process -FilePath $testExe -WorkingDirectory $testRoot -Wait -PassThru `
             -NoNewWindow -ArgumentList @('-c', '-o', ('"{0}"' -f $resultsFile))
     } finally {
         $env:PATH = $savedPath

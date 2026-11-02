@@ -12,5 +12,5 @@ Demo/AppHtml/DfEngine
 Demo/AppHtml/web.config
 Demo/AppHtml/global.asa
 **.err
-Demo/Programs/TestTemp/
+unittests/Programs/TestTemp/
 Demo/Data/*.xml

@@ -1,13 +1,11 @@
 {
     "dependencies": [
-        "DataFlex-dev/DFUnit#1.1.0",
         "../Library/LibArchive.sws"
     ],
     "description": "LibArchive Demo workspace",
     "df": 26.0,
     "projects": [
-        "Demo.src",
-        "LibArchiveTests.src"
+        "Demo.src"
     ],
     "studio": {
         "DefaultFormHeight": 12

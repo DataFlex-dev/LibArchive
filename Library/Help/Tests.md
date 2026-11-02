@@ -1,12 +1,12 @@
 # Unit tests
 
-The demo workspace (`Demo/LibArchive Demo.sws`) contains a [DFUnit](https://github.com/DataFlex-dev/DFUnit) test application, `Demo/AppSrc/LibArchiveTests.src`. It tests **every external function** of `archive.dll` (all 432 are called at least once, deprecated ones included) and **every public property and method** of the wrapper classes: 310 tests, 7600+ assertions.
+The `unittests` workspace (`unittests/unittests.sws`) contains a [DFUnit](https://github.com/DataFlex-dev/DFUnit) test application, `unittests/AppSrc/LibArchiveTests.src`. It tests **every external function** of `archive.dll` (all 432 are called at least once, deprecated ones included), **every public property and method** of the wrapper classes and the ZIP preflight/extraction security checks of `cArchiveReader`: 333 tests, 7700+ assertions. It compiles the code in the `Library` folder, not a published package.
 
 ## Build and run
 
 ```
-df-cli build -t LibArchiveTests.src "Demo/LibArchive Demo.sws"
-Demo\Programs\LibArchiveTests64.exe -c
+df-cli build -t LibArchiveTests.src "unittests/unittests.sws"
+unittests\Programs\LibArchiveTests64.exe -c
 ```
 
 | Argument | Meaning |
@@ -16,11 +16,17 @@ Demo\Programs\LibArchiveTests64.exe -c
 | `-o <file.xml>` | XML result file |
 | `--junit-file <absolute file>` | Console output plus JUnit XML to a file (use an absolute path) |
 
-The exit code is 0 when all tests passed. Test files are written to `Demo/Programs/TestTemp` and removed by the tests.
+The exit code is 0 when all tests passed. Test files are written to `unittests/Programs/TestTemp` and removed by the tests.
+
+The `ZipReader` fixture reads adversarial ZIP files that must be generated first. To run the whole suite use `unittests\Tests\RunArchiveReaderTests.ps1`: it generates the fixtures, builds the application, runs it and removes the fixtures (`-KeepFixtures` keeps the fixtures and the result XML). When the fixtures are missing, only the `ZipReader` tests fail.
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\unittests\Tests\RunArchiveReaderTests.ps1
+```
 
 ## Structure
 
-`LibArchiveTests.src` `Use`s the library classes and then the fixture packages from `Demo/AppSrc/Tests`. Classes cannot be declared inside objects, so all `Use` statements for classes come first, followed by the test application object that includes the fixtures.
+`LibArchiveTests.src` `Use`s the library classes and then the fixture packages from `unittests/AppSrc/Tests`. Classes cannot be declared inside objects, so all `Use` statements for classes come first, followed by the test application object that includes the fixtures.
 
 | Package | Fixture | Covers |
 |---|---|---|
@@ -38,6 +44,7 @@ The exit code is 0 when all tests passed. Test files are written to `Demo/Progra
 | `TestWrapperReader.pkg`, `TestWrapperDiskReader.pkg` | WrapperReader, WrapperDiskReader | `cArchiveReader`, `cArchiveDiskReader` |
 | `TestWrapperWriter.pkg`, `TestWrapperDiskWriter.pkg` | WrapperWriter, WrapperDiskWriter | `cArchiveWriter`, `cArchiveDiskWriter` |
 | `TestFilesArchiver.pkg` | FilesArchiver | `cFilesArchiver` |
+| `TestZipReader.pkg` | ZipReader | ZIP preflight and bounded extraction of `cArchiveReader` (`InspectZipArchive`, `ExtractZipArchive`); needs the fixtures from `RunArchiveReaderTests.ps1` |
 
 ## Writing a test
 

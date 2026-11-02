@@ -49,10 +49,10 @@ Only unfiltered, single-volume, non-ZIP64 seekable ZIP input with stored or defl
 
 ## Tests
 
-The DFUnit suite `Demo\AppSrc\LibArchiveTests.src` holds the wrapper tests and the `ZipReader` fixture (the ZIP security checks, listed below). `Demo\Tests\RunArchiveReaderTests.ps1` generates the adversarial ZIP fixtures under `Demo\Programs\TestTemp\ArchiveReaderTests`, builds `LibArchiveTests.src`, runs the whole suite and deletes the fixtures:
+The DFUnit suite `unittests\AppSrc\LibArchiveTests.src` (workspace `unittests\unittests.sws`, compiled against the local `Library` folder) holds the wrapper tests and the `ZipReader` fixture (the ZIP security checks, listed below). `unittests\Tests\RunArchiveReaderTests.ps1` generates the adversarial ZIP fixtures under `unittests\Programs\TestTemp\ArchiveReaderTests`, builds `LibArchiveTests.src`, runs the whole suite and deletes the fixtures:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Demo\Tests\RunArchiveReaderTests.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\unittests\Tests\RunArchiveReaderTests.ps1
 ```
 
 The suite covers compressed and uncompressed ZIP bombs, overlapping compressed-data amplification, forged central counts, central-directory and path-component budgets, local/central-header disagreement, mixed-separator traversal, rooted/ADS/device paths, links, encryption, duplicate and file-parent collisions, ZIP64 rejection, malformed/corrupt input, binary output, no-overwrite behavior, failure cleanup, and portable nested-folder enumeration by `cFilesArchiver`.

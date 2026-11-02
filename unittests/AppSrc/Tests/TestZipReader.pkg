@@ -29,7 +29,7 @@
 
     Procedure Setup
         Send ResetReader
-        Send Assert (PathExists(Self, FixturePath(Self, "valid.zip"))) "ZIP fixtures are missing: run Demo\Tests\RunArchiveReaderTests.ps1, it generates them and runs this suite"
+        Send Assert (PathExists(Self, FixturePath(Self, "valid.zip"))) "ZIP fixtures are missing: run unittests\Tests\RunArchiveReaderTests.ps1, it generates them and runs this suite"
     End_Procedure
 
     Function PathExists String sPath Returns Boolean

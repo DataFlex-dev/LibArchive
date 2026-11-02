@@ -1,6 +1,6 @@
 # Notes: libarchive 3.7.7 on Windows
 
-Behavior of the shipped `archive.dll` that differs from what the libarchive documentation (or the C headers) suggest. All of it was verified by the unit tests in `Demo/AppSrc/Tests`. The wrapper classes handle most of these cases for you.
+Behavior of the shipped `archive.dll` that differs from what the libarchive documentation (or the C headers) suggest. All of it was verified by the unit tests in `unittests/AppSrc/Tests`. The wrapper classes handle most of these cases for you.
 
 ## Strings and file names
 

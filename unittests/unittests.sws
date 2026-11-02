@@ -1,0 +1,11 @@
+{
+    "dependencies": [
+        "DataFlex-dev/DFUnit#1.1.0",
+        "../Library/LibArchive.sws"
+    ],
+    "description": "LibArchive unit tests workspace",
+    "df": 26.0,
+    "projects": [
+        "LibArchiveTests.src"
+    ]
+}
