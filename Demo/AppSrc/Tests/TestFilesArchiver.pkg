@@ -102,34 +102,32 @@ Object oFilesArchiverTests is a cArchiveTestFixture
         End_Procedure
     End_Object
 
-    // FileFolderCreationUnixDateTime converts the FILETIME of the file to Unix time without a date/time library:
-    // it must equal the creation (birth) time that libarchive reads from disk.
-    Object oCreationUnixTimeTest is a cTest
+    // FileFolderCreationUnixDateTime (name kept for compatibility) returns the modification time that libarchive's disk reader reports; it must equal archive_entry_mtime of the same file.
+    Object oModificationUnixTimeTest is a cTest
         Procedure Test
             String sFile
-            Integer iUnixTime iResult
-            BigInt iBirthTime iDifference
+            BigInt biUnixTime biMtime
+            Integer iResult
             Pointer pArchive pEntry
             Void_Type iVoid
 
             Delegate Get CreateTextFile "fa_time.txt" "time" to sFile
-            Get FileFolderCreationUnixDateTime of oFilesArchiver sFile to iUnixTime
-            Send Assert (iUnixTime > 1700000000) "creation time is after 2023-11-14"
-            Send Assert (iUnixTime < 4102444800) "creation time is before 2100"
+            Get FileFolderCreationUnixDateTime of oFilesArchiver sFile to biUnixTime
+            Send Assert (biUnixTime > 1700000000) "modification time is after 2023-11-14"
+            Send Assert (biUnixTime < 4102444800) "modification time is before 2100"
 
             Move (archive_read_disk_new ()) to pArchive
             Move (archive_entry_new ()) to pEntry
             Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sFile))) to iVoid
             Move (archive_read_disk_entry_from_file (pArchive, pEntry, -1, 0)) to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "entry_from_file"
-            Move (archive_entry_birthtime (pEntry)) to iBirthTime
-            Move (iUnixTime - iBirthTime) to iDifference
-            Send Assert (iDifference >= -1 and iDifference <= 1) "creation time equals the birth time read by libarchive"
+            Move (archive_entry_mtime (pEntry)) to biMtime
+            Send AssertBIAreEqual biMtime biUnixTime "modification time equals the mtime read by libarchive"
             Move (archive_entry_free (pEntry)) to iVoid
             Move (archive_read_free (pArchive)) to iResult
 
-            Get FileFolderCreationUnixDateTime of oFilesArchiver (sFile + ".missing") to iUnixTime
-            Send AssertIAreEqual 0 iUnixTime "missing file gives 0"
+            Get FileFolderCreationUnixDateTime of oFilesArchiver (sFile + ".missing") to biUnixTime
+            Send AssertBIAreEqual 0 biUnixTime "missing file gives 0"
             EraseFile sFile
         End_Procedure
     End_Object

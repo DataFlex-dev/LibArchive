@@ -1,8 +1,0 @@
-{
-    "dependencies": {
-        "github.com/DataFlex-dev/DFUnit.git/DFUnit/DFUnit": {
-            "ref": "7cc80056404a7496e9082d873535e118d8a83d47"
-        }
-    },
-    "lockVersion": "1.0.0"
-}

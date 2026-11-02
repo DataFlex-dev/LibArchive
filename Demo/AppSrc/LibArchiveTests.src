@@ -41,6 +41,7 @@ Object oLibArchiveTests is a cDFUnitTestApplication
     Use Tests\TestWrapperEntry.pkg
     Use Tests\TestWrapperMatch.pkg
     Use Tests\TestWrapperReader.pkg
+    Use Tests\TestZipReader.pkg
     Use Tests\TestWrapperDiskReader.pkg
     Use Tests\TestWrapperWriter.pkg
     Use Tests\TestWrapperDiskWriter.pkg

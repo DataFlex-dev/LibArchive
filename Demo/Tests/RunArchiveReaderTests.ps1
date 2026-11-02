@@ -7,11 +7,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-$libraryRoot = Join-Path $repoRoot 'Library'
-$workspace = Join-Path $libraryRoot 'LibArchive.sws'
-$fixtureRoot = Join-Path $libraryRoot 'Data\ArchiveReaderTests'
-$testExe = Join-Path $libraryRoot 'Programs\ArchiveReaderTests64.exe'
-$nativeRoot = Join-Path $repoRoot 'Demo\Programs'
+$demoRoot = Join-Path $repoRoot 'Demo'
+$workspace = Join-Path $demoRoot 'LibArchive Demo.sws'
+$fixtureRoot = Join-Path $demoRoot 'Programs\TestTemp\ArchiveReaderTests'
+$testExe = Join-Path $demoRoot 'Programs\LibArchiveTests64.exe'
+$nativeRoot = Join-Path $demoRoot 'Programs'
 $resultsFile = Join-Path $fixtureRoot 'results.xml'
 
 Add-Type -AssemblyName System.IO.Compression
@@ -307,7 +307,7 @@ function Corrupt-CompressedPayload {
 }
 
 # Keep all generated and extracted data under one verified, disposable root.
-$expectedFixtureRoot = [IO.Path]::GetFullPath((Join-Path $libraryRoot 'Data\ArchiveReaderTests'))
+$expectedFixtureRoot = [IO.Path]::GetFullPath((Join-Path $demoRoot 'Programs\TestTemp\ArchiveReaderTests'))
 if ([IO.Path]::GetFullPath($fixtureRoot) -ne $expectedFixtureRoot) {
     throw 'Refusing to clean an unexpected fixture path.'
 }
@@ -501,10 +501,10 @@ try {
     Corrupt-CompressedPayload $corruptPath
 
     # If traversal ever regresses, the crafted path still lands inside this
-    # disposable fixture root rather than beside it in Library\Data.
+    # disposable fixture root rather than beside it in Demo\Programs\TestTemp.
     New-Item -ItemType Directory -Path (Join-Path $fixtureRoot 'sandbox') | Out-Null
 
-    & $DfCli build $workspace --project 'ArchiveReaderTests.src' --toolchain $Toolchain --rebuild
+    & $DfCli build $workspace --target 'LibArchiveTests.src' --toolchain $Toolchain --rebuild
     if ($LASTEXITCODE -ne 0) {
         throw "DataFlex build failed with exit code $LASTEXITCODE."
     }
@@ -512,8 +512,8 @@ try {
     $savedPath = $env:PATH
     try {
         $env:PATH = $nativeRoot + [IO.Path]::PathSeparator + $savedPath
-        $process = Start-Process -FilePath $testExe -WorkingDirectory $libraryRoot -Wait -PassThru `
-            -NoNewWindow -ArgumentList @('--console', '--output', ('"{0}"' -f $resultsFile))
+        $process = Start-Process -FilePath $testExe -WorkingDirectory $demoRoot -Wait -PassThru `
+            -NoNewWindow -ArgumentList @('-c', '-o', ('"{0}"' -f $resultsFile))
     } finally {
         $env:PATH = $savedPath
     }
@@ -525,7 +525,7 @@ try {
     [xml] $results = Get-Content -Raw -LiteralPath $resultsFile
     $testCases = @($results.SelectNodes('//testcase'))
     if ($testCases.Count -eq 0) {
-        throw 'DFUnit did not discover any archive-reader tests.'
+        throw 'DFUnit did not discover any tests.'
     }
     $assertionCount = ($testCases | Measure-Object -Property assertions -Sum).Sum
     $failureCount = @($results.SelectNodes('//failure')).Count
@@ -534,7 +534,7 @@ try {
         $testCases.Count, $assertionCount, $failureCount, $errorCount)
 
     if ($process.ExitCode -ne 0) {
-        throw "Archive reader tests failed with exit code $($process.ExitCode)."
+        throw "LibArchive tests failed with exit code $($process.ExitCode)."
     }
 } finally {
     if (-not $KeepFixtures -and (Test-Path -LiteralPath $fixtureRoot)) {

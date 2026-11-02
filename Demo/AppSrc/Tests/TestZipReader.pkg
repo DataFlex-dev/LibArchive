@@ -1,9 +1,5 @@
-Use seq_chnl.pkg
-Use cArchiveReader.pkg
-Use cFilesArchiver.pkg
-
-Object Archive_Reader_Spec is a cTestFixture
-    Set psTestFixtureName to "Archive reader security"
+﻿Object oZipReaderTests is a cArchiveTestFixture
+    Set psTestFixtureName to "ZipReader"
 
     Object oArchiveReader is a cArchiveReader
     End_Object
@@ -11,10 +7,10 @@ Object Archive_Reader_Spec is a cTestFixture
     Object oFilesArchiver is a cFilesArchiver
     End_Object
 
-    Property String psFixtureRoot "Data\ArchiveReaderTests"
-
     Function FixturePath String sName Returns String
-        Function_Return (psFixtureRoot(Self) + "\" + sName)
+        String sRoot
+        Get TempFolder to sRoot
+        Function_Return (sRoot + "ArchiveReaderTests\" + sName)
     End_Function
 
     // Every test starts with the same bounded policy so limit changes cannot
@@ -33,6 +29,7 @@ Object Archive_Reader_Spec is a cTestFixture
 
     Procedure Setup
         Send ResetReader
+        Send Assert (PathExists(Self, FixturePath(Self, "valid.zip"))) "ZIP fixtures are missing: run Demo\Tests\RunArchiveReaderTests.ps1, it generates them and runs this suite"
     End_Procedure
 
     Function PathExists String sPath Returns Boolean
