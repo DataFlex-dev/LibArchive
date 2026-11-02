@@ -4,7 +4,7 @@
     "package": {
         "icon": "libarchive.png",
         "includeFiles": [
-            "CHANGELOG.md",
+            "Help",
             "README.md",
             "THIRD-PARTY-NOTICES.md",
             "Programs/archive.dll",
@@ -26,7 +26,7 @@
         ],
         "license": "BSD-3-Clause",
         "licenseFile": "LICENSE",
-        "version": "1.0.1"
+        "version": "1.0.2"
     },
     "studio": {
         "DefaultFormHeight": 12
