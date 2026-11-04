@@ -1,9 +1,15 @@
 {
     "dependencies": [
-        "../Library/LibArchive.sws"
+        "DataFlex-dev/LibArchive"
     ],
     "description": "LibArchive Demo workspace",
     "df": 26.0,
+    "overrides": {
+        "DataFlex-dev/LibArchive": {
+            "sws": "../Library/LibArchive.sws",
+            "cacheCheck": false
+        }
+    },
     "projects": [
         "Demo.src"
     ],

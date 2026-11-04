@@ -14,3 +14,7 @@ Demo/AppHtml/global.asa
 **.err
 unittests/Programs/TestTemp/
 Demo/Data/*.xml
+
+# Native DLLs are tracked once in Library/Programs and installed by df-cli (workspace override)
+Demo/Programs/*.dll
+unittests/Programs/*.dll

@@ -63,7 +63,7 @@ The suite covers compressed and uncompressed ZIP bombs, overlapping compressed-d
 
 Native libarchive itself is still an external platform dependency. `Archive.h.pkg` currently names it `archive.dll`, and this repository only includes and tests the Windows x64 binary set. A non-Windows deployment must supply a compatible native libarchive build and adapt that library-name binding to the target DataFlex runtime's shared-library convention.
 
-The seven 64-bit DLLs in `Demo\Programs` must be deployed beside the application executable. They are native libraries, not COM components, and must not be registered with `regsvr32`.
+The seven 64-bit DLLs in `Library\Programs` (the only copy tracked in this repository; the demo and test workspaces get theirs installed by `df-cli` on build) must be deployed beside the application executable. They are native libraries, not COM components, and must not be registered with `regsvr32`.
 
 The bundled `archive.dll` currently reports libarchive 3.7.7. Treat native DLL updates as part of normal security maintenance: this DataFlex wrapper limits untrusted extraction, but it cannot patch vulnerabilities inside an old native parser.
 
@@ -79,4 +79,4 @@ The bundled `archive.dll` currently reports libarchive 3.7.7. Treat native DLL u
 ## Requirements
 
 - DataFlex 26.0, x64
-- The native DLL set from `Demo\Programs`
+- The native DLL set from `Library\Programs`

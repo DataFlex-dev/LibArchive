@@ -20,7 +20,7 @@ The purpose of this demo workspace is to provide examples and usage scenarios fo
 3. Compile and run the demo application to see the library in action.
 
 ## DLLs
-The programs folder contains 7 64 bit DLL files. At this moment there is no plan to make 32 bit DLLs.
+The programs folder gets 7 64 bit DLL files when you build. Outside this repository they come with the `DataFlex-dev/LibArchive` package; in this repository the workspace overrides that dependency with `../Library/LibArchive.sws` (see `LibArchive Demo.sws`), so `df-cli` installs the DLLs of `Library\Programs` and git tracks only that one set. At this moment there is no plan to make 32 bit DLLs.
 The archive.dll file is the main file, the others are used when needed.
 These files, when you use the library in your own environment, need to be present as well in your programs folder. The files are plain DLLs, it is not COM, no regsvr32 can and should be used.
 

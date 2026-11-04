@@ -5,7 +5,7 @@ DataFlex workspace (`unittests.sws`) with the [DFUnit](https://github.com/DataFl
 ## Structure
 
 - `AppSrc/`: `LibArchiveTests.src` and the fixture packages in `AppSrc/Tests/`.
-- `Programs/`: `Config.ws`, the 7 native 64-bit DLLs the tests need beside the executable, and the compiled `LibArchiveTests64.exe`. Test files go to `Programs/TestTemp` and are removed by the tests.
+- `Programs/`: `Config.ws`, the 7 native 64-bit DLLs (from the `DataFlex-dev/LibArchive` package; in this repository `unittests.sws` overrides it with `../Library/LibArchive.sws`, so `df-cli` installs them from `Library/Programs` on build and git does not track them here), and the compiled `LibArchiveTests64.exe`. Test files go to `Programs/TestTemp` and are removed by the tests.
 - `Tests/RunArchiveReaderTests.ps1`: generates the ZIP fixtures, builds `AppSrc/LibArchiveTests.src` and runs the whole DFUnit suite.
 
 ## Run
