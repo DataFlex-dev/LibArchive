@@ -11,10 +11,12 @@ Class cArchiveTestFixture is a cTestFixture
 
     // Folder (with trailing backslash) for files created by the tests: <Programs folder>\TestTemp\
     Function TempFolder Returns String
+        Handle hoWorkspace
         String sFolder
         Boolean bOk
 
-        Get psProgramPath of (phoWorkspace (ghoApplication)) to sFolder
+        Get phoWorkspace of ghoApplication to hoWorkspace
+        Get psProgramPath of hoWorkspace to sFolder
         If (Right (sFolder, 1) <> "\") Begin
             Move (sFolder + "\") to sFolder
         End
@@ -63,8 +65,11 @@ Class cArchiveTestFixture is a cTestFixture
 
     // Asserts that a libarchive result equals ARCHIVE_OK, the message contains the libarchive error text.
     Procedure AssertArchiveOk Integer iResult Pointer pArchive String sWhat
+        String sErrorText
+
         If (iResult <> ARCHIVE_OK) Begin
-            Send AssertIAreEqual ARCHIVE_OK iResult (sWhat * "failed:" * ErrorText (Self, pArchive))
+            Get ErrorText pArchive to sErrorText
+            Send AssertIAreEqual ARCHIVE_OK iResult (sWhat * "failed:" * sErrorText)
         End
         Else Begin
             Send AssertIAreEqual ARCHIVE_OK iResult sWhat
@@ -108,6 +113,8 @@ Class cArchiveTestFixture is a cTestFixture
 
     // Writes the sample entries to an open archive writer handle. Returns ARCHIVE_OK or the first failing result.
     Function WriteSampleEntries Pointer pArchive Returns Integer
+        BigInt biSampleMTime
+        Boolean bSampleEntryIsDirectory
         Integer iIndex iResult iCount
         BigInt iWritten
         Pointer pEntry
@@ -120,8 +127,10 @@ Class cArchiveTestFixture is a cTestFixture
             Get SampleEntryContent iIndex to sContent
             Move (archive_entry_new ()) to pEntry
             Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sName))) to iVoid
-            Move (archive_entry_set_mtime (pEntry, SampleMTime (Self), 0)) to iVoid
-            If (SampleEntryIsDirectory (Self, iIndex)) Begin
+            Get SampleMTime to biSampleMTime
+            Move (archive_entry_set_mtime (pEntry, biSampleMTime, 0)) to iVoid
+            Get SampleEntryIsDirectory iIndex to bSampleEntryIsDirectory
+            If bSampleEntryIsDirectory Begin
                 Move (archive_entry_set_filetype (pEntry, AE_IFDIR)) to iVoid
                 Move (archive_entry_set_perm (pEntry, 493)) to iVoid
                 Move (archive_entry_set_size (pEntry, 0)) to iVoid
@@ -132,7 +141,8 @@ Class cArchiveTestFixture is a cTestFixture
                 Move (archive_entry_set_size (pEntry, SizeOfString (sContent))) to iVoid
             End
             Move (archive_write_header (pArchive, pEntry)) to iResult
-            If (iResult = ARCHIVE_OK and not (SampleEntryIsDirectory (Self, iIndex))) Begin
+            Get SampleEntryIsDirectory iIndex to bSampleEntryIsDirectory
+            If (iResult = ARCHIVE_OK and not (bSampleEntryIsDirectory)) Begin
                 Move (archive_write_data (pArchive, AddressOf (sContent), SizeOfString (sContent))) to iWritten
                 If (iWritten <> SizeOfString (sContent)) Begin
                     Move ARCHIVE_FATAL to iResult
@@ -164,7 +174,7 @@ Class cArchiveTestFixture is a cTestFixture
             Move (archive_write_open_filename_w (pArchive, AddressOf (wsFileName))) to iResult
         End
         If (iResult = ARCHIVE_OK) Begin
-            Move (WriteSampleEntries (Self, pArchive)) to iResult
+            Get WriteSampleEntries pArchive to iResult
         End
         If (iResult = ARCHIVE_OK) Begin
             Move (archive_write_close (pArchive)) to iResult
@@ -189,7 +199,7 @@ Class cArchiveTestFixture is a cTestFixture
             Move (archive_write_open_memory (pArchive, AddressOf (ucWork), 1048576, AddressOf (iUsed))) to iResult
         End
         If (iResult = ARCHIVE_OK) Begin
-            Move (WriteSampleEntries (Self, pArchive)) to iResult
+            Get WriteSampleEntries pArchive to iResult
         End
         If (iResult = ARCHIVE_OK) Begin
             Move (archive_write_close (pArchive)) to iResult

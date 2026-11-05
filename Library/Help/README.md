@@ -54,19 +54,30 @@ End_Object
 
 Procedure ShowAndExtract
     tArchiveEntryInfo[] Entries
-    Integer iEntry iResult
+    tArchiveOperationResult Result
+    Integer iEntry
 
-    Get ListEntries of oReader "C:\Temp\backup.zip" to Entries
+    Get ListEntries of oReader "C:\Temp\backup.zip" (&Entries) to Result
+    If (not (Result.bSuccess)) Begin
+        Showln Result.sErrorMessage
+        Procedure_Return
+    End
     For iEntry from 0 to (SizeOfArray (Entries) - 1)
         Showln Entries[iEntry].sPathname Entries[iEntry].iSize
     Loop
-    Get ExtractAll of oReader "C:\Temp\backup.zip" "C:\Temp\restored" ARCHIVE_EXTRACT_TIME to iResult
+    Get ExtractZipArchive of oReader "C:\Temp\backup.zip" "C:\Temp\restored" to Result
+    If (not (Result.bSuccess)) Begin
+        Showln Result.iErrorCode Result.sErrorMessage
+    End
 End_Procedure
 ```
 
 ### Errors
 
-All wrapper methods return the libarchive result code (`ARCHIVE_OK`, `ARCHIVE_EOF`, `ARCHIVE_WARN`, `ARCHIVE_FAILED`, `ARCHIVE_FATAL`). `ARCHIVE_FAILED` and `ARCHIVE_FATAL` raise a DataFlex error by default; set `pbRaiseErrors` to False to handle the result codes yourself. See [cArchiveBase](Classes/cArchiveBase.md).
+There are two conventions, depending on the kind of method:
+
+- **One-call operations** (`ListEntries`, `ReadEntryData`, `InspectZipArchive`, `ExtractZipArchive` of `cArchiveReader`) return a `tArchiveOperationResult`: `bSuccess`, a stable `iErrorCode` (`C_ARCHIVE_RESULT_*`), `sErrorMessage` and counters. They never raise a DataFlex error and keep no state in the object.
+- **Methods that mirror a libarchive function** return the libarchive result code (`ARCHIVE_OK`, `ARCHIVE_EOF`, `ARCHIVE_WARN`, `ARCHIVE_FAILED`, `ARCHIVE_FATAL`). `ARCHIVE_FAILED` and `ARCHIVE_FATAL` raise a DataFlex error by default; set `pbRaiseErrors` to False to handle the result codes yourself. See [cArchiveBase](Classes/cArchiveBase.md).
 
 ## Classes
 
@@ -80,6 +91,7 @@ All wrapper methods return the libarchive result code (`ARCHIVE_OK`, `ARCHIVE_EO
 | [cArchiveDiskWriter](Classes/cArchiveDiskWriter.md) | Create files, folders and links on disk from entries | `archive_write_disk_*` |
 | [cArchiveMatch](Classes/cArchiveMatch.md) | Select entries by path pattern, time and owner | `archive_match_*` |
 | [cArchiveLinkResolver](Classes/cArchiveLinkResolver.md) | Resolve hard links when writing | `archive_entry_linkresolver_*` |
+| [cArchivePath](Classes/cArchivePath.md) | File system helpers (folder checks, listing, time stamps, absolute paths) as methods, no global functions | |
 | [cFilesArchiver](Classes/cFilesArchiver.md) | The original helper: pack a list of files and folders into one archive | |
 
 Callbacks (custom I/O, passphrase and lookup callbacks) are not available in the classes: DataFlex cannot create native function pointers. Use the file, memory and descriptor variants.

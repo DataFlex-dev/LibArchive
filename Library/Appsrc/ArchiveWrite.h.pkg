@@ -527,6 +527,7 @@ After successfully opening the file, you would typically proceed to create archi
 
 Pass a pointer - addressof() - to a normal DataFlex string (UTF-8)
 */
+// OBSOLETE (ANSI code page): use archive_write_open_filename_w instead. The wrapper classes do not call this function.
 External_Function archive_write_open_filename "archive_write_open_filename" archive.dll ;
     Pointer pArchive ;
     Pointer pFileName ;

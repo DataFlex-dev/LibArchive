@@ -46,6 +46,8 @@ Returns: `Pointer`
 Integer archive_read_disk_open (Pointer pArchive, Pointer pPath)
 ```
 
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_read_disk_open_w` instead. The wrapper classes do not call this function.
+
 Is used when you want to read information directly from the file system (i.e., disk) rather than from an archive file. This is particularly useful when you're trying to create an archive from a directory or a set of files on your local system, or when you need to inspect the metadata of files on disk.
 
 | Parameter | Type |

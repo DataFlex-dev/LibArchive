@@ -23,7 +23,7 @@ Time flags (combine with `ior`): `ARCHIVE_MATCH_MTIME` or `ARCHIVE_MATCH_CTIME` 
 
 ## Strings
 
-Patterns, names, date texts and file names are passed as **wide strings** (the `*_w` libarchive functions), so every character survives. The methods with the suffix `Locale` use the narrow functions (the bytes of the DataFlex string are interpreted in the ANSI code page; only ASCII text is portable). Source files with non-ASCII literals must be saved as UTF-8 with BOM.
+Patterns, names, date texts and file names are passed as **wide strings** (the `*_w` libarchive functions), so every character survives.
 
 ## Properties
 
@@ -59,16 +59,11 @@ Methods that call libarchive return the result code (`ARCHIVE_OK`, ...) unless n
 | Method | Description | libarchive function |
 |---|---|---|
 | `Function ExcludePattern String sValue Returns Integer` | Adds an exclusion pattern. | `archive_match_exclude_pattern_w` |
-| `Function ExcludePatternLocale String sValue Returns Integer` | Narrow variant. | `archive_match_exclude_pattern` |
 | `Function IncludePattern String sValue Returns Integer` | Adds an inclusion pattern. | `archive_match_include_pattern_w` |
-| `Function IncludePatternLocale String sValue Returns Integer` | Narrow variant. | `archive_match_include_pattern` |
 | `Function ExcludePatternFromFile String sFileName Boolean bNullSeparator Returns Integer` | Adds the exclusion patterns of a text file, one per line, or separated by a zero byte when `bNullSeparator`. | `archive_match_exclude_pattern_from_file_w` |
-| `Function ExcludePatternFromFileLocale ...` | Narrow file name. | `archive_match_exclude_pattern_from_file` |
 | `Function IncludePatternFromFile String sFileName Boolean bNullSeparator Returns Integer` | Adds the inclusion patterns of a text file. | `archive_match_include_pattern_from_file_w` |
-| `Function IncludePatternFromFileLocale ...` | Narrow file name. | `archive_match_include_pattern_from_file` |
 | `Function UnmatchedInclusions Returns Integer` | Number of inclusion patterns that matched nothing so far (0 without handle). | `archive_match_path_unmatched_inclusions` |
 | `Function UnmatchedInclusionPatterns Returns String[]` | Those patterns as an array (wide). Can be called repeatedly. | `archive_match_path_unmatched_inclusions_next_w` |
-| `Function UnmatchedInclusionPatternsLocale Returns String[]` | Narrow variant. | `archive_match_path_unmatched_inclusions_next` |
 
 ### Time conditions
 
@@ -76,9 +71,7 @@ Methods that call libarchive return the result code (`ARCHIVE_OK`, ...) unless n
 |---|---|---|
 | `Function IncludeTime Integer iFlag BigInt iSeconds Integer iNanoSeconds Returns Integer` | Includes entries by comparing with a Unix time. | `archive_match_include_time` |
 | `Function IncludeDate Integer iFlag String sDate Returns Integer` | Same with a date text such as `"2023-11-14 22:13:20 UTC"`; an unparsable date is `ARCHIVE_FAILED`. | `archive_match_include_date_w` |
-| `Function IncludeDateLocale ...` | Narrow variant. | `archive_match_include_date` |
 | `Function IncludeFileTime Integer iFlag String sFileName Returns Integer` | Same with the time stamps of a file. | `archive_match_include_file_time_w` |
-| `Function IncludeFileTimeLocale ...` | Narrow file name. | `archive_match_include_file_time` |
 | `Function ExcludeEntry Integer iFlag Handle hoEntry Returns Integer` | Excludes entries with the same path name as `hoEntry` whose time is newer, older or equal (`iFlag`). | `archive_match_exclude_entry` |
 
 ### Owner conditions
@@ -88,9 +81,7 @@ Methods that call libarchive return the result code (`ARCHIVE_OK`, ...) unless n
 | `Function IncludeUid BigInt iUserId Returns Integer` | Adds a user id. | `archive_match_include_uid` |
 | `Function IncludeGid BigInt iGroupId Returns Integer` | Adds a group id. | `archive_match_include_gid` |
 | `Function IncludeUname String sValue Returns Integer` | Adds a user name (wide). | `archive_match_include_uname_w` |
-| `Function IncludeUnameLocale ...` | Narrow variant. | `archive_match_include_uname` |
 | `Function IncludeGname String sValue Returns Integer` | Adds a group name (wide). | `archive_match_include_gname_w` |
-| `Function IncludeGnameLocale ...` | Narrow variant. | `archive_match_include_gname` |
 
 ### Helper
 

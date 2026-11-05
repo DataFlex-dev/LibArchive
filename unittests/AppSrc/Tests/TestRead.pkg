@@ -87,6 +87,7 @@ Object oReadTests is a cArchiveTestFixture
 
     // Reads the complete data of the current entry with archive_read_data.
     Function ReadEntryData Pointer pArchive Returns String
+        String sBytesToString
         UChar[] ucBuffer
         BigInt iRead
         String sResult
@@ -95,7 +96,8 @@ Object oReadTests is a cArchiveTestFixture
         Move (ResizeArray (ucBuffer, 4096)) to ucBuffer
         Move (archive_read_data (pArchive, AddressOf (ucBuffer), 4096)) to iRead
         While (iRead > 0)
-            Move (sResult + BytesToString (Self, ucBuffer, iRead)) to sResult
+            Get BytesToString ucBuffer iRead to sBytesToString
+            Move (sResult + sBytesToString) to sResult
             Move (archive_read_data (pArchive, AddressOf (ucBuffer), 4096)) to iRead
         Loop
         Function_Return sResult
@@ -168,6 +170,8 @@ Object oReadTests is a cArchiveTestFixture
 
     // Writes a one file archive (formats that cannot store the sample directory like ar or warc).
     Function BuildSingleFileArchive String sFile Integer eFormat String sName String sContent Returns Integer
+        BigInt biSampleMTime
+        String sErrorText
         Pointer pArchive pEntry
         Integer iResult
         BigInt iWritten
@@ -194,7 +198,8 @@ Object oReadTests is a cArchiveTestFixture
             Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sName))) to iVoid
             Move (archive_entry_set_filetype (pEntry, AE_IFREG)) to iVoid
             Move (archive_entry_set_perm (pEntry, 420)) to iVoid
-            Move (archive_entry_set_mtime (pEntry, SampleMTime (Self), 0)) to iVoid
+            Get SampleMTime to biSampleMTime
+            Move (archive_entry_set_mtime (pEntry, biSampleMTime, 0)) to iVoid
             Move (archive_entry_set_size (pEntry, SizeOfString (sContent))) to iVoid
             Move (archive_write_header (pArchive, pEntry)) to iResult
             If (iResult = ARCHIVE_OK) Begin
@@ -209,7 +214,8 @@ Object oReadTests is a cArchiveTestFixture
             Move (archive_write_close (pArchive)) to iResult
         End
         If (iResult <> ARCHIVE_OK) Begin
-            Set psBuildError to (ErrorText (Self, pArchive))
+            Get ErrorText pArchive to sErrorText
+            Set psBuildError to sErrorText
         End
         Move (archive_write_free (pArchive)) to iVoid
         Function_Return iResult
@@ -235,6 +241,9 @@ Object oReadTests is a cArchiveTestFixture
     // False (formats that do not store data, like mtree) only the number of entries is checked. The end of the
     // archive must follow after the last entry.
     Procedure VerifySample Pointer pArchive String sLabel Boolean bFull
+        String sMsg
+        Boolean bSampleEntryIsDirectory
+        BigInt biSampleMTime
         Pointer pEntry
         Integer iIndex iCount iResult iType iPosition
         String sName sExpected sData
@@ -248,7 +257,7 @@ Object oReadTests is a cArchiveTestFixture
         For iPosition from 0 to (iCount - 1)
             // 7zip stores the directory after the files
             Move iPosition to iIndex
-            If (bDirsLast) Begin
+            If bDirsLast Begin
                 If (iPosition = 1) Begin
                     Move 2 to iIndex
                 End
@@ -260,7 +269,8 @@ Object oReadTests is a cArchiveTestFixture
                 End
             End
             Move (archive_read_next_header (pArchive, AddressOf (pEntry))) to iResult
-            Send AssertArchiveOk iResult pArchive (Msg (Self, sLabel * "next header", iIndex))
+            Get Msg (sLabel * "next header") iIndex to sMsg
+            Send AssertArchiveOk iResult pArchive sMsg
             If (iResult <> ARCHIVE_OK) Begin
                 Procedure_Return
             End
@@ -274,11 +284,13 @@ Object oReadTests is a cArchiveTestFixture
                     Move (Left (sExpected, Length (sExpected) - 1)) to sExpected
                 End
                 If (bSkipUnicode = False or iIndex <> 3) Begin
-                    Send AssertSAreEqual sExpected sName (Msg (Self, sLabel * "name", iIndex))
+                    Get Msg (sLabel * "name") iIndex to sMsg
+                    Send AssertSAreEqual sExpected sName sMsg
                 End
 
                 Move (archive_entry_filetype (pEntry)) to iType
-                If (SampleEntryIsDirectory (Self, iIndex)) Begin
+                Get SampleEntryIsDirectory iIndex to bSampleEntryIsDirectory
+                If bSampleEntryIsDirectory Begin
                     Send AssertIAreEqual AE_IFDIR iType (sLabel * "type of" * sExpected)
                 End
                 Else Begin
@@ -286,12 +298,16 @@ Object oReadTests is a cArchiveTestFixture
                     Get SampleEntryContent iIndex to sExpected
                     If (bSkipSize = False) Begin
                         Move (archive_entry_size (pEntry)) to iSize
-                        Send AssertBIAreEqual (SizeOfString (sExpected)) iSize (Msg (Self, sLabel * "size", iIndex))
+                        Get Msg (sLabel * "size") iIndex to sMsg
+                        Send AssertBIAreEqual (SizeOfString (sExpected)) iSize sMsg
                     End
                     Get ReadEntryData pArchive to sData
-                    Send AssertSAreEqual sExpected sData (Msg (Self, sLabel * "data", iIndex))
+                    Get Msg (sLabel * "data") iIndex to sMsg
+                    Send AssertSAreEqual sExpected sData sMsg
                 End
-                Send AssertBIAreEqual (SampleMTime (Self)) (archive_entry_mtime (pEntry)) (Msg (Self, sLabel * "mtime", iIndex))
+                Get SampleMTime to biSampleMTime
+                Get Msg (sLabel * "mtime") iIndex to sMsg
+                Send AssertBIAreEqual biSampleMTime (archive_entry_mtime (pEntry)) sMsg
             End
         Loop
         Move (archive_read_next_header (pArchive, AddressOf (pEntry))) to iResult
@@ -377,6 +393,7 @@ Object oReadTests is a cArchiveTestFixture
     // Writes a tar with the filter, reads it three times: with the specific support function, with
     // support_filter_by_code and with append_filter (no detection). The filter code of filter 0 must match.
     Procedure FilterRoundTrip String sLabel Integer eFilter String sFilterName Boolean bAppend
+        String sMsg
         String sFile
         Pointer pArchive
         Integer iResult iPass iLastPass
@@ -411,11 +428,15 @@ Object oReadTests is a cArchiveTestFixture
                 Send AssertArchiveOk iResult pArchive (sLabel * "append filter")
             End
             Move (archive_read_open_filename_w (pArchive, AddressOf (wsFile), 10240)) to iResult
-            Send AssertArchiveOk iResult pArchive (Msg (Self, sLabel * "open pass", iPass))
+            Get Msg (sLabel * "open pass") iPass to sMsg
+            Send AssertArchiveOk iResult pArchive sMsg
             If (iResult = ARCHIVE_OK) Begin
-                Send VerifySample pArchive (Msg (Self, sLabel * "pass", iPass)) True
-                Send AssertIAreEqual eFilter (archive_filter_code (pArchive, 0)) (Msg (Self, sLabel * "filter code pass", iPass))
-                Send AssertSAreEqual sFilterName (PointerToString (archive_filter_name (pArchive, 0))) (Msg (Self, sLabel * "filter name pass", iPass))
+                Get Msg (sLabel * "pass") iPass to sMsg
+                Send VerifySample pArchive sMsg True
+                Get Msg (sLabel * "filter code pass") iPass to sMsg
+                Send AssertIAreEqual eFilter (archive_filter_code (pArchive, 0)) sMsg
+                Get Msg (sLabel * "filter name pass") iPass to sMsg
+                Send AssertSAreEqual sFilterName (PointerToString (archive_filter_name (pArchive, 0))) sMsg
             End
             Move (archive_read_free (pArchive)) to iResult
         Loop
@@ -1659,6 +1680,7 @@ Object oReadTests is a cArchiveTestFixture
     // Extracts the sample archive below a folder: the entry path names are rewritten to absolute paths.
     // iMode 0: archive_read_extract, 1: archive_read_extract2 with a write_disk handle.
     Procedure ExtractSample String sFolderName Integer iMode
+        String sMsg
         String sDir sPath sName sData
         Pointer pArchive pEntry pDisk
         Integer iIndex iResult iFlags
@@ -1682,7 +1704,8 @@ Object oReadTests is a cArchiveTestFixture
 
         For iIndex from 0 to 3
             Move (archive_read_next_header (pArchive, AddressOf (pEntry))) to iResult
-            Send AssertArchiveOk iResult pArchive (Msg (Self, sFolderName * "next header", iIndex))
+            Get Msg (sFolderName * "next header") iIndex to sMsg
+            Send AssertArchiveOk iResult pArchive sMsg
             Get SampleEntryName iIndex to sName
             Move (sDir + sName) to sPath
             Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sPath))) to iVoid
@@ -1692,7 +1715,8 @@ Object oReadTests is a cArchiveTestFixture
             Else Begin
                 Move (archive_read_extract2 (pArchive, pEntry, pDisk)) to iResult
             End
-            Send AssertArchiveOk iResult pArchive (Msg (Self, sFolderName * "extract", iIndex))
+            Get Msg (sFolderName * "extract") iIndex to sMsg
+            Send AssertArchiveOk iResult pArchive sMsg
         Loop
         Move (archive_read_free (pArchive)) to iResult
         If (iMode = 1) Begin

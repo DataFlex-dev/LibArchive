@@ -7,6 +7,9 @@
     Object oFilesArchiver is a cFilesArchiver
     End_Object
 
+    Object oPathTools is a cArchivePath
+    End_Object
+
     Function FixturePath String sName Returns String
         String sRoot
         Get TempFolder to sRoot
@@ -28,15 +31,22 @@
     End_Procedure
 
     Procedure Setup
+        String sFixturePath
+        Boolean bPathExists
+
         Send ResetReader
-        Send Assert (PathExists(Self, FixturePath(Self, "valid.zip"))) "ZIP fixtures are missing: run unittests\Tests\RunArchiveReaderTests.ps1, it generates them and runs this suite"
+        Get FixturePath "valid.zip" to sFixturePath
+        Get PathExists sFixturePath to bPathExists
+        Send Assert bPathExists "ZIP fixtures are missing: run unittests\Tests\RunArchiveReaderTests.ps1, it generates them and runs this suite"
     End_Procedure
 
     Function PathExists String sPath Returns Boolean
+        Boolean bIsPhysicalFolder
         Boolean bExists
 
         File_Exist sPath bExists
-        Function_Return (bExists or ArchivePathIsPhysicalDirectory(sPath))
+        Get IsPhysicalFolder of oPathTools sPath to bIsPhysicalFolder
+        Function_Return (bExists or bIsPhysicalFolder)
     End_Function
 
     Function ExtractedBinaryMatches Returns Boolean
@@ -66,10 +76,12 @@
     End_Function
 
     Procedure ExpectInspectFailure String sFixture Integer iExpectedCode String sName
+        String sFixturePath
         tArchiveOperationResult Result
 
         Send ResetReader
-        Get InspectZipArchive of oArchiveReader (FixturePath(Self, sFixture)) to Result
+        Get FixturePath sFixture to sFixturePath
+        Get InspectZipArchive of oArchiveReader sFixturePath to Result
         Send Assert (not(Result.bSuccess) and Result.iErrorCode = iExpectedCode) ;
             (sName + " (expected code " + String(iExpectedCode) + ", got " + ;
              String(Result.iErrorCode) + "): " + Result.sErrorMessage)
@@ -96,9 +108,11 @@
 
     { Published=True }
     Procedure Valid_ZIP_metadata_is_reported
+        String sFixturePath
         tArchiveOperationResult Result
 
-        Get InspectZipArchive of oArchiveReader (FixturePath(Self, "valid.zip")) to Result
+        Get FixturePath "valid.zip" to sFixturePath
+        Get InspectZipArchive of oArchiveReader sFixturePath to Result
         Send Assert Result.bSuccess ("valid ZIP passes metadata preflight: " + Result.sErrorMessage)
         Send AssertIAreEqual 3 Result.iEntryCount "valid ZIP entry count"
         Send Assert (Result.biArchiveBytes > Result.biCentralDirectoryBytes and ;
@@ -108,16 +122,22 @@
 
     { Published=True }
     Procedure Valid_ZIP_extracts_binary_data
+        String sFixturePath sFixturePath2
+        Boolean bPathExists bExtractedBinaryMatches
         String sPath
         tArchiveOperationResult Result
 
-        Get ExtractZipArchive of oArchiveReader (FixturePath(Self, "valid.zip")) ;
-            (FixturePath(Self, "valid-output")) to Result
+        Get FixturePath "valid.zip" to sFixturePath
+        Get FixturePath "valid-output" to sFixturePath2
+        Get ExtractZipArchive of oArchiveReader sFixturePath ;
+            sFixturePath2 to Result
         Send Assert Result.bSuccess ("valid ZIP extracts successfully: " + Result.sErrorMessage)
         Send AssertBIAreEqual 11 Result.biExtractedBytes "actual extracted byte total is reported"
         Get FixturePath "valid-output\hello.txt" to sPath
-        Send Assert (PathExists(Self, sPath)) "text file was extracted"
-        Send Assert (ExtractedBinaryMatches(Self)) "binary bytes are extracted without text conversion"
+        Get PathExists sPath to bPathExists
+        Send Assert bPathExists "text file was extracted"
+        Get ExtractedBinaryMatches to bExtractedBinaryMatches
+        Send Assert bExtractedBinaryMatches "binary bytes are extracted without text conversion"
     End_Procedure
 
     { Published=True }
@@ -145,39 +165,46 @@
 
     { Published=True }
     Procedure Existing_destination_is_not_overwritten
+        String sFixturePath
         String sDestination
         tArchiveOperationResult Result
 
         Get FixturePath "existing-output" to sDestination
         Move False to Err
         Make_Directory sDestination
-        Get ExtractZipArchive of oArchiveReader (FixturePath(Self, "valid.zip")) sDestination to Result
+        Get FixturePath "valid.zip" to sFixturePath
+        Get ExtractZipArchive of oArchiveReader sFixturePath sDestination to Result
         Send AssertIAreEqual C_ARCHIVE_RESULT_DESTINATION_EXISTS Result.iErrorCode ;
             "existing destination is never overwritten"
     End_Procedure
 
     { Published=True }
     Procedure Declared_uncompressed_limits_are_enforced
+        String sFixturePath
         tArchiveOperationResult Result
 
         Set piMaxTotalUncompressedBytes of oArchiveReader to 10
-        Get InspectZipArchive of oArchiveReader (FixturePath(Self, "valid.zip")) to Result
+        Get FixturePath "valid.zip" to sFixturePath
+        Get InspectZipArchive of oArchiveReader sFixturePath to Result
         Send AssertIAreEqual C_ARCHIVE_RESULT_TOTAL_TOO_LARGE Result.iErrorCode ;
             "declared total over the configured limit is rejected"
 
         Send ResetReader
         Set piMaxEntryUncompressedBytes of oArchiveReader to 4
-        Get InspectZipArchive of oArchiveReader (FixturePath(Self, "valid.zip")) to Result
+        Get FixturePath "valid.zip" to sFixturePath
+        Get InspectZipArchive of oArchiveReader sFixturePath to Result
         Send AssertIAreEqual C_ARCHIVE_RESULT_ENTRY_TOO_LARGE Result.iErrorCode ;
             "declared entry over the configured limit is rejected"
     End_Procedure
 
     { Published=True }
     Procedure Entry_count_and_configuration_limits_are_enforced
+        String sFixturePath
         tArchiveOperationResult Result
 
         Set piMaxEntries of oArchiveReader to 2
-        Get InspectZipArchive of oArchiveReader (FixturePath(Self, "valid.zip")) to Result
+        Get FixturePath "valid.zip" to sFixturePath
+        Get InspectZipArchive of oArchiveReader sFixturePath to Result
         Send AssertIAreEqual C_ARCHIVE_RESULT_TOO_MANY_ENTRIES Result.iErrorCode ;
             "entry-count limit is enforced"
         Send AssertIAreEqual 0 Result.iEntryCount ;
@@ -185,64 +212,86 @@
 
         Send ResetReader
         Set piMaxTotalUncompressedBytes of oArchiveReader to 0
-        Get InspectZipArchive of oArchiveReader (FixturePath(Self, "valid.zip")) to Result
+        Get FixturePath "valid.zip" to sFixturePath
+        Get InspectZipArchive of oArchiveReader sFixturePath to Result
         Send AssertIAreEqual C_ARCHIVE_RESULT_INVALID_ARGUMENT Result.iErrorCode ;
             "unbounded size configuration is rejected"
     End_Procedure
 
     { Published=True }
     Procedure Compressed_archive_and_metadata_limits_are_enforced
+        String sFixturePath
         tArchiveOperationResult Result
 
         Set piMaxArchiveBytes of oArchiveReader to 10
-        Get InspectZipArchive of oArchiveReader (FixturePath(Self, "valid.zip")) to Result
+        Get FixturePath "valid.zip" to sFixturePath
+        Get InspectZipArchive of oArchiveReader sFixturePath to Result
         Send AssertIAreEqual C_ARCHIVE_RESULT_ARCHIVE_TOO_LARGE Result.iErrorCode ;
             "compressed archive-size limit is enforced before libarchive opens"
 
         Send ResetReader
         Set piMaxCentralDirectoryBytes of oArchiveReader to 46
-        Get InspectZipArchive of oArchiveReader (FixturePath(Self, "valid.zip")) to Result
+        Get FixturePath "valid.zip" to sFixturePath
+        Get InspectZipArchive of oArchiveReader sFixturePath to Result
         Send AssertIAreEqual C_ARCHIVE_RESULT_CENTRAL_DIRECTORY_TOO_LARGE Result.iErrorCode ;
             "central-directory byte budget is enforced before libarchive opens"
     End_Procedure
 
     { Published=True }
     Procedure Compressed_bomb_is_rejected_before_extraction
+        String sFixturePath sFixturePath2
+        Boolean bPathExists
         tArchiveOperationResult Result
 
         Set piMaxTotalUncompressedBytes of oArchiveReader to 65536
-        Get ExtractZipArchive of oArchiveReader (FixturePath(Self, "bomb.zip")) ;
-            (FixturePath(Self, "bomb-output")) to Result
+        Get FixturePath "bomb.zip" to sFixturePath
+        Get FixturePath "bomb-output" to sFixturePath2
+        Get ExtractZipArchive of oArchiveReader sFixturePath ;
+            sFixturePath2 to Result
         Send AssertIAreEqual C_ARCHIVE_RESULT_TOTAL_TOO_LARGE Result.iErrorCode ;
             "compressed bomb is rejected by declared uncompressed size"
-        Send AssertFalse (PathExists(Self, FixturePath(Self, "bomb-output"))) ;
+        Get FixturePath "bomb-output" to sFixturePath
+        Get PathExists sFixturePath to bPathExists
+        Send AssertFalse bPathExists ;
             "bomb rejection creates no destination"
     End_Procedure
 
     { Published=True }
     Procedure Path_component_amplification_is_bounded
+        String sFixturePath sFixturePath2
+        Boolean bPathExists
         tArchiveOperationResult Result
 
         Set piMaxPathComponents of oArchiveReader to 10
-        Get ExtractZipArchive of oArchiveReader (FixturePath(Self, "component-bomb.zip")) ;
-            (FixturePath(Self, "component-output")) to Result
+        Get FixturePath "component-bomb.zip" to sFixturePath
+        Get FixturePath "component-output" to sFixturePath2
+        Get ExtractZipArchive of oArchiveReader sFixturePath ;
+            sFixturePath2 to Result
         Send AssertIAreEqual C_ARCHIVE_RESULT_TOO_MANY_PATH_COMPONENTS Result.iErrorCode ;
             "implicit-directory work budget is enforced during preflight"
-        Send AssertFalse (PathExists(Self, FixturePath(Self, "component-output"))) ;
+        Get FixturePath "component-output" to sFixturePath
+        Get PathExists sFixturePath to bPathExists
+        Send AssertFalse bPathExists ;
             "path-component bomb creates no destination"
     End_Procedure
 
     { Published=True }
     Procedure Traversal_is_rejected_before_extraction
+        String sFixturePath sFixturePath2
+        Boolean bPathExists
         tArchiveOperationResult Result
 
         Send ExpectInspectFailure "traversal.zip" C_ARCHIVE_RESULT_UNSAFE_PATH ;
             "mixed-separator traversal entry is rejected"
-        Get ExtractZipArchive of oArchiveReader (FixturePath(Self, "traversal.zip")) ;
-            (FixturePath(Self, "sandbox\traversal-output")) to Result
+        Get FixturePath "traversal.zip" to sFixturePath
+        Get FixturePath "sandbox\traversal-output" to sFixturePath2
+        Get ExtractZipArchive of oArchiveReader sFixturePath ;
+            sFixturePath2 to Result
         Send AssertIAreEqual C_ARCHIVE_RESULT_UNSAFE_PATH Result.iErrorCode ;
             "traversal is rejected before extraction"
-        Send AssertFalse (PathExists(Self, FixturePath(Self, "sandbox\escape.bin"))) ;
+        Get FixturePath "sandbox\escape.bin" to sFixturePath
+        Get PathExists sFixturePath to bPathExists
+        Send AssertFalse bPathExists ;
             "traversal creates no sibling file"
     End_Procedure
 
@@ -316,36 +365,43 @@
 
     { Published=True }
     Procedure Trailing_zero_padding_is_opt_in
+        String sFixturePath
         tArchiveOperationResult Result
 
-        Get InspectZipArchive of oArchiveReader (FixturePath(Self, "padded.zip")) to Result
+        Get FixturePath "padded.zip" to sFixturePath
+        Get InspectZipArchive of oArchiveReader sFixturePath to Result
         Send AssertIAreEqual C_ARCHIVE_RESULT_MALFORMED Result.iErrorCode ;
             "strict EOF validation rejects trailing zero padding by default"
 
         Set pbAllowTrailingZeroPadding of oArchiveReader to True
-        Get InspectZipArchive of oArchiveReader (FixturePath(Self, "padded.zip")) to Result
+        Get FixturePath "padded.zip" to sFixturePath
+        Get InspectZipArchive of oArchiveReader sFixturePath to Result
         Send Assert Result.bSuccess ;
             ("opt-in accepts zero-filled writer block padding: " + Result.sErrorMessage)
         Send AssertBIAreEqual 11 Result.biDeclaredUncompressedBytes ;
             "uncompressed metadata is still inspected after accepting padding"
 
         Set piMaxTotalUncompressedBytes of oArchiveReader to 10
-        Get InspectZipArchive of oArchiveReader (FixturePath(Self, "padded.zip")) to Result
+        Get FixturePath "padded.zip" to sFixturePath
+        Get InspectZipArchive of oArchiveReader sFixturePath to Result
         Send AssertIAreEqual C_ARCHIVE_RESULT_TOTAL_TOO_LARGE Result.iErrorCode ;
             "uncompressed-size limits still reject padded archives"
 
         Send ResetReader
         Set pbAllowTrailingZeroPadding of oArchiveReader to True
-        Get InspectZipArchive of oArchiveReader (FixturePath(Self, "trailing-data.zip")) to Result
+        Get FixturePath "trailing-data.zip" to sFixturePath
+        Get InspectZipArchive of oArchiveReader sFixturePath to Result
         Send AssertIAreEqual C_ARCHIVE_RESULT_MALFORMED Result.iErrorCode ;
             "the opt-in does not accept non-zero trailing content"
     End_Procedure
 
     { Published=True }
     Procedure Malformed_input_is_rejected
+        String sFixturePath
         tArchiveOperationResult Result
 
-        Get InspectZipArchive of oArchiveReader (FixturePath(Self, "malformed.zip")) to Result
+        Get FixturePath "malformed.zip" to sFixturePath
+        Get InspectZipArchive of oArchiveReader sFixturePath to Result
         Send Assert (not(Result.bSuccess) and ;
             (Result.iErrorCode = C_ARCHIVE_RESULT_OPEN_FAILED or ;
              Result.iErrorCode = C_ARCHIVE_RESULT_MALFORMED)) ;
@@ -354,39 +410,55 @@
 
     { Published=True }
     Procedure Corrupt_data_fails_and_is_cleaned_up
+        String sFixturePath sFixturePath2
+        Boolean bPathExists
         tArchiveOperationResult Result
 
-        Get InspectZipArchive of oArchiveReader (FixturePath(Self, "corrupt-data.zip")) to Result
+        Get FixturePath "corrupt-data.zip" to sFixturePath
+        Get InspectZipArchive of oArchiveReader sFixturePath to Result
         Send Assert Result.bSuccess "corrupt entry metadata still passes preflight"
-        Get ExtractZipArchive of oArchiveReader (FixturePath(Self, "corrupt-data.zip")) ;
-            (FixturePath(Self, "corrupt-output")) to Result
+        Get FixturePath "corrupt-data.zip" to sFixturePath
+        Get FixturePath "corrupt-output" to sFixturePath2
+        Get ExtractZipArchive of oArchiveReader sFixturePath ;
+            sFixturePath2 to Result
         Send AssertFalse Result.bSuccess "corrupt entry data fails extraction"
-        Send AssertFalse (PathExists(Self, FixturePath(Self, "corrupt-output"))) ;
+        Get FixturePath "corrupt-output" to sFixturePath
+        Get PathExists sFixturePath to bPathExists
+        Send AssertFalse bPathExists ;
             "failed extraction removes its private destination"
     End_Procedure
 
     { Published=True }
     Procedure Underdeclared_data_is_bounded_and_cleaned_up
+        String sFixturePath sFixturePath2
+        Boolean bPathExists
         tArchiveOperationResult Result
 
-        Get InspectZipArchive of oArchiveReader (FixturePath(Self, "underdeclared-size.zip")) to Result
+        Get FixturePath "underdeclared-size.zip" to sFixturePath
+        Get InspectZipArchive of oArchiveReader sFixturePath to Result
         Send Assert (Result.bSuccess and Result.biDeclaredUncompressedBytes = 1) ;
             "underdeclared fixture passes metadata preflight at its forged size"
-        Get ExtractZipArchive of oArchiveReader (FixturePath(Self, "underdeclared-size.zip")) ;
-            (FixturePath(Self, "underdeclared-output")) to Result
+        Get FixturePath "underdeclared-size.zip" to sFixturePath
+        Get FixturePath "underdeclared-output" to sFixturePath2
+        Get ExtractZipArchive of oArchiveReader sFixturePath ;
+            sFixturePath2 to Result
         Send Assert (not(Result.bSuccess) and ;
             (Result.iErrorCode = C_ARCHIVE_RESULT_SIZE_MISMATCH or ;
              Result.iErrorCode = C_ARCHIVE_RESULT_MALFORMED)) ;
             "actual data cannot exceed an underdeclared entry size"
-        Send AssertFalse (PathExists(Self, FixturePath(Self, "underdeclared-output"))) ;
+        Get FixturePath "underdeclared-output" to sFixturePath
+        Get PathExists sFixturePath to bPathExists
+        Send AssertFalse bPathExists ;
             "underdeclared extraction removes its private destination"
     End_Procedure
 
     { Published=True }
     Procedure Missing_archive_is_rejected
+        String sFixturePath
         tArchiveOperationResult Result
 
-        Get InspectZipArchive of oArchiveReader (FixturePath(Self, "missing.zip")) to Result
+        Get FixturePath "missing.zip" to sFixturePath
+        Get InspectZipArchive of oArchiveReader sFixturePath to Result
         Send AssertIAreEqual C_ARCHIVE_RESULT_OPEN_FAILED Result.iErrorCode "missing archive is rejected"
     End_Procedure
 End_Object

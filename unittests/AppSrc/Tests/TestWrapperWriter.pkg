@@ -95,6 +95,8 @@ Object oWrapperWriterTests is a cArchiveTestFixture
     // Reads all entries of the open raw read handle into the properties of the fixture. Returns the number of entries
     // or the failing result of archive_read_next_header (negative).
     Function ReadOpened Pointer pArchive Returns Integer
+        String sBytesToString
+        BigInt biByteSum
         Pointer pEntry pName
         Integer iResult iCount iType iDone iDataResult iVoid iChunk
         BigInt iSize iTotal iRead iSum
@@ -153,10 +155,12 @@ Object oWrapperWriterTests is a cArchiveTestFixture
                     While (iRead > 0)
                         Move (archive_read_data (pArchive, AddressOf (ucBuffer), iChunk)) to iRead
                         If (iRead > 0) Begin
-                            Move (sContent + BytesToString (Self, ucBuffer, iRead)) to sContent
+                            Get BytesToString ucBuffer iRead to sBytesToString
+                            Move (sContent + sBytesToString) to sContent
                             If (iSize <= 200000) Begin
                                 Move (ResizeArray (ucBuffer, iRead)) to ucBuffer
-                                Move (iSum + ByteSum (Self, ucBuffer)) to iSum
+                                Get ByteSum ucBuffer to biByteSum
+                                Move (iSum + biByteSum) to iSum
                                 Move (ResizeArray (ucBuffer, iChunk)) to ucBuffer
                             End
                             Move (iTotal + iRead) to iTotal
@@ -220,7 +224,7 @@ Object oWrapperWriterTests is a cArchiveTestFixture
         End
         Move (archive_read_open_memory (pArchive, AddressOf (ucArchive), SizeOfArray (ucArchive))) to iResult
         If (iResult = ARCHIVE_OK) Begin
-            Move (ReadOpened (Self, pArchive)) to iResult
+            Get ReadOpened pArchive to iResult
         End
         Move (archive_read_free (pArchive)) to iVoid
         Function_Return iResult
@@ -245,7 +249,7 @@ Object oWrapperWriterTests is a cArchiveTestFixture
         End
         Move (archive_read_open_filename_w (pArchive, AddressOf (wsFileName), 10240)) to iResult
         If (iResult = ARCHIVE_OK) Begin
-            Move (ReadOpened (Self, pArchive)) to iResult
+            Get ReadOpened pArchive to iResult
         End
         Move (archive_read_free (pArchive)) to iVoid
         Function_Return iResult
@@ -271,7 +275,7 @@ Object oWrapperWriterTests is a cArchiveTestFixture
     Function NewWriter Returns Handle
         Handle hoWriter
 
-        Get Create (RefClass (cArchiveWriter)) to hoWriter
+        Get CreateNamed (RefClass (cArchiveWriter)) "oArchiveWriter" to hoWriter
         Set pbRaiseErrors of hoWriter to False
         Send CreateWriter of hoWriter
         Function_Return hoWriter
@@ -349,7 +353,7 @@ Object oWrapperWriterTests is a cArchiveTestFixture
             Send Assert bOk (sLabel * "magic bytes" * sMagic)
         End
         If (sContains <> "") Begin
-            Move (BytesToString (Self, ucOut, SizeOfArray (ucOut))) to sOut
+            Get BytesToString ucOut (SizeOfArray (ucOut)) to sOut
             Send Assert (Pos (sContains, sOut) > 0) (sLabel * "output contains" * sContains)
         End
         If (bReadable) Begin
@@ -730,7 +734,7 @@ Object oWrapperWriterTests is a cArchiveTestFixture
             Integer iResult
             Boolean bHas
 
-            Get Create (RefClass (cArchiveWriter)) to hoWriter
+            Get CreateNamed (RefClass (cArchiveWriter)) "oArchiveWriter" to hoWriter
             Get HasHandle of hoWriter to bHas
             Send AssertFalse bHas "no handle before CreateWriter"
 
@@ -802,7 +806,7 @@ Object oWrapperWriterTests is a cArchiveTestFixture
             Send Assert (sOut <> "") "psLastError is set"
             Get CloseWriter of hoWriter to iResult
             Get GetOutput of hoWriter (&ucOut) to iSize
-            Move (BytesToString (Self, ucOut, SizeOfArray (ucOut))) to sOut
+            Get BytesToString ucOut (SizeOfArray (ucOut)) to sOut
             Send AssertSAreEqual "RAW PAYLOAD" sOut "raw output is the payload only"
             Send Destroy of hoWriter
         End_Procedure
@@ -1033,7 +1037,7 @@ Object oWrapperWriterTests is a cArchiveTestFixture
             Get CloseWriter of hoWriter to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "close"
             Get GetOutput of hoWriter (&ucOut) to iSize
-            Move (BytesToString (Self, ucOut, SizeOfArray (ucOut))) to sOut
+            Get BytesToString ucOut (SizeOfArray (ucOut)) to sOut
             Send AssertSAreEqual ("line one" + (Character (13)) + (Character (10)) + "line two" + (Character (13)) + (Character (10))) sOut "output of the program"
             Send Destroy of hoWriter
         End_Procedure
@@ -1192,7 +1196,7 @@ Object oWrapperWriterTests is a cArchiveTestFixture
             Send AssertIAreEqual ARCHIVE_OK iResult "SetSkipFile"
             Get OpenMemory of hoWriter 1048576 to iResult
 
-            Get Create (RefClass (cArchiveEntry)) to hoEntry
+            Get CreateNamed (RefClass (cArchiveEntry)) "oArchiveEntry" to hoEntry
             Send CreateEntry of hoEntry
             Set psPathname of hoEntry to "archive-itself.tar"
             Get ppEntry of hoEntry to pEntry
@@ -1405,29 +1409,6 @@ Object oWrapperWriterTests is a cArchiveTestFixture
         End_Procedure
     End_Object
 
-    Object oOpenFileAnsiTest is a cTest
-        Procedure Test
-            Handle hoWriter
-            Integer iResult
-            String sFile
-
-            Delegate Get TempFile "ansi.tar" to sFile
-            Get NewWriter to hoWriter
-            Get SetFormatUstar of hoWriter to iResult
-            Get OpenFileAnsi of hoWriter sFile to iResult
-            Send AssertIAreEqual ARCHIVE_OK iResult "OpenFileAnsi"
-            Get WriteTwoFiles hoWriter to iResult
-            Get CloseWriter of hoWriter to iResult
-            Send AssertIAreEqual ARCHIVE_OK iResult "close"
-            Send FreeWriter of hoWriter
-            Get ReadFile sFile "" to iResult
-            Send Assert (iResult >= 2) "read the file back"
-            Send AssertTwoFiles "ansi file name"
-            EraseFile sFile
-            Send Destroy of hoWriter
-        End_Procedure
-    End_Object
-
     Object oOpenFdTest is a cTest
         Procedure Test
             Handle hoWriter
@@ -1582,7 +1563,7 @@ Object oWrapperWriterTests is a cArchiveTestFixture
             Send AssertIAreEqual ARCHIVE_OK iResult "open"
 
             // entry 1: header from a cArchiveEntry object, data from a byte array with zero bytes
-            Get Create (RefClass (cArchiveEntry)) to hoEntry
+            Get CreateNamed (RefClass (cArchiveEntry)) "oArchiveEntry" to hoEntry
             Send CreateEntry of hoEntry
             Set psPathname of hoEntry to "dir/binary-ünï.bin"
             Get ppEntry of hoEntry to pEntry
@@ -1696,7 +1677,7 @@ Object oWrapperWriterTests is a cArchiveTestFixture
             Get SetFormatUstar of hoWriter to iResult
             Get OpenMemory of hoWriter 1048576 to iResult
             // an entry object without entry
-            Get Create (RefClass (cArchiveEntry)) to hoEntry
+            Get CreateNamed (RefClass (cArchiveEntry)) "oArchiveEntry" to hoEntry
             Get WriteHeader of hoWriter hoEntry to iResult
             Send AssertIAreEqual ARCHIVE_FAILED iResult "WriteHeader without an entry"
             Send Destroy of hoEntry

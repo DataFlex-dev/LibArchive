@@ -59,9 +59,15 @@ The suite covers compressed and uncompressed ZIP bombs, overlapping compressed-d
 
 ## Platform and native dependencies
 
-`cFilesArchiver`, `ArchivePath.pkg` and the ZIP inspection/extraction methods of `cArchiveReader` call no Windows API: they use DataFlex filesystem operations, libarchive's disk reader for timestamps and libarchive's disk writer for extraction, so the Windows-only `DateAndTime` submodule is no longer needed. The wrapper classes still declare `kernel32.dll` functions (`cArchiveEntry`, `cArchiveWriter`, and `cArchiveReader.DataToFile`/`OpenFiles`).
+No library source declares a Windows API function. File and folder handling uses DataFlex file I/O (`DIR:` listing, binary channels, `EraseFile`), libarchive's disk reader (file type, size, time stamps) and disk writer (folders, extraction, `DataToFile`); the current time also comes from libarchive and the path separator from `SysConf (SYSCONF_DIR_SEPARATOR)`. The Windows-only `DateAndTime` submodule is not needed. The test suite still declares `kernel32.dll` and `ucrtbase.dll` functions and is Windows-only.
 
-Native libarchive itself is still an external platform dependency. `Archive.h.pkg` currently names it `archive.dll`, and this repository only includes and tests the Windows x64 binary set. A non-Windows deployment must supply a compatible native libarchive build and adapt that library-name binding to the target DataFlex runtime's shared-library convention.
+What still ties the library to Windows (not verified on another operating system):
+
+- `Archive.h.pkg` names the native library `archive.dll`; a build for another operating system needs the library name that DataFlex runtime expects.
+- The `*_w` libarchive functions (file names, patterns, wide entry names) are passed UTF-16 `WString` values. On Linux `wchar_t` has 4 bytes, so a Linux port needs a different way to pass them: the narrow variants are obsolete in this library and are not wrapped.
+- `cArchiveEntry.AnsiPointerText` (ACL user and group names) uses `AnsiToUtf8` of DataFlex's `CharTranslate.pkg`, which declares `kernel32.dll` itself.
+- File descriptors and `FILE` pointers (`OpenFd`, `OpenFilePtr`) and the layout behind `cArchiveEntry.StatPointer` come from the C runtime of the process.
+- `IsSafeArchivePath` treats `\` as a path separator and rejects `:`, and `cArchiveWriter` converts `\` in archive path names to `/`. Both are right for Windows archives but change valid names on Linux.
 
 The seven 64-bit DLLs in `Library\Programs` (the only copy tracked in this repository; the demo and test workspaces get theirs installed by `df-cli` on build) must be deployed beside the application executable. They are native libraries, not COM components, and must not be registered with `regsvr32`.
 

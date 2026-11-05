@@ -46,17 +46,32 @@ End_Object
 
 Procedure ShowAndExtract
     tArchiveEntryInfo[] Entries
-    Integer iEntry iResult
+    tArchiveOperationResult Result
+    Integer iEntry
 
-    Get ListEntries of oReader "C:\Temp\backup.zip" to Entries
+    Get ListEntries of oReader "C:\Temp\backup.zip" (&Entries) to Result
+    If (not (Result.bSuccess)) Begin
+        Showln Result.sErrorMessage
+        Procedure_Return
+    End
     For iEntry from 0 to (SizeOfArray (Entries) - 1)
         Showln Entries[iEntry].sPathname Entries[iEntry].iSize
     Loop
-    Get ExtractAll of oReader "C:\Temp\backup.zip" "C:\Temp\restored" ARCHIVE_EXTRACT_TIME to iResult
+    Get ExtractZipArchive of oReader "C:\Temp\backup.zip" "C:\Temp\restored" to Result
+    If (not (Result.bSuccess)) Begin
+        Showln Result.iErrorCode Result.sErrorMessage
+    End
 End_Procedure
 ```
 
 **Save your source files as UTF-8 with BOM** when they contain non-ASCII string literals: libarchive receives strings as UTF-8.
+
+## Error handling
+
+There are two conventions, depending on the kind of method:
+
+- **One-call operations** (`ListEntries`, `ReadEntryData`, `InspectZipArchive`, `ExtractZipArchive`) return a `tArchiveOperationResult`: `bSuccess`, a stable `iErrorCode` (`C_ARCHIVE_RESULT_*`), `sErrorMessage` and counters. They never raise a DataFlex error and keep no state in the object, so the outcome of one call cannot be mixed up with another (relevant in a pooled WebApp).
+- **Methods that mirror a libarchive function** return the libarchive code (`ARCHIVE_OK`, `ARCHIVE_WARN`, `ARCHIVE_FAILED`, ...). With `pbRaiseErrors` (default `True`) a failure raises a DataFlex error; set it to `False` to check the code yourself, and read `piLastResult` / `psLastError` or override `OnError` for the details.
 
 ## Safe ZIP inspection and extraction
 
@@ -99,7 +114,7 @@ The reader accepts only plain, single-volume, non-ZIP64 seekable ZIP files whose
 
 | Layer | Contents |
 |---|---|
-| Classes | `cArchiveBase`, `cArchiveEntry`, `cArchiveReader`, `cArchiveDiskReader`, `cArchiveWriter`, `cArchiveDiskWriter`, `cArchiveMatch`, `cArchiveLinkResolver`, and the original `cFilesArchiver` |
+| Classes | `cArchiveBase`, `cArchiveEntry`, `cArchiveReader`, `cArchiveDiskReader`, `cArchiveWriter`, `cArchiveDiskWriter`, `cArchiveMatch`, `cArchiveLinkResolver`, `cArchivePath` (file system helpers) and the original `cFilesArchiver` |
 | External functions | All 432 functions of `archive.dll`, each documented, in `Archive*.h.pkg` |
 | Constants | `ARCHIVE_*` and `AE_*` in `Archive.h.pkg` |
 
@@ -111,9 +126,15 @@ Full documentation of every class, method, external function and constant, notes
 
 ## Platform boundary
 
-`cFilesArchiver`, `ArchivePath.pkg` and the ZIP inspection/extraction methods of `cArchiveReader` call no Windows API: they use DataFlex filesystem operations, libarchive's disk reader for timestamps and libarchive's disk writer for extraction, so the Windows-only `DateAndTime` submodule is no longer needed. The wrapper classes still declare `kernel32.dll` functions (`cArchiveEntry`, `cArchiveWriter`, and `cArchiveReader.DataToFile`/`OpenFiles`).
+No library source declares a Windows API function. File and folder handling uses DataFlex file I/O (`DIR:` listing, binary channels, `EraseFile`), libarchive's disk reader (file type, size, time stamps) and disk writer (folders, extraction, `DataToFile`); the current time also comes from libarchive and the path separator from `SysConf (SYSCONF_DIR_SEPARATOR)`. The Windows-only `DateAndTime` submodule is not needed. The test suite still declares `kernel32.dll` and `ucrtbase.dll` functions and is Windows-only.
 
-`Archive.h.pkg` still names the native dependency `archive.dll`, and the checked-in binaries and PowerShell test runner are Windows x64 assets. Porting deployment to another operating system therefore still requires a target-native libarchive binary and the external-library name expected by that DataFlex runtime.
+What still ties the library to Windows (not verified on another operating system):
+
+- `Archive.h.pkg` names the native library `archive.dll`; a build for another operating system needs the library name that DataFlex runtime expects.
+- The `*_w` libarchive functions (file names, patterns, wide entry names) are passed UTF-16 `WString` values. On Linux `wchar_t` has 4 bytes, so a Linux port needs a different way to pass them: the narrow variants are obsolete in this library and are not wrapped.
+- `cArchiveEntry.AnsiPointerText` (ACL user and group names) uses `AnsiToUtf8` of DataFlex's `CharTranslate.pkg`, which declares `kernel32.dll` itself.
+- File descriptors and `FILE` pointers (`OpenFd`, `OpenFilePtr`) and the layout behind `cArchiveEntry.StatPointer` come from the C runtime of the process.
+- `IsSafeArchivePath` treats `\` as a path separator and rejects `:`, and `cArchiveWriter` converts `\` in archive path names to `/`. Both are right for Windows archives but change valid names on Linux.
 
 ## Requirements
 

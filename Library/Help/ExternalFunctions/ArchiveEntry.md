@@ -1182,6 +1182,8 @@ Returns: `BigInt`
 Pointer archive_entry_uname (Pointer pEntry)
 ```
 
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_entry_uname_w` or `archive_entry_uname_utf8` instead. The wrapper classes do not call this function.
+
 Pointer to the user name in the current locale (ANSI code page), or 0.
 
 | Parameter | Type |
@@ -1223,6 +1225,8 @@ Returns: `Pointer`
 ```
 Pointer archive_entry_gname (Pointer pEntry)
 ```
+
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_entry_gname_w` or `archive_entry_gname_utf8` instead. The wrapper classes do not call this function.
 
 Pointer to the group name in the current locale (ANSI code page), or 0.
 
@@ -1296,6 +1300,8 @@ Returns: `Void_Type`
 Void_Type archive_entry_set_uname (Pointer pEntry, Pointer pName)
 ```
 
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_entry_set_uname_utf8` instead. The wrapper classes do not call this function.
+
 Sets the user name (locale string).
 
 | Parameter | Type |
@@ -1325,6 +1331,8 @@ Returns: `Void_Type`
 ```
 Void_Type archive_entry_copy_uname (Pointer pEntry, Pointer pName)
 ```
+
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_entry_copy_uname_w` instead. The wrapper classes do not call this function.
 
 Copies the user name (locale string). Same as archive_entry_set_uname.
 
@@ -1373,6 +1381,8 @@ Returns: `Integer`
 Void_Type archive_entry_set_gname (Pointer pEntry, Pointer pName)
 ```
 
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_entry_set_gname_utf8` instead. The wrapper classes do not call this function.
+
 Sets the group name (locale string).
 
 | Parameter | Type |
@@ -1402,6 +1412,8 @@ Returns: `Void_Type`
 ```
 Void_Type archive_entry_copy_gname (Pointer pEntry, Pointer pName)
 ```
+
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_entry_copy_gname_w` instead. The wrapper classes do not call this function.
 
 Copies the group name (locale string). Same as archive_entry_set_gname.
 
@@ -1452,6 +1464,8 @@ Returns: `Integer`
 Pointer archive_entry_pathname (Pointer pEntry)
 ```
 
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_entry_pathname_w` or `archive_entry_pathname_utf8` instead. The wrapper classes do not call this function.
+
 Pointer to the path name in the current locale (ANSI code page), or 0.
 
 | Parameter | Type |
@@ -1494,6 +1508,8 @@ Returns: `Pointer`
 Pointer archive_entry_sourcepath (Pointer pEntry)
 ```
 
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_entry_sourcepath_w` instead. The wrapper classes do not call this function.
+
 Pointer to the path of the file on disk the entry was created from (read disk), or 0.
 
 | Parameter | Type |
@@ -1521,6 +1537,8 @@ Returns: `Pointer`
 ```
 Void_Type archive_entry_set_pathname (Pointer pEntry, Pointer pPathName)
 ```
+
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_entry_set_pathname_utf8` instead. The wrapper classes do not call this function.
 
 A function used to set the pathname of an archive entry, explicitly interpreting the provided string as being encoded in UTF-8.
 
@@ -1567,6 +1585,8 @@ Returns: `Void_Type`
 ```
 Void_Type archive_entry_copy_pathname (Pointer pEntry, Pointer pPathName)
 ```
+
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_entry_copy_pathname_w` instead. The wrapper classes do not call this function.
 
 Copies the path name (locale string). Same as archive_entry_set_pathname.
 
@@ -1615,6 +1635,8 @@ Returns: `Integer`
 Void_Type archive_entry_copy_sourcepath (Pointer pEntry, Pointer pPathName)
 ```
 
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_entry_copy_sourcepath_w` instead. The wrapper classes do not call this function.
+
 Sets the path of the file on disk (locale string) that archive_read_disk_entry_from_file reads from.
 
 | Parameter | Type |
@@ -1646,6 +1668,8 @@ Returns: `Void_Type`
 ```
 Pointer archive_entry_hardlink (Pointer pEntry)
 ```
+
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_entry_hardlink_w` or `archive_entry_hardlink_utf8` instead. The wrapper classes do not call this function.
 
 Pointer to the hard link target in the current locale (ANSI code page), or 0.
 
@@ -1703,6 +1727,8 @@ Returns: `Integer`
 Pointer archive_entry_symlink (Pointer pEntry)
 ```
 
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_entry_symlink_w` or `archive_entry_symlink_utf8` instead. The wrapper classes do not call this function.
+
 Pointer to the symbolic link target in the current locale (ANSI code page), or 0.
 
 | Parameter | Type |
@@ -1759,6 +1785,8 @@ Returns: `Integer`
 Void_Type archive_entry_set_hardlink (Pointer pEntry, Pointer pTarget)
 ```
 
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_entry_set_hardlink_utf8` instead. The wrapper classes do not call this function.
+
 Sets the hard link target (locale string).
 
 | Parameter | Type |
@@ -1790,6 +1818,8 @@ Returns: `Void_Type`
 ```
 Void_Type archive_entry_copy_hardlink (Pointer pEntry, Pointer pTarget)
 ```
+
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_entry_copy_hardlink_w` instead. The wrapper classes do not call this function.
 
 Copies the hard link target (locale string). Same as archive_entry_set_hardlink.
 
@@ -1838,6 +1868,8 @@ Returns: `Integer`
 Void_Type archive_entry_set_symlink (Pointer pEntry, Pointer pTarget)
 ```
 
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_entry_set_symlink_utf8` instead. The wrapper classes do not call this function.
+
 Sets the symbolic link target (locale string).
 
 | Parameter | Type |
@@ -1884,6 +1916,8 @@ Returns: `Void_Type`
 ```
 Void_Type archive_entry_copy_symlink (Pointer pEntry, Pointer pTarget)
 ```
+
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_entry_copy_symlink_w` instead. The wrapper classes do not call this function.
 
 Copies the symbolic link target (locale string). Same as archive_entry_set_symlink.
 
@@ -1932,6 +1966,8 @@ Returns: `Integer`
 Void_Type archive_entry_set_link (Pointer pEntry, Pointer pTarget)
 ```
 
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_entry_set_link_utf8` instead. The wrapper classes do not call this function.
+
 Sets the link target of the kind that is currently set (hard link or symbolic link), locale string.
 
 | Parameter | Type |
@@ -1961,6 +1997,8 @@ Returns: `Void_Type`
 ```
 Void_Type archive_entry_copy_link (Pointer pEntry, Pointer pTarget)
 ```
+
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_entry_copy_link_w` instead. The wrapper classes do not call this function.
 
 Copies the link target (locale string); same as archive_entry_set_link.
 
@@ -2084,6 +2122,8 @@ Returns: `Void_Type`
 ```
 Pointer archive_entry_copy_fflags_text (Pointer pEntry, Pointer pFlags)
 ```
+
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_entry_copy_fflags_text_w` instead. The wrapper classes do not call this function.
 
 Sets the file flags from text. Returns a pointer to the first invalid token, or 0 when all were valid.
 
@@ -2259,6 +2299,8 @@ Returns: `Void_Type`
 Integer archive_entry_acl_add_entry (Pointer pEntry, Integer iType, Integer iPermset, Integer iTag, Integer iQualifier, Pointer pName)
 ```
 
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_entry_acl_add_entry_w` instead. The wrapper classes do not call this function.
+
 Adds an ACL entry. Type is ARCHIVE_ENTRY_ACL_TYPE_*, tag ARCHIVE_ENTRY_ACL_USER etc.
 
 | Parameter | Type |
@@ -2365,6 +2407,8 @@ Returns: `Integer`
 Pointer archive_entry_acl_to_text (Pointer pEntry, Pointer pLength, Integer iFlags)
 ```
 
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_entry_acl_to_text_w` instead. The wrapper classes do not call this function.
+
 Pointer to a newly allocated text form of the ACL (ARCHIVE_ENTRY_ACL_STYLE_* flags). The length (la_ssize_t) is stored when pLength is not 0. The memory is owned by the entry.
 
 | Parameter | Type |
@@ -2401,6 +2445,8 @@ Returns: `Pointer`
 Integer archive_entry_acl_from_text (Pointer pEntry, Pointer pText, Integer iType)
 ```
 
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_entry_acl_from_text_w` instead. The wrapper classes do not call this function.
+
 Sets the ACL from text, replacing entries of that type.
 
 | Parameter | Type |
@@ -2436,6 +2482,8 @@ Returns: `Integer`
 ```
 Pointer archive_entry_acl_text (Pointer pEntry, Integer iFlags)
 ```
+
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_entry_acl_text_w` instead. The wrapper classes do not call this function.
 
 Deprecated; use archive_entry_acl_to_text.
 

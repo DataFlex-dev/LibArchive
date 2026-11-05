@@ -169,7 +169,7 @@ Object oWrapperDiskWriterTests is a cArchiveTestFixture
     Function NewDiskWriter Returns Handle
         Handle hoWriter
 
-        Get Create (RefClass (cArchiveDiskWriter)) to hoWriter
+        Get CreateNamed (RefClass (cArchiveDiskWriter)) "oArchiveDiskWriter" to hoWriter
         Set pbRaiseErrors of hoWriter to False
         Send CreateDiskWriter of hoWriter
         Function_Return hoWriter
@@ -205,7 +205,7 @@ Object oWrapperDiskWriterTests is a cArchiveTestFixture
             Integer iResult iOptions
             Boolean bHas
 
-            Get Create (RefClass (cArchiveDiskWriter)) to hoWriter
+            Get CreateNamed (RefClass (cArchiveDiskWriter)) "oArchiveDiskWriter" to hoWriter
             Get HasHandle of hoWriter to bHas
             Send AssertFalse bHas "no handle before CreateDiskWriter"
 
@@ -258,7 +258,7 @@ Object oWrapperDiskWriterTests is a cArchiveTestFixture
             Delegate Send CleanOutFolder
             Delegate Get OutFolder to sOut
             Delegate Get NewDiskWriter to hoWriter
-            Get Create (RefClass (cArchiveEntry)) to hoEntry
+            Get CreateNamed (RefClass (cArchiveEntry)) "oArchiveEntry" to hoEntry
 
             // a directory, a file in it, a file in a sub folder that does not exist yet (created automatically)
             Delegate Send PrepareOutEntry hoEntry "tree/" AE_IFDIR 493 0 1700000000
@@ -339,7 +339,7 @@ Object oWrapperDiskWriterTests is a cArchiveTestFixture
 
             Delegate Send CleanOutFolder
             Delegate Get NewDiskWriter to hoWriter
-            Get Create (RefClass (cArchiveEntry)) to hoEntry
+            Get CreateNamed (RefClass (cArchiveEntry)) "oArchiveEntry" to hoEntry
 
             // two blocks with a gap: the gap is filled with zero bytes
             Delegate Send PrepareOutEntry hoEntry "blocks.bin" AE_IFREG 420 12 1700000000
@@ -395,7 +395,7 @@ Object oWrapperDiskWriterTests is a cArchiveTestFixture
 
             Delegate Send CleanOutFolder
             Delegate Get OutFolder to sOut
-            Get Create (RefClass (cArchiveEntry)) to hoEntry
+            Get CreateNamed (RefClass (cArchiveEntry)) "oArchiveEntry" to hoEntry
 
             // ARCHIVE_EXTRACT_TIME restores the time stamp of the entry
             Delegate Get NewDiskWriter to hoWriter
@@ -432,7 +432,7 @@ Object oWrapperDiskWriterTests is a cArchiveTestFixture
             Delegate Send CleanOutFolder
             Delegate Get OutFolder to sOut
             Delegate Get NewDiskWriter to hoWriter
-            Get Create (RefClass (cArchiveEntry)) to hoEntry
+            Get CreateNamed (RefClass (cArchiveEntry)) "oArchiveEntry" to hoEntry
 
             Delegate Get WriteTextFileEntry hoWriter hoEntry "file.txt" "first" to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "first write"
@@ -478,7 +478,7 @@ Object oWrapperDiskWriterTests is a cArchiveTestFixture
             Delegate Send CleanOutFolder
             Delegate Get OutFolder to sOut
             Delegate Get NewDiskWriter to hoWriter
-            Get Create (RefClass (cArchiveEntry)) to hoEntry
+            Get CreateNamed (RefClass (cArchiveEntry)) "oArchiveEntry" to hoEntry
 
             // the default options reject ".." path elements
             Delegate Send PrepareEntry hoEntry "../escaped.txt" AE_IFREG 420 3 1700000000
@@ -503,7 +503,7 @@ Object oWrapperDiskWriterTests is a cArchiveTestFixture
             Delegate Send CleanOutFolder
             Delegate Get OutFolder to sOut
             Delegate Get NewDiskWriter to hoWriter
-            Get Create (RefClass (cArchiveEntry)) to hoEntry
+            Get CreateNamed (RefClass (cArchiveEntry)) "oArchiveEntry" to hoEntry
 
             Delegate Get WriteTextFileEntry hoWriter hoEntry "original.txt" "linked content" to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "original"
@@ -535,7 +535,7 @@ Object oWrapperDiskWriterTests is a cArchiveTestFixture
             Delegate Send CleanOutFolder
             Delegate Get OutFolder to sOut
             Delegate Get NewDiskWriter to hoWriter
-            Get Create (RefClass (cArchiveEntry)) to hoEntry
+            Get CreateNamed (RefClass (cArchiveEntry)) "oArchiveEntry" to hoEntry
             Get SetSkipFile of hoWriter 7 42 to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "SetSkipFile"
             Delegate Get WriteTextFileEntry hoWriter hoEntry "other.txt" "other file" to iResult
@@ -579,7 +579,7 @@ Object oWrapperDiskWriterTests is a cArchiveTestFixture
             String sError
 
             Delegate Get NewDiskWriter to hoWriter
-            Get Create (RefClass (cArchiveEntry)) to hoEntry
+            Get CreateNamed (RefClass (cArchiveEntry)) "oArchiveEntry" to hoEntry
             Get WriteHeader of hoWriter hoEntry to iResult
             Send AssertIAreEqual ARCHIVE_FAILED iResult "WriteHeader of an entry object without an entry"
             Get piLastResult of hoWriter to iResult

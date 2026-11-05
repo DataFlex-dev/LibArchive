@@ -1,6 +1,10 @@
 # Unit tests
 
-The `unittests` workspace (`unittests/unittests.sws`) contains a [DFUnit](https://github.com/DataFlex-dev/DFUnit) test application, `unittests/AppSrc/LibArchiveTests.src`. It tests **every external function** of `archive.dll` (all 432 are called at least once, deprecated ones included), **every public property and method** of the wrapper classes and the ZIP preflight/extraction security checks of `cArchiveReader`: 333 tests, 7700+ assertions. It compiles the code in the `Library` folder, not a published package.
+The `unittests` workspace (`unittests/unittests.sws`) contains a [DFUnit](https://github.com/DataFlex-dev/DFUnit) test application, `unittests/AppSrc/LibArchiveTests.src`. It tests **every external function** of `archive.dll` (all 432 are called at least once, deprecated ones included), **every public property and method** of the wrapper classes and the ZIP preflight/extraction security checks of `cArchiveReader`: 329 tests, 7600+ assertions. It compiles the code in the `Library` folder, not a published package.
+
+The tests are Windows-only for now: the fixtures declare `kernel32.dll` and `ucrtbase.dll` functions directly (file handles, C runtime descriptors and `FILE` pointers for the `OpenFd` / `OpenFilePtr` tests, `RemoveDirectoryW`, `CreateSymbolicLinkW`, ...) and call the external program `findstr`. The library itself declares no Windows API function.
+
+The native DLLs are not tracked in the `unittests` and `Demo` folders: `unittests.sws` overrides the `DataFlex-dev/LibArchive` dependency with `../Library/LibArchive.sws`, so `df-cli` installs the DLLs of `Library/Programs` on build (see `unittests/README.md` in the repository).
 
 ## Build and run
 

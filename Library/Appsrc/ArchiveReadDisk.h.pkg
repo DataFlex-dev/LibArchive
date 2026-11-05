@@ -13,6 +13,7 @@ Is used when you want to read information directly from the file system (i.e., d
 Note: The narrow path is interpreted in the ANSI code page. A path with a trailing backslash fails (a drive
 root like C:\ works).
 */
+// OBSOLETE (ANSI code page): use archive_read_disk_open_w instead. The wrapper classes do not call this function.
 External_Function archive_read_disk_open "archive_read_disk_open" archive.dll ;
     Pointer pArchive ;
     Pointer pPath ;

@@ -322,6 +322,7 @@ Object oWriteDiskTests is a cArchiveTestFixture
 
     Object oDiskSecureFlagsTest is a cTest
         Procedure Test
+            Boolean bFileExists
             Pointer pDisk
             Integer iResult
             String sBase sFile sText
@@ -339,7 +340,8 @@ Object oWriteDiskTests is a cArchiveTestFixture
             Delegate Send Track sFile
             Delegate Get DiskWriteFile pDisk sFile "x" to iResult
             Send AssertIAreEqual ARCHIVE_FAILED iResult "NO_AUTODIR refuses a missing parent folder"
-            Send Assert (not (FileExists (Self, sFile))) "no file was created"
+            Get FileExists sFile to bFileExists
+            Send Assert (not (bFileExists)) "no file was created"
             Move (archive_write_free (pDisk)) to iResult
 
             // paths with .. are refused with SECURE_NODOTDOT

@@ -283,16 +283,24 @@ Object oWriteTests is a cArchiveTestFixture
 
     // Asserts that the last ReadBack found the two standard files with the right size and content.
     Procedure AssertStandardFiles String sLabel
+        String sRbName sRbContent
+        BigInt biRbSize
         Integer iCount
         Get piRbCount to iCount
         Send AssertIAreEqual 2 iCount (sLabel * "entry count")
         If (iCount = 2) Begin
-            Send AssertSAreEqual "hello.txt" (RbName (Self, 0)) (sLabel * "name 0")
-            Send AssertBIAreEqual 13 (RbSize (Self, 0)) (sLabel * "size 0")
-            Send AssertSAreEqual "Hello Archive" (RbContent (Self, 0)) (sLabel * "content 0")
-            Send AssertSAreEqual "second.txt" (RbName (Self, 1)) (sLabel * "name 1")
-            Send AssertBIAreEqual 19 (RbSize (Self, 1)) (sLabel * "size 1")
-            Send AssertSAreEqual "Second file content" (RbContent (Self, 1)) (sLabel * "content 1")
+            Get RbName 0 to sRbName
+            Send AssertSAreEqual "hello.txt" sRbName (sLabel * "name 0")
+            Get RbSize 0 to biRbSize
+            Send AssertBIAreEqual 13 biRbSize (sLabel * "size 0")
+            Get RbContent 0 to sRbContent
+            Send AssertSAreEqual "Hello Archive" sRbContent (sLabel * "content 0")
+            Get RbName 1 to sRbName
+            Send AssertSAreEqual "second.txt" sRbName (sLabel * "name 1")
+            Get RbSize 1 to biRbSize
+            Send AssertBIAreEqual 19 biRbSize (sLabel * "size 1")
+            Get RbContent 1 to sRbContent
+            Send AssertSAreEqual "Second file content" sRbContent (sLabel * "content 1")
         End
     End_Procedure
 

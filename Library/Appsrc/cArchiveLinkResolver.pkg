@@ -30,7 +30,10 @@ Class cArchiveLinkResolver is a cObject
 
     // True when the object has a resolver.
     Function HasResolver Returns Boolean
-        Function_Return (ppResolver (Self) <> 0)
+        Pointer pResolver
+
+        Get ppResolver to pResolver
+        Function_Return (pResolver <> 0)
     End_Function
 
     // Frees the current resolver and creates a new one (archive_entry_linkresolver_new).
@@ -93,6 +96,7 @@ Class cArchiveLinkResolver is a cObject
     // bOwns False, e.g. from a reader) is cloned first, the original stays valid. hoEntry = 0 flushes: the resolver
     // returns one entry it deferred (call it until it returns 0, see Flush).
     Function Linkify Handle hoEntry Handle hoOutEntry Handle hoSparseEntry Returns Integer
+        Boolean bOwnsEntry
         Pointer pResolver pEntry pSparse
         Integer iCount
         Void_Type iVoid
@@ -107,7 +111,8 @@ Class cArchiveLinkResolver is a cObject
         If (hoEntry <> 0) Begin
             Get ppEntry of hoEntry to pEntry
             If (pEntry <> 0) Begin
-                If (pbOwnsEntry (hoEntry)) Begin
+                Get pbOwnsEntry of hoEntry to bOwnsEntry
+                If bOwnsEntry Begin
                     // The resolver takes over the entry.
                     Set ppEntry of hoEntry to 0
                     Set pbOwnsEntry of hoEntry to False

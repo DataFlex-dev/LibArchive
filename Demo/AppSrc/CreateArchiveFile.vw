@@ -28,7 +28,7 @@ Object oCreateArchiveFileView is a dbView
                 Boolean bFileSelected
                 String sFileName
 
-                Get Create (RefClass (OpenDialog)) to hoFileSelector
+                Get CreateNamed (RefClass (OpenDialog)) "oOpenDialog" to hoFileSelector
                 Get Show_Dialog of hoFileSelector to bFileSelected
                 If (bFileSelected) Begin
                     Get File_Name of hoFileSelector to sFileName
@@ -69,7 +69,7 @@ Object oCreateArchiveFileView is a dbView
             Boolean bFileSelected
             String sFileName
 
-            Get Create (RefClass (SaveAsDialog)) to hoFileSelector
+            Get CreateNamed (RefClass (SaveAsDialog)) "oSaveAsDialog" to hoFileSelector
             Get Show_Dialog of hoFileSelector to bFileSelected
             If (bFileSelected) Begin
                 Get File_Name of hoFileSelector to sFileName

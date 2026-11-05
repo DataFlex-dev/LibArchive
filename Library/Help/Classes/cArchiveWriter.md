@@ -126,7 +126,7 @@ Handle hoEntry
 Pointer pEntry
 Void_Type iVoid
 
-Get Create (RefClass (cArchiveEntry)) to hoEntry
+Get CreateNamed (RefClass (cArchiveEntry)) "oArchiveEntry" to hoEntry
 Send CreateEntry of hoEntry
 Set psPathname of hoEntry to "docs/report.txt"
 Get ppEntry of hoEntry to pEntry
@@ -269,7 +269,6 @@ Open the archive exactly once per writer, after format, filters and options are 
 | Signature | Description | libarchive function |
 |---|---|---|
 | `Function OpenFile String sFileName Returns Integer` | Creates the file; the name may contain any Unicode character (passed as wide string). | `archive_write_open_filename_w` |
-| `Function OpenFileAnsi String sFileName Returns Integer` | Creates the file with the narrow function: the name is interpreted in the ANSI code page of the system. Prefer `OpenFile`. | `archive_write_open_filename` |
 | `Function OpenMemory Integer iBufferSize Returns Integer` | Writes into an internal native memory buffer of `iBufferSize` bytes. A second call for the same writer and a size of 0 give `ARCHIVE_FAILED`. | `archive_write_open_memory` |
 | `Function OpenFd Integer iFileDescriptor Returns Integer` | Writes to an open C runtime file descriptor (`_open`/`_wopen` of the same UCRT as archive.dll). You close it after `FreeWriter`. | `archive_write_open_fd` |
 | `Function OpenFilePtr Pointer pFile Returns Integer` | Writes to an open C runtime `FILE *` (`_wfopen`/`fopen` of the same UCRT). You close it after `FreeWriter`. | `archive_write_open_FILE` (DataFlex name `archive_write_open_FILE_Ptr`) |
@@ -362,7 +361,7 @@ End
 | Function | Why |
 |---|---|
 | `archive_write_open`, `archive_write_open2`, `archive_write_set_passphrase_callback` | Callbacks, see above. |
-| `archive_write_open_file` | Deprecated synonym of `archive_write_open_filename` (`OpenFileAnsi`). |
+| `archive_write_open_file` | Deprecated synonym of `archive_write_open_filename` (ANSI code page). Use `OpenFile`. |
 | `archive_write_finish` | Deprecated synonym of `archive_write_free` (`FreeWriter`). |
 | `archive_write_set_compression_bzip2`, `_compress`, `_gzip`, `_lzip`, `_lzma`, `_none`, `_program`, `_xz` | Deprecated synonyms of the `archive_write_add_filter_*` functions (`AddFilter...`). |
 | `archive_write_data_block` | Works only for `archive_write_disk` handles; it is `WriteDataBlock` of [`cArchiveDiskWriter`](cArchiveDiskWriter.md). |

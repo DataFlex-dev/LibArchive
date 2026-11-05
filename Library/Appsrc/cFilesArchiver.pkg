@@ -26,9 +26,29 @@ Class cFilesArchiver is a cObject
         Property Pointer ppArchive
         { DesignTime = False }
         Property tArchiveFormat[] pArchiveFormats
+        { DesignTime = False }
+        Property Handle phoPathTools 0
 
         Send CreateArchiveFormats
     End_Procedure
+
+    // The cArchivePath object of this object (file system helpers), created the first time it is needed and destroyed
+    // with this object. phoPathTools is a handle property: when the object it points to was destroyed (Send Destroy leaves
+    // the ID behind) a new one is created.
+    { Visibility = Private }
+    Function PathTools Returns Handle
+        Handle hoPath
+
+        Get phoPathTools to hoPath
+        If (hoPath <> 0) Begin
+            Get Object_Id of hoPath to hoPath
+        End
+        If (hoPath = 0) Begin
+            Get CreateNamed (RefClass (cArchivePath)) "oArchivePath" to hoPath
+            Set phoPathTools to hoPath
+        End
+        Function_Return hoPath
+    End_Function
 
     { Visibility = Private }
     Procedure CreateArchiveFormats
@@ -230,12 +250,16 @@ Class cFilesArchiver is a cObject
 
     { Visibility = Private }
     Procedure AddFilesToArchive
+        Handle hoPathTools
+        Boolean bIsPhysicalFolder
+        String sDirectoryPart
         Integer iFileElements iFileElement
         Boolean bExists
         Pointer pArchive
         String[] sFileNamesToArchive
         String sFileName
 
+        Get PathTools to hoPathTools
         Get ppArchive to pArchive
         If (pArchive <> 0) Begin
             Get psFileNamesToArchive to sFileNamesToArchive
@@ -247,8 +271,10 @@ Class cFilesArchiver is a cObject
                     Move (Trim (sFileNamesToArchive[iFileElement])) to sFileName
                     File_Exist sFileName bExists
                     If (bExists) Begin
-                        If (ArchivePathIsPhysicalDirectory (sFileName)) Begin
-                            Send AddFolder sFileName (ArchivePathDirectory (sFileName))
+                        Get IsPhysicalFolder of hoPathTools sFileName to bIsPhysicalFolder
+                        If bIsPhysicalFolder Begin
+                            Get DirectoryPart of hoPathTools sFileName to sDirectoryPart
+                            Send AddFolder sFileName sDirectoryPart
                         End
                         Else Begin
                             Send WriteFileToArchive sFileName pArchive
@@ -265,6 +291,7 @@ Class cFilesArchiver is a cObject
     { Description = "Gets called by AddFilesToArchive" }
     { Visibility = Private }
     Procedure WriteFileToArchive String sFileName Pointer pArchive
+        Handle hoPathTools
         UChar[] ucData
         Integer iRetval iFileSize
         BigInt biSeconds
@@ -276,7 +303,8 @@ Class cFilesArchiver is a cObject
         If (iRetval > 0) Begin
             Move (archive_entry_new ()) to pArchiveEntry
             Get FileFolderCreationUnixDateTime sFileName to biSeconds
-            Move (ArchivePathFileName (sFileName)) to sFileNameWithoutPath
+            Get PathTools to hoPathTools
+            Get FileNamePart of hoPathTools sFileName to sFileNameWithoutPath
             Move (archive_entry_set_mtime (pArchiveEntry, biSeconds, 0)) to iVoid
             Move (SizeOfArray (ucData)) to iFileSize
             Move (archive_entry_set_pathname_utf8 (pArchiveEntry, AddressOf (sFileNameWithoutPath))) to iVoid
@@ -298,7 +326,12 @@ Class cFilesArchiver is a cObject
     // Keep the existing public function name for compatibility, but obtain the
     // portable modification timestamp from libarchive's filesystem reader.
     Function FileFolderCreationUnixDateTime String sFolderPath Returns BigInt
-        Function_Return (ArchivePathModificationTime(sFolderPath))
+        Handle hoPathTools
+        BigInt biModificationTime
+
+        Get PathTools to hoPathTools
+        Get ModificationTime of hoPathTools sFolderPath to biModificationTime
+        Function_Return biModificationTime
     End_Function
 
     Procedure AddFolder String sFolderPath String sBasePath
@@ -329,10 +362,14 @@ Class cFilesArchiver is a cObject
     End_Procedure
 
     Function AddFolderRecursive Pointer pArchive String sFolderPath String sBasePath Returns Integer
+        Handle hoPathTools
+        Boolean bIsPhysicalFolder
         String[] sDirectoryEntries
         String sDirectoryEntry sFileName sFolderPathWithFileMask sFullPath sSeparator
         Integer iChannel iDirectoryIndex iEntryCount iRetval eResult iFileSize
         Boolean bDirectory bExists
+
+        Get PathTools to hoPathTools
         Void_Type iVoid
         UChar[] ucData
         Pointer pFileEntry
@@ -371,14 +408,15 @@ Class cFilesArchiver is a cObject
             If (Left (sFileName, 1) = "[" and Right (sFileName, 1) = "]") Begin
                 Move (Mid (sFileName, Length (sFileName) - 2, 2)) to sDirectoryEntry
                 Move (sFolderPath - sDirectoryEntry) to sFullPath
-                Move (ArchivePathIsPhysicalDirectory (sFullPath)) to bDirectory
+                Get IsPhysicalFolder of hoPathTools sFullPath to bDirectory
                 If (bDirectory) Begin
                     Move sDirectoryEntry to sFileName
                 End
             End
 
             Move (sFolderPath - sFileName) to sFullPath
-            If (bDirectory or ArchivePathIsPhysicalDirectory (sFullPath)) Begin
+            Get IsPhysicalFolder of hoPathTools sFullPath to bIsPhysicalFolder
+            If (bDirectory or bIsPhysicalFolder) Begin
                 Send AddFolder sFullPath sBasePath
             End
             Else Begin
@@ -438,6 +476,7 @@ Class cFilesArchiver is a cObject
     { Visibility = Private }
     Function SetArchiveFileName Returns Boolean
         String sArchiveFileName
+        WString wsArchiveFileName
         Pointer pArchive
         Integer eResult
 
@@ -445,7 +484,8 @@ Class cFilesArchiver is a cObject
         If (sArchiveFileName <> "") Begin
             Get ppArchive to pArchive
             If (pArchive <> 0) Begin
-                Move (archive_write_open_filename (pArchive, AddressOf (sArchiveFileName))) to eResult
+                Move sArchiveFileName to wsArchiveFileName
+                Move (archive_write_open_filename_w (pArchive, AddressOf (wsArchiveFileName))) to eResult
                 If (eResult <> ARCHIVE_OK) Begin
                     Send HandleArchiveError 'Set Archive Filename Failed'
                 End

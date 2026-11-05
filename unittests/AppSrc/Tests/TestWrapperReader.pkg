@@ -220,6 +220,7 @@ Object oWrapperReaderTests is a cArchiveTestFixture
 
     // Writes an archive with one regular file per name, all with the same content.
     Function BuildArchiveWithEntries String sFileName Integer eFormat Integer eFilter String[] asNames UChar[] ByRef ucContent Returns Integer
+        BigInt biSampleMTime
         Pointer pArchive pEntry
         Integer iResult iIndex iCount
         BigInt iSize iWritten
@@ -249,7 +250,8 @@ Object oWrapperReaderTests is a cArchiveTestFixture
                 Move asNames[iIndex] to sName
                 Move (archive_entry_new ()) to pEntry
                 Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sName))) to iVoid
-                Move (archive_entry_set_mtime (pEntry, SampleMTime (Self), 0)) to iVoid
+                Get SampleMTime to biSampleMTime
+                Move (archive_entry_set_mtime (pEntry, biSampleMTime, 0)) to iVoid
                 Move (archive_entry_set_filetype (pEntry, AE_IFREG)) to iVoid
                 Move (archive_entry_set_perm (pEntry, 420)) to iVoid
                 Move (archive_entry_set_size (pEntry, iSize)) to iVoid
@@ -306,7 +308,7 @@ Object oWrapperReaderTests is a cArchiveTestFixture
     // A reader that supports all formats and filters.
     Function NewReader Returns Handle
         Handle hoReader
-        Get Create U_cArchiveReader to hoReader
+        Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
         Send CreateReaderAll of hoReader
         Function_Return hoReader
     End_Function
@@ -318,6 +320,9 @@ Object oWrapperReaderTests is a cArchiveTestFixture
     // Checks the current entry of a reader against sample entry iIndex: type, size, time and data (and the name when
     // bCheckName).
     Procedure VerifySampleEntry Handle hoReader Integer iIndex String sLabel Boolean bCheckName
+        Boolean bSkipSizeCheck
+        BigInt biSampleMTime
+        Boolean bSampleEntryIsDirectory
         Integer iResult
         String sName sExpected sData
         Handle hoEntry
@@ -332,14 +337,17 @@ Object oWrapperReaderTests is a cArchiveTestFixture
                 Get SampleEntryName iIndex to sExpected
                 Send AssertSAreEqual sExpected sName (sLabel * "name" * String (iIndex))
             End
-            Send AssertBIAreEqual (SampleMTime (Self)) (archive_entry_mtime (pEntry)) (sLabel * "mtime" * String (iIndex))
-            If (SampleEntryIsDirectory (Self, iIndex)) Begin
+            Get SampleMTime to biSampleMTime
+            Send AssertBIAreEqual biSampleMTime (archive_entry_mtime (pEntry)) (sLabel * "mtime" * String (iIndex))
+            Get SampleEntryIsDirectory iIndex to bSampleEntryIsDirectory
+            If bSampleEntryIsDirectory Begin
                 Send AssertIAreEqual AE_IFDIR (archive_entry_filetype (pEntry)) (sLabel * "directory type" * String (iIndex))
             End
             Else Begin
                 Send AssertIAreEqual AE_IFREG (archive_entry_filetype (pEntry)) (sLabel * "file type" * String (iIndex))
                 Get SampleEntryContent iIndex to sExpected
-                If (not (pbSkipSizeCheck (Self))) Begin
+                Get pbSkipSizeCheck to bSkipSizeCheck
+                If (not (bSkipSizeCheck)) Begin
                     Send AssertBIAreEqual (SizeOfString (sExpected)) (archive_entry_size (pEntry)) (sLabel * "size" * String (iIndex))
                 End
                 Get ReadDataToString of hoReader to sData
@@ -352,6 +360,7 @@ Object oWrapperReaderTests is a cArchiveTestFixture
     // the order of the sample. bCheckUnicode False skips the name check of the entry with the non ASCII name (formats
     // that cannot store it).
     Procedure VerifySampleArchive Handle hoReader String sLabel Boolean bCheckUnicode
+        Integer iFileCount
         Integer iIndex iCount iResult
 
         Get SampleEntryCount to iCount
@@ -362,7 +371,8 @@ Object oWrapperReaderTests is a cArchiveTestFixture
         Loop
         Get NextHeader of hoReader to iResult
         Send AssertIAreEqual ARCHIVE_EOF iResult (sLabel * "end of archive")
-        Send AssertIAreEqual iCount (piFileCount (hoReader)) (sLabel * "file count")
+        Get piFileCount of hoReader to iFileCount
+        Send AssertIAreEqual iCount iFileCount (sLabel * "file count")
     End_Procedure
 
     // Like VerifySampleArchive for formats that store the entries in another order (7zip puts folders last): every entry
@@ -408,6 +418,10 @@ Object oWrapperReaderTests is a cArchiveTestFixture
 
     // Builds a sample archive file, opens it with OpenFile and verifies it. eBaseFormat is the expected format family.
     Procedure CheckFileFormat String sName Integer eFormat Integer eFilter Integer eBaseFormat Boolean bAnyOrder
+        Integer eFormat2
+        String sFormatName
+        Integer iFilterCode
+        String sFilterName
         String sFile
         Integer iResult iIndex iCount
         Handle hoReader
@@ -425,15 +439,19 @@ Object oWrapperReaderTests is a cArchiveTestFixture
         Else Begin
             Send VerifySampleArchive hoReader sName True
         End
-        Send AssertIAreEqual eBaseFormat ((peFormat (hoReader)) iand ARCHIVE_FORMAT_BASE_MASK) (sName * "format code")
-        Send Assert (psFormatName (hoReader) <> "") (sName * "format name")
+        Get peFormat of hoReader to eFormat2
+        Send AssertIAreEqual eBaseFormat ((eFormat2) iand ARCHIVE_FORMAT_BASE_MASK) (sName * "format code")
+        Get psFormatName of hoReader to sFormatName
+        Send Assert (sFormatName <> "") (sName * "format name")
         If (eFilter <> ARCHIVE_FILTER_NONE) Begin
             Move False to bFilterFound
             Get piFilterCount of hoReader to iCount
             For iIndex from 0 to (iCount - 1)
-                If (FilterCode (hoReader, iIndex) = eFilter) Begin
+                Get FilterCode of hoReader iIndex to iFilterCode
+                If (iFilterCode = eFilter) Begin
                     Move True to bFilterFound
-                    Send Assert (FilterName (hoReader, iIndex) <> "") (sName * "filter name")
+                    Get FilterName of hoReader iIndex to sFilterName
+                    Send Assert (sFilterName <> "") (sName * "filter name")
                 End
             Loop
             Send Assert bFilterFound (sName * "filter is in the pipeline")
@@ -486,7 +504,7 @@ Object oWrapperReaderTests is a cArchiveTestFixture
         Get TempFile ("filter." + sName) to sFile
         Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_TAR eFilter to iResult
         Send AssertIAreEqual ARCHIVE_OK iResult (sName * "build")
-        Get Create U_cArchiveReader to hoReader
+        Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
         Send CreateReader of hoReader
         Get SupportFormatTar of hoReader to iResult
         Send AssertIAreEqual ARCHIVE_OK iResult (sName * "support tar")
@@ -503,29 +521,41 @@ Object oWrapperReaderTests is a cArchiveTestFixture
 
     Object oLifecycleTest is a cTest
         Procedure Test
+            Integer iLastResult iFileCount
+            String sVersionString
+            Boolean bHasHandle
             Handle hoReader
             Pointer pFirst
             Integer iResult
 
-            Get Create U_cArchiveReader to hoReader
-            Send AssertFalse (HasHandle (hoReader)) "no handle before CreateReader"
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Get HasHandle of hoReader to bHasHandle
+            Send AssertFalse bHasHandle "no handle before CreateReader"
             Send CreateReader of hoReader
-            Send Assert (HasHandle (hoReader)) "CreateReader creates a handle"
+            Get HasHandle of hoReader to bHasHandle
+            Send Assert bHasHandle "CreateReader creates a handle"
             Get ppArchive of hoReader to pFirst
             Send Assert (pFirst <> 0) "handle pointer"
-            Send AssertIAreEqual ARCHIVE_OK (piLastResult (hoReader)) "no error yet"
-            Send AssertSAreEqual "libarchive 3.7.7" (psVersionString (hoReader)) "version string from the base class"
+            Get piLastResult of hoReader to iLastResult
+            Send AssertIAreEqual ARCHIVE_OK iLastResult "no error yet"
+            Get psVersionString of hoReader to sVersionString
+            Send AssertSAreEqual "libarchive 3.7.7" sVersionString "version string from the base class"
             Send CreateReader of hoReader
-            Send Assert (HasHandle (hoReader)) "CreateReader again replaces the handle"
+            Get HasHandle of hoReader to bHasHandle
+            Send Assert bHasHandle "CreateReader again replaces the handle"
             Send CloseReader of hoReader
-            Send Assert (HasHandle (hoReader)) "CloseReader keeps the handle"
+            Get HasHandle of hoReader to bHasHandle
+            Send Assert bHasHandle "CloseReader keeps the handle"
             Send FreeReader of hoReader
-            Send AssertFalse (HasHandle (hoReader)) "FreeReader frees the handle"
+            Get HasHandle of hoReader to bHasHandle
+            Send AssertFalse bHasHandle "FreeReader frees the handle"
             Send FreeReader of hoReader
             Send FreeHandle of hoReader
             Send CreateReaderAll of hoReader
-            Send Assert (HasHandle (hoReader)) "CreateReaderAll"
-            Send AssertIAreEqual 0 (piFileCount (hoReader)) "no entries read yet"
+            Get HasHandle of hoReader to bHasHandle
+            Send Assert bHasHandle "CreateReaderAll"
+            Get piFileCount of hoReader to iFileCount
+            Send AssertIAreEqual 0 iFileCount "no entries read yet"
             Delegate Send DropReader hoReader
         End_Procedure
     End_Object
@@ -592,7 +622,7 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Handle hoReader
             Integer iResult
 
-            Get Create U_cArchiveReader to hoReader
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
             Send CreateReader of hoReader
             Get SupportFormat7zip of hoReader to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "7zip"
@@ -717,7 +747,7 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             String sFile
             tArchiveEntryInfo[] aEntries
 
-            Get Create U_cArchiveReader to hoReader
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
             Send CreateReaderAll of hoReader
             Get SupportFormatAll of hoReader to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "All after CreateReaderAll"
@@ -751,16 +781,20 @@ Object oWrapperReaderTests is a cArchiveTestFixture
     // The methods that call libarchive without a handle report ARCHIVE_FATAL instead of crashing.
     Object oNoHandleTest is a cTest
         Procedure Test
+            Integer iLastResult
+            String sLastError
             Handle hoReader
             Integer iResult
             UChar[] ucData
 
-            Get Create U_cArchiveReader to hoReader
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
             Set pbRaiseErrors of hoReader to False
             Get SupportFormatZip of hoReader to iResult
             Send AssertIAreEqual ARCHIVE_FATAL iResult "support without handle"
-            Send AssertIAreEqual ARCHIVE_FATAL (piLastResult (hoReader)) "last result remembered"
-            Send Assert (psLastError (hoReader) <> "") "last error text"
+            Get piLastResult of hoReader to iLastResult
+            Send AssertIAreEqual ARCHIVE_FATAL iLastResult "last result remembered"
+            Get psLastError of hoReader to sLastError
+            Send Assert (sLastError <> "") "last error text"
             Get NextHeader of hoReader to iResult
             Send AssertIAreEqual ARCHIVE_FATAL iResult "next header without handle"
             Get OpenFile of hoReader "x.zip" 0 to iResult
@@ -769,7 +803,8 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Send AssertIAreEqual ARCHIVE_FATAL iResult "read without handle"
             Send AssertIAreEqual 0 (SizeOfArray (ucData)) "no data"
             Send ClearLastResult of hoReader
-            Send AssertIAreEqual ARCHIVE_OK (piLastResult (hoReader)) "ClearLastResult"
+            Get piLastResult of hoReader to iLastResult
+            Send AssertIAreEqual ARCHIVE_OK iLastResult "ClearLastResult"
             Set pbRaiseErrors of hoReader to True
             Send ExpectError DFERR_PROGRAM
             Get NextHeader of hoReader to iResult
@@ -782,6 +817,8 @@ Object oWrapperReaderTests is a cArchiveTestFixture
 
     Object oOpenErrorTest is a cTest
         Procedure Test
+            Integer iLastResult iErrorNumber
+            String sLastError sErrorString
             Handle hoReader
             Integer iResult
             String sFile
@@ -791,12 +828,17 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Set pbRaiseErrors of hoReader to False
             Get OpenFile of hoReader sFile 0 to iResult
             Send Assert (iResult <= ARCHIVE_FAILED) "opening a missing file fails"
-            Send AssertIAreEqual iResult (piLastResult (hoReader)) "piLastResult"
-            Send Assert (psLastError (hoReader) <> "") "psLastError"
-            Send Assert (piErrorNumber (hoReader) <> 0) "errno"
+            Get piLastResult of hoReader to iLastResult
+            Send AssertIAreEqual iResult iLastResult "piLastResult"
+            Get psLastError of hoReader to sLastError
+            Send Assert (sLastError <> "") "psLastError"
+            Get piErrorNumber of hoReader to iErrorNumber
+            Send Assert (iErrorNumber <> 0) "errno"
             Send ClearError of hoReader
-            Send AssertIAreEqual ARCHIVE_OK (piLastResult (hoReader)) "ClearError result"
-            Send AssertSAreEqual "" (psErrorString (hoReader)) "ClearError text"
+            Get piLastResult of hoReader to iLastResult
+            Send AssertIAreEqual ARCHIVE_OK iLastResult "ClearError result"
+            Get psErrorString of hoReader to sErrorString
+            Send AssertSAreEqual "" sErrorString "ClearError text"
             Delegate Send DropReader hoReader
 
             // an empty name would read stdin, which is not supported
@@ -818,6 +860,7 @@ Object oWrapperReaderTests is a cArchiveTestFixture
     // A handle opens one archive only: opening again (also after a failed open) is refused instead of corrupting memory.
     Object oOpenTwiceTest is a cTest
         Procedure Test
+            String sLastError
             Handle hoReader
             Integer iResult
             String sFile
@@ -830,7 +873,8 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Send Assert (iResult <= ARCHIVE_FAILED) "first open fails"
             Get OpenFile of hoReader sFile 0 to iResult
             Send AssertIAreEqual ARCHIVE_FATAL iResult "second open is refused"
-            Send Assert (psLastError (hoReader) <> "") "reason"
+            Get psLastError of hoReader to sLastError
+            Send Assert (sLastError <> "") "reason"
             // a new handle works
             Send CreateReaderAll of hoReader
             Get OpenFile of hoReader sFile 0 to iResult
@@ -852,7 +896,7 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Delegate Get TempFile "wr_append.tar.Z" to sFile
             Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_COMPRESS to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "build tar.Z"
-            Get Create U_cArchiveReader to hoReader
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
             Send CreateReader of hoReader
             Get SetFormat of hoReader ARCHIVE_FORMAT_TAR to iResult
             Get AppendFilter of hoReader ARCHIVE_FILTER_COMPRESS to iResult
@@ -869,6 +913,9 @@ Object oWrapperReaderTests is a cArchiveTestFixture
     // the non ASCII name and returns no name for it. The default (False) reads the names correctly.
     Object oHeaderCharsetTest is a cTest
         Procedure Test
+            Boolean bUtf8HeaderCharset
+            Handle hoEntry
+            String sPathname
             Handle hoReader
             Integer iResult
             String sFile
@@ -876,7 +923,8 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Delegate Get TempFile "wr_charset.zip" to sFile
             Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_ZIP ARCHIVE_FILTER_NONE to iResult
             Delegate Get NewReader to hoReader
-            Send AssertFalse (pbUtf8HeaderCharset (hoReader)) "default"
+            Get pbUtf8HeaderCharset of hoReader to bUtf8HeaderCharset
+            Send AssertFalse bUtf8HeaderCharset "default"
             Send DropReader hoReader
 
             Delegate Get NewReader to hoReader
@@ -885,7 +933,9 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Send AssertIAreEqual ARCHIVE_OK iResult "open"
             Get NextHeader of hoReader to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "ASCII name"
-            Send AssertSAreEqual "hello.txt" (psPathname (phoEntry (hoReader))) "ASCII name text"
+            Get phoEntry of hoReader to hoEntry
+            Get psPathname of hoEntry to sPathname
+            Send AssertSAreEqual "hello.txt" sPathname "ASCII name text"
             Get NextHeader of hoReader to iResult
             Get NextHeader of hoReader to iResult
             Get NextHeader of hoReader to iResult
@@ -905,7 +955,7 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Delegate Get TempFile "wr_unrec.tar" to sFile
             Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_NONE to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "build"
-            Get Create U_cArchiveReader to hoReader
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
             Set pbRaiseErrors of hoReader to False
             Send CreateReader of hoReader
             Get SupportFormatRar of hoReader to iResult
@@ -929,7 +979,7 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Delegate Get TempFile "wr_manual.tar.gz" to sFile
             Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_GZIP to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "build tar.gz"
-            Get Create U_cArchiveReader to hoReader
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
             Send CreateReader of hoReader
             Get SetFormat of hoReader ARCHIVE_FORMAT_TAR to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "SetFormat"
@@ -945,7 +995,7 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Delegate Get TempFile "wr_bycode.zip" to sFile
             Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_ZIP ARCHIVE_FILTER_NONE to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "build zip"
-            Get Create U_cArchiveReader to hoReader
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
             Send CreateReader of hoReader
             Get SupportFormatByCode of hoReader ARCHIVE_FORMAT_ZIP to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "SupportFormatByCode"
@@ -976,7 +1026,7 @@ Object oWrapperReaderTests is a cArchiveTestFixture
                 Move ARCHIVE_FATAL to iExpected
             End
             Delegate Get TextToBytes "BZh" to ucSignature
-            Get Create U_cArchiveReader to hoReader
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
             Set pbRaiseErrors of hoReader to False
             Send CreateReader of hoReader
             Get SupportFilterProgram of hoReader "findstr x" to iResult
@@ -985,14 +1035,14 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Send AssertIAreEqual ARCHIVE_OK iResult "SupportFilterProgramSignature"
             Delegate Send DropReader hoReader
 
-            Get Create U_cArchiveReader to hoReader
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
             Set pbRaiseErrors of hoReader to False
             Send CreateReader of hoReader
             Get AppendFilterProgram of hoReader "findstr x" to iResult
             Send AssertIAreEqual iExpected iResult "AppendFilterProgram"
             Delegate Send DropReader hoReader
 
-            Get Create U_cArchiveReader to hoReader
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
             Set pbRaiseErrors of hoReader to False
             Send CreateReader of hoReader
             Get AppendFilterProgramSignature of hoReader "findstr x" ucSignature to iResult
@@ -1005,6 +1055,8 @@ Object oWrapperReaderTests is a cArchiveTestFixture
 
     Object oMemoryOpenTest is a cTest
         Procedure Test
+            Integer iMemorySize
+            Pointer pMemory
             Handle hoReader
             Integer iResult iSize
             UChar[] ucArchive ucEmpty
@@ -1015,14 +1067,18 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Delegate Get NewReader to hoReader
             Get OpenMemory of hoReader (&ucArchive) to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "open memory"
-            Send AssertIAreEqual iSize (piMemorySize (hoReader)) "memory size"
-            Send Assert (ppMemory (hoReader) <> 0) "memory copy"
+            Get piMemorySize of hoReader to iMemorySize
+            Send AssertIAreEqual iSize iMemorySize "memory size"
+            Get ppMemory of hoReader to pMemory
+            Send Assert (pMemory <> 0) "memory copy"
             // the reader works on its own copy
             Move ucEmpty to ucArchive
             Delegate Send VerifySampleArchive hoReader "zip memory" True
             Send FreeReader of hoReader
-            Send Assert (ppMemory (hoReader) = 0) "memory released"
-            Send AssertIAreEqual 0 (piMemorySize (hoReader)) "memory size reset"
+            Get ppMemory of hoReader to pMemory
+            Send Assert (pMemory = 0) "memory released"
+            Get piMemorySize of hoReader to iMemorySize
+            Send AssertIAreEqual 0 iMemorySize "memory size reset"
             Delegate Send DropReader hoReader
         End_Procedure
     End_Object
@@ -1179,6 +1235,7 @@ Object oWrapperReaderTests is a cArchiveTestFixture
     // Open1 needs callbacks that cannot be set from DataFlex.
     Object oOpen1Test is a cTest
         Procedure Test
+            String sLastError
             Handle hoReader
             Integer iResult
 
@@ -1186,7 +1243,8 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Set pbRaiseErrors of hoReader to False
             Get Open1 of hoReader to iResult
             Send AssertIAreEqual ARCHIVE_FATAL iResult "Open1 without callbacks"
-            Send Assert (psLastError (hoReader) <> "") "error text"
+            Get psLastError of hoReader to sLastError
+            Send Assert (sLastError <> "") "error text"
             Delegate Send DropReader hoReader
         End_Procedure
     End_Object
@@ -1208,6 +1266,10 @@ Object oWrapperReaderTests is a cArchiveTestFixture
 
     Object oNextHeaderIntoTest is a cTest
         Procedure Test
+            Boolean bOwnsEntry bHasEntry2
+            String sPathname
+            Handle hoEntry
+            Boolean bHasEntry
             Handle hoReader hoEntryA hoEntryB
             Integer iResult
             UChar[] ucArchive
@@ -1218,28 +1280,36 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Delegate Get NewReader to hoReader
             Get OpenMemory of hoReader (&ucArchive) to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "open"
-            Get Create U_cArchiveEntry to hoEntryA
-            Get Create U_cArchiveEntry to hoEntryB
-            Send AssertFalse (HasEntry (hoEntryA)) "entry A starts empty"
+            Get CreateNamed (RefClass (cArchiveEntry)) "oArchiveEntryA" to hoEntryA
+            Get CreateNamed (RefClass (cArchiveEntry)) "oArchiveEntryB" to hoEntryB
+            Get HasEntry of hoEntryA to bHasEntry
+            Send AssertFalse bHasEntry "entry A starts empty"
 
             Get NextHeaderInto of hoReader hoEntryA to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "header 0"
-            Send Assert (pbOwnsEntry (hoEntryA)) "NextHeaderInto fills an owned entry"
+            Get pbOwnsEntry of hoEntryA to bOwnsEntry
+            Send Assert bOwnsEntry "NextHeaderInto fills an owned entry"
             Get NextHeaderInto of hoReader hoEntryB to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "header 1"
             // entry A is still valid after the next header was read
-            Send AssertSAreEqual "hello.txt" (psPathname (hoEntryA)) "entry A keeps its name"
-            Send AssertSAreEqual "docs/" (psPathname (hoEntryB)) "entry B"
-            Send AssertFalse (HasEntry (phoEntry (hoReader))) "NextHeaderInto does not touch phoEntry"
+            Get psPathname of hoEntryA to sPathname
+            Send AssertSAreEqual "hello.txt" sPathname "entry A keeps its name"
+            Get psPathname of hoEntryB to sPathname
+            Send AssertSAreEqual "docs/" sPathname "entry B"
+            Get phoEntry of hoReader to hoEntry
+            Get HasEntry of hoEntry to bHasEntry2
+            Send AssertFalse bHasEntry2 "NextHeaderInto does not touch phoEntry"
 
             Get NextHeaderInto of hoReader hoEntryA to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "header 2 into entry A"
-            Send AssertSAreEqual "docs/nested.txt" (psPathname (hoEntryA)) "entry A reused"
+            Get psPathname of hoEntryA to sPathname
+            Send AssertSAreEqual "docs/nested.txt" sPathname "entry A reused"
             Get ReadDataToString of hoReader to sData
             Send AssertSAreEqual "Nested content" sData "data of the entry that NextHeaderInto returned"
             Get NextHeaderInto of hoReader hoEntryB to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "header 3"
-            Send AssertSAreEqual "héllo-ünï.txt" (psPathname (hoEntryB)) "unicode name"
+            Get psPathname of hoEntryB to sPathname
+            Send AssertSAreEqual "héllo-ünï.txt" sPathname "unicode name"
             Get NextHeaderInto of hoReader hoEntryB to iResult
             Send AssertIAreEqual ARCHIVE_EOF iResult "end"
             Send Destroy_Object of hoEntryA
@@ -1251,6 +1321,10 @@ Object oWrapperReaderTests is a cArchiveTestFixture
     // NextHeader attaches the entry to phoEntry and detaches it at the end and when the handle is freed.
     Object oPhoEntryTest is a cTest
         Procedure Test
+            Boolean bOwnsEntry
+            String sPathname
+            Pointer pEntry
+            Boolean bHasEntry
             Handle hoReader hoEntry
             Integer iResult iCount
             UChar[] ucArchive
@@ -1260,22 +1334,30 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Get OpenMemory of hoReader (&ucArchive) to iResult
             Get phoEntry of hoReader to hoEntry
             Send Assert (hoEntry <> 0) "phoEntry object exists"
-            Send AssertFalse (HasEntry (hoEntry)) "no entry before the first header"
+            Get HasEntry of hoEntry to bHasEntry
+            Send AssertFalse bHasEntry "no entry before the first header"
             Get NextHeader of hoReader to iResult
-            Send Assert (HasEntry (hoEntry)) "entry after the first header"
-            Send AssertFalse (pbOwnsEntry (hoEntry)) "the entry is borrowed"
-            Send AssertSAreEqual "hello.txt" (psPathname (hoEntry)) "name"
-            Send AssertIAreEqual 13 (archive_entry_size (ppEntry (hoEntry))) "size"
-            Send AssertIAreEqual 420 (archive_entry_perm (ppEntry (hoEntry))) "permission"
+            Get HasEntry of hoEntry to bHasEntry
+            Send Assert bHasEntry "entry after the first header"
+            Get pbOwnsEntry of hoEntry to bOwnsEntry
+            Send AssertFalse bOwnsEntry "the entry is borrowed"
+            Get psPathname of hoEntry to sPathname
+            Send AssertSAreEqual "hello.txt" sPathname "name"
+            Get ppEntry of hoEntry to pEntry
+            Send AssertIAreEqual 13 (archive_entry_size (pEntry)) "size"
+            Get ppEntry of hoEntry to pEntry
+            Send AssertIAreEqual 420 (archive_entry_perm (pEntry)) "permission"
             Delegate Get CountEntries hoReader to iCount
             Send AssertIAreEqual 3 iCount "remaining entries"
-            Send AssertFalse (HasEntry (hoEntry)) "no entry after the end"
+            Get HasEntry of hoEntry to bHasEntry
+            Send AssertFalse bHasEntry "no entry after the end"
             Delegate Send DropReader hoReader
         End_Procedure
     End_Object
 
     Object oEntryDetachedOnFreeTest is a cTest
         Procedure Test
+            Boolean bHasEntry
             Handle hoReader hoEntry
             Integer iResult
             UChar[] ucArchive
@@ -1285,9 +1367,11 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Get OpenMemory of hoReader (&ucArchive) to iResult
             Get NextHeader of hoReader to iResult
             Get phoEntry of hoReader to hoEntry
-            Send Assert (HasEntry (hoEntry)) "entry"
+            Get HasEntry of hoEntry to bHasEntry
+            Send Assert bHasEntry "entry"
             Send FreeReader of hoReader
-            Send AssertFalse (HasEntry (hoEntry)) "the entry is forgotten when the handle is freed"
+            Get HasEntry of hoEntry to bHasEntry
+            Send AssertFalse bHasEntry "the entry is forgotten when the handle is freed"
             Delegate Send DropReader hoReader
         End_Procedure
     End_Object
@@ -1458,6 +1542,9 @@ Object oWrapperReaderTests is a cArchiveTestFixture
     // The raw format has no entry size: ReadAllData has to grow its buffer (200000 bytes > the initial 65536).
     Object oUnknownSizeDataTest is a cTest
         Procedure Test
+            Integer eFormat
+            Handle hoEntry
+            String sPathname
             Handle hoReader
             Integer iResult iIndex iBad
             String sFile sOutFile
@@ -1481,8 +1568,11 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Send AssertIAreEqual ARCHIVE_OK iResult "open"
             Get NextHeader of hoReader to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "header"
-            Send AssertIAreEqual ARCHIVE_FORMAT_RAW ((peFormat (hoReader)) iand ARCHIVE_FORMAT_BASE_MASK) "raw format"
-            Send AssertSAreEqual "data" (psPathname (phoEntry (hoReader))) "raw entry name"
+            Get peFormat of hoReader to eFormat
+            Send AssertIAreEqual ARCHIVE_FORMAT_RAW ((eFormat) iand ARCHIVE_FORMAT_BASE_MASK) "raw format"
+            Get phoEntry of hoReader to hoEntry
+            Get psPathname of hoEntry to sPathname
+            Send AssertSAreEqual "data" sPathname "raw entry name"
             Get ReadAllData of hoReader (&ucData) to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "ReadAllData"
             Send AssertIAreEqual 200000 (SizeOfArray (ucData)) "size"
@@ -1571,6 +1661,8 @@ Object oWrapperReaderTests is a cArchiveTestFixture
     // ARCHIVE_FATAL ("No format_seek_data_block function registered").
     Object oSeekDataTest is a cTest
         Procedure Test
+            Integer iLastResult
+            String sLastError
             Handle hoReader
             Integer iResult
             BigInt iPos
@@ -1587,8 +1679,10 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Send AssertIAreEqual 5 (SizeOfArray (ucChunk)) "5 bytes read"
             Get SeekData of hoReader 0 ARCHIVE_SEEK_SET to iPos
             Send AssertBIAreEqual ARCHIVE_FATAL iPos "seek is not supported by the tar reader"
-            Send AssertIAreEqual ARCHIVE_FATAL (piLastResult (hoReader)) "last result"
-            Send Assert (psLastError (hoReader) <> "") "error text"
+            Get piLastResult of hoReader to iLastResult
+            Send AssertIAreEqual ARCHIVE_FATAL iLastResult "last result"
+            Get psLastError of hoReader to sLastError
+            Send Assert (sLastError <> "") "error text"
             Delegate Send DropReader hoReader
 
             Delegate Get NewReader to hoReader
@@ -1602,6 +1696,7 @@ Object oWrapperReaderTests is a cArchiveTestFixture
 
     Object oDataToFileTest is a cTest
         Procedure Test
+            String sLastError
             Handle hoReader
             Integer iResult
             String sZip sOut sUnicodeOut sText
@@ -1628,7 +1723,8 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Set pbRaiseErrors of hoReader to False
             Get DataToFile of hoReader (sOut + "\no\such\folder\x.txt") to iResult
             Send AssertIAreEqual ARCHIVE_FAILED iResult "DataToFile to a missing folder"
-            Send Assert (psLastError (hoReader) <> "") "error text"
+            Get psLastError of hoReader to sLastError
+            Send Assert (sLastError <> "") "error text"
             Delegate Send DropReader hoReader
             EraseFile sZip
             EraseFile sOut
@@ -1693,6 +1789,7 @@ Object oWrapperReaderTests is a cArchiveTestFixture
 
     Object oUnknownOptionsTest is a cTest
         Procedure Test
+            Integer iLastResult
             Handle hoReader
             Integer iResult
 
@@ -1708,7 +1805,8 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Send AssertIAreEqual ARCHIVE_FAILED iResult "unknown module"
             Get SetOptions of hoReader "no-such-module:foo=1" to iResult
             Send AssertIAreEqual ARCHIVE_FAILED iResult "unknown option string"
-            Send AssertIAreEqual ARCHIVE_FAILED (piLastResult (hoReader)) "last result"
+            Get piLastResult of hoReader to iLastResult
+            Send AssertIAreEqual ARCHIVE_FAILED iLastResult "last result"
             Delegate Send DropReader hoReader
 
             // with pbRaiseErrors an unknown option is an error
@@ -1724,6 +1822,12 @@ Object oWrapperReaderTests is a cArchiveTestFixture
 
     Object oEncryptedZipTest is a cTest
         Procedure Test
+            Boolean bHasEncryptedEntries
+            Integer eFormatCapabilities iLastResult
+            Handle hoEntry
+            Pointer pEntry
+            String sLastError
+            Integer iEncryptedEntriesState
             Handle hoReader
             Integer iResult
             String sFile sData
@@ -1740,14 +1844,21 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Send AssertIAreEqual ARCHIVE_OK iResult "open"
             Get NextHeader of hoReader to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "header"
-            Send Assert (pbHasEncryptedEntries (hoReader)) "encrypted entries found"
-            Send AssertIAreEqual 1 (EncryptedEntriesState (hoReader)) "raw state"
-            Send Assert (((peFormatCapabilities (hoReader)) iand ARCHIVE_READ_FORMAT_CAPS_ENCRYPT_DATA) <> 0) "zip detects encrypted data"
-            Send AssertIAreEqual 1 (archive_entry_is_encrypted (ppEntry (phoEntry (hoReader)))) "entry is encrypted"
+            Get pbHasEncryptedEntries of hoReader to bHasEncryptedEntries
+            Send Assert bHasEncryptedEntries "encrypted entries found"
+            Get EncryptedEntriesState of hoReader to iEncryptedEntriesState
+            Send AssertIAreEqual 1 iEncryptedEntriesState "raw state"
+            Get peFormatCapabilities of hoReader to eFormatCapabilities
+            Send Assert (((eFormatCapabilities) iand ARCHIVE_READ_FORMAT_CAPS_ENCRYPT_DATA) <> 0) "zip detects encrypted data"
+            Get phoEntry of hoReader to hoEntry
+            Get ppEntry of hoEntry to pEntry
+            Send AssertIAreEqual 1 (archive_entry_is_encrypted (pEntry)) "entry is encrypted"
             Get ReadAllData of hoReader (&ucData) to iResult
             Send Assert (iResult <= ARCHIVE_FAILED) "reading without passphrase fails"
-            Send AssertIAreEqual iResult (piLastResult (hoReader)) "last result"
-            Send Assert (psLastError (hoReader) <> "") "last error text"
+            Get piLastResult of hoReader to iLastResult
+            Send AssertIAreEqual iResult iLastResult "last result"
+            Get psLastError of hoReader to sLastError
+            Send Assert (sLastError <> "") "last error text"
             Send AssertIAreEqual 0 (SizeOfArray (ucData)) "no data"
             Delegate Send DropReader hoReader
 
@@ -1778,7 +1889,8 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Send AssertIAreEqual ARCHIVE_OK iResult "AddPassphrase secret"
             Get OpenFile of hoReader sFile 0 to iResult
             Delegate Send VerifySampleArchive hoReader "encrypted" True
-            Send Assert (pbHasEncryptedEntries (hoReader)) "encrypted entries"
+            Get pbHasEncryptedEntries of hoReader to bHasEncryptedEntries
+            Send Assert bHasEncryptedEntries "encrypted entries"
             Delegate Send DropReader hoReader
             EraseFile sFile
         End_Procedure
@@ -1786,6 +1898,10 @@ Object oWrapperReaderTests is a cArchiveTestFixture
 
     Object oEncryptionStateTest is a cTest
         Procedure Test
+            Boolean bHasEncryptedEntries
+            Handle hoEntry
+            Pointer pEntry
+            Integer eFormatCapabilities
             Handle hoReader
             Integer iResult
             String sFile
@@ -1796,9 +1912,13 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Delegate Get NewReader to hoReader
             Get OpenFile of hoReader sFile 0 to iResult
             Get NextHeader of hoReader to iResult
-            Send AssertFalse (pbHasEncryptedEntries (hoReader)) "plain zip has no encrypted entries"
-            Send AssertIAreEqual 0 (archive_entry_is_encrypted (ppEntry (phoEntry (hoReader)))) "entry is not encrypted"
-            Send Assert (((peFormatCapabilities (hoReader)) iand ARCHIVE_READ_FORMAT_CAPS_ENCRYPT_DATA) <> 0) "zip can detect encryption"
+            Get pbHasEncryptedEntries of hoReader to bHasEncryptedEntries
+            Send AssertFalse bHasEncryptedEntries "plain zip has no encrypted entries"
+            Get phoEntry of hoReader to hoEntry
+            Get ppEntry of hoEntry to pEntry
+            Send AssertIAreEqual 0 (archive_entry_is_encrypted (pEntry)) "entry is not encrypted"
+            Get peFormatCapabilities of hoReader to eFormatCapabilities
+            Send Assert (((eFormatCapabilities) iand ARCHIVE_READ_FORMAT_CAPS_ENCRYPT_DATA) <> 0) "zip can detect encryption"
             Delegate Send DropReader hoReader
             EraseFile sFile
 
@@ -1808,15 +1928,19 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Delegate Get NewReader to hoReader
             Get OpenFile of hoReader sFile 0 to iResult
             Get NextHeader of hoReader to iResult
-            Send AssertIAreEqual ARCHIVE_READ_FORMAT_CAPS_NONE (peFormatCapabilities (hoReader)) "tar has no encryption capabilities"
-            Send AssertFalse (pbHasEncryptedEntries (hoReader)) "tar has no encrypted entries"
+            Get peFormatCapabilities of hoReader to eFormatCapabilities
+            Send AssertIAreEqual ARCHIVE_READ_FORMAT_CAPS_NONE eFormatCapabilities "tar has no encryption capabilities"
+            Get pbHasEncryptedEntries of hoReader to bHasEncryptedEntries
+            Send AssertFalse bHasEncryptedEntries "tar has no encrypted entries"
             Delegate Send DropReader hoReader
             EraseFile sFile
 
             // no handle
-            Get Create U_cArchiveReader to hoReader
-            Send AssertFalse (pbHasEncryptedEntries (hoReader)) "no handle"
-            Send AssertIAreEqual 0 (peFormatCapabilities (hoReader)) "no handle capabilities"
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Get pbHasEncryptedEntries of hoReader to bHasEncryptedEntries
+            Send AssertFalse bHasEncryptedEntries "no handle"
+            Get peFormatCapabilities of hoReader to eFormatCapabilities
+            Send AssertIAreEqual 0 eFormatCapabilities "no handle capabilities"
             Delegate Send DropReader hoReader
         End_Procedure
     End_Object
@@ -1825,6 +1949,7 @@ Object oWrapperReaderTests is a cArchiveTestFixture
 
     Object oFormatSpecificReadTest is a cTest
         Procedure Test
+            Integer eFormat
             Handle hoReader
             Integer iResult
             String sFile
@@ -1833,7 +1958,7 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             // zip seekable
             Delegate Get TempFile "wr_zs.zip" to sFile
             Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_ZIP ARCHIVE_FILTER_NONE to iResult
-            Get Create U_cArchiveReader to hoReader
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
             Send CreateReader of hoReader
             Get SupportFormatZipSeekable of hoReader to iResult
             Get OpenFile of hoReader sFile 0 to iResult
@@ -1844,7 +1969,7 @@ Object oWrapperReaderTests is a cArchiveTestFixture
 
             // zip streamable (a zip written to memory is a stream: sizes follow the data)
             Delegate Get BuildSampleArchiveMemory ARCHIVE_FORMAT_ZIP (&ucArchive) to iResult
-            Get Create U_cArchiveReader to hoReader
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
             Send CreateReader of hoReader
             Get SupportFormatZipStreamable of hoReader to iResult
             Get OpenMemory of hoReader (&ucArchive) to iResult
@@ -1858,20 +1983,21 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Delegate Get TempFile "wr_gnu.tar" to sFile
             Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_TAR_GNUTAR ARCHIVE_FILTER_NONE to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "build gnu tar"
-            Get Create U_cArchiveReader to hoReader
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
             Send CreateReader of hoReader
             Get SupportFormatGnutar of hoReader to iResult
             Get OpenFile of hoReader sFile 0 to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "open gnu tar"
             Delegate Send VerifySampleArchive hoReader "gnutar" True
-            Send AssertIAreEqual ARCHIVE_FORMAT_TAR_GNUTAR (peFormat (hoReader)) "gnu tar format code"
+            Get peFormat of hoReader to eFormat
+            Send AssertIAreEqual ARCHIVE_FORMAT_TAR_GNUTAR eFormat "gnu tar format code"
             Delegate Send DropReader hoReader
             EraseFile sFile
 
             // 7zip with only the 7zip reader
             Delegate Get TempFile "wr_only.7z" to sFile
             Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_7ZIP ARCHIVE_FILTER_NONE to iResult
-            Get Create U_cArchiveReader to hoReader
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
             Send CreateReader of hoReader
             Get SupportFormat7zip of hoReader to iResult
             Get OpenFile of hoReader sFile 0 to iResult
@@ -1886,6 +2012,8 @@ Object oWrapperReaderTests is a cArchiveTestFixture
     // "C" locale, so the file is prebuilt): the reader returns the Unicode name.
     Object oSevenZipUnicodeNameTest is a cTest
         Procedure Test
+            Handle hoEntry
+            String sPathname
             Handle hoReader
             Integer iResult
             String sFile sData
@@ -1901,7 +2029,9 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Send AssertIAreEqual ARCHIVE_OK iResult "open"
             Get NextHeader of hoReader to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "header"
-            Send AssertSAreEqual "héllo-ünï-€.txt" (psPathname (phoEntry (hoReader))) "Unicode name"
+            Get phoEntry of hoReader to hoEntry
+            Get psPathname of hoEntry to sPathname
+            Send AssertSAreEqual "héllo-ünï-€.txt" sPathname "Unicode name"
             Get ReadDataToString of hoReader to sData
             Send AssertSAreEqual "abc" sData "data"
             Delegate Send DropReader hoReader
@@ -1912,6 +2042,9 @@ Object oWrapperReaderTests is a cArchiveTestFixture
     // A RAR 5 archive with one stored file (built by hand) is read by the rar5 reader.
     Object oRar5FormatTest is a cTest
         Procedure Test
+            Handle hoEntry
+            String sPathname
+            Integer eFormat
             Handle hoReader
             Integer iResult
             String sFile sData
@@ -1922,15 +2055,18 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Delegate Get TempFile "wr_sample.rar" to sFile
             Delegate Get WriteBytes sFile (&ucArchive) 0 (SizeOfArray (ucArchive)) to bOk
             Send Assert bOk "write the rar file"
-            Get Create U_cArchiveReader to hoReader
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
             Send CreateReader of hoReader
             Get SupportFormatRar5 of hoReader to iResult
             Get OpenFile of hoReader sFile 0 to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "open"
             Get NextHeader of hoReader to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "header"
-            Send AssertSAreEqual "hello.txt" (psPathname (phoEntry (hoReader))) "name"
-            Send AssertIAreEqual ARCHIVE_FORMAT_RAR_V5 ((peFormat (hoReader)) iand ARCHIVE_FORMAT_BASE_MASK) "rar5 format"
+            Get phoEntry of hoReader to hoEntry
+            Get psPathname of hoEntry to sPathname
+            Send AssertSAreEqual "hello.txt" sPathname "name"
+            Get peFormat of hoReader to eFormat
+            Send AssertIAreEqual ARCHIVE_FORMAT_RAR_V5 ((eFormat) iand ARCHIVE_FORMAT_BASE_MASK) "rar5 format"
             Get ReadDataToString of hoReader to sData
             Send AssertSAreEqual "Hello Archive" sData "data"
             Get NextHeader of hoReader to iResult
@@ -1952,6 +2088,8 @@ Object oWrapperReaderTests is a cArchiveTestFixture
     // ISO 9660 images: the root folder is the first entry, names come from Joliet / Rock Ridge.
     Object oIso9660FormatTest is a cTest
         Procedure Test
+            Handle hoEntry
+            Integer eFormat
             Handle hoReader
             Integer iResult iFound
             String sFile sName sData
@@ -1960,7 +2098,7 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Delegate Get TempFile "wr_sample.iso" to sFile
             Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_ISO9660 ARCHIVE_FILTER_NONE to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "build iso"
-            Get Create U_cArchiveReader to hoReader
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
             Send CreateReader of hoReader
             Get SupportFormatIso9660 of hoReader to iResult
             Get OpenFile of hoReader sFile 0 to iResult
@@ -1970,7 +2108,8 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Move False to bUnicode
             Get NextHeader of hoReader to iResult
             While (iResult = ARCHIVE_OK)
-                Get psPathname of (phoEntry (hoReader)) to sName
+                Get phoEntry of hoReader to hoEntry
+                Get psPathname of hoEntry to sName
                 If (sName = "hello.txt") Begin
                     Get ReadDataToString of hoReader to sData
                     Move (sData = "Hello Archive") to bHello
@@ -1989,7 +2128,8 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Send Assert bHello "hello.txt"
             Send Assert bNested "docs/nested.txt"
             Send Assert bUnicode "unicode name"
-            Send AssertIAreEqual ARCHIVE_FORMAT_ISO9660 ((peFormat (hoReader)) iand ARCHIVE_FORMAT_BASE_MASK) "iso format"
+            Get peFormat of hoReader to eFormat
+            Send AssertIAreEqual ARCHIVE_FORMAT_ISO9660 ((eFormat) iand ARCHIVE_FORMAT_BASE_MASK) "iso format"
             Delegate Send DropReader hoReader
             EraseFile sFile
         End_Procedure
@@ -1997,6 +2137,9 @@ Object oWrapperReaderTests is a cArchiveTestFixture
 
     Object oArFormatTest is a cTest
         Procedure Test
+            Handle hoEntry
+            String sPathname
+            Integer eFormat
             Handle hoReader
             Integer iResult
             String sFile sData
@@ -2008,15 +2151,18 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Delegate Get TempFile "wr_sample.ar" to sFile
             Delegate Get BuildArchiveWithEntries sFile ARCHIVE_FORMAT_AR_BSD ARCHIVE_FILTER_NONE asNames (&ucContent) to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "build ar"
-            Get Create U_cArchiveReader to hoReader
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
             Send CreateReader of hoReader
             Get SupportFormatAr of hoReader to iResult
             Get OpenFile of hoReader sFile 0 to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "open ar"
             Get NextHeader of hoReader to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "header"
-            Send AssertSAreEqual "hello.txt" (psPathname (phoEntry (hoReader))) "name"
-            Send AssertIAreEqual ARCHIVE_FORMAT_AR ((peFormat (hoReader)) iand ARCHIVE_FORMAT_BASE_MASK) "ar format"
+            Get phoEntry of hoReader to hoEntry
+            Get psPathname of hoEntry to sPathname
+            Send AssertSAreEqual "hello.txt" sPathname "name"
+            Get peFormat of hoReader to eFormat
+            Send AssertIAreEqual ARCHIVE_FORMAT_AR ((eFormat) iand ARCHIVE_FORMAT_BASE_MASK) "ar format"
             Get ReadDataToString of hoReader to sData
             Send AssertSAreEqual "Hello Archive" sData "data"
             Delegate Send DropReader hoReader
@@ -2026,6 +2172,9 @@ Object oWrapperReaderTests is a cArchiveTestFixture
 
     Object oMtreeFormatTest is a cTest
         Procedure Test
+            Handle hoEntry
+            String sPathname
+            Integer eFormat
             Handle hoReader
             Integer iResult
             String sFile sManifest
@@ -2036,7 +2185,7 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Move (sManifest + Character (10)) to sManifest
             Delegate Get TempFile "wr_sample.mtree" to sFile
             Delegate Get WriteText sFile sManifest to iResult
-            Get Create U_cArchiveReader to hoReader
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
             Send CreateReader of hoReader
             Get SupportFormatMtree of hoReader to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "SupportFormatMtree"
@@ -2044,13 +2193,17 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Send AssertIAreEqual ARCHIVE_OK iResult "open mtree"
             Get NextHeader of hoReader to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "header"
-            Get ppEntry of (phoEntry (hoReader)) to pEntry
-            Send AssertSAreEqual "hello.txt" (psPathname (phoEntry (hoReader))) "name"
+            Get phoEntry of hoReader to hoEntry
+            Get ppEntry of hoEntry to pEntry
+            Get phoEntry of hoReader to hoEntry
+            Get psPathname of hoEntry to sPathname
+            Send AssertSAreEqual "hello.txt" sPathname "name"
             Send AssertBIAreEqual 13 (archive_entry_size (pEntry)) "size"
             Send AssertIAreEqual 420 (archive_entry_perm (pEntry)) "permission"
             Send AssertBIAreEqual 1700000000 (archive_entry_mtime (pEntry)) "mtime"
             Send AssertIAreEqual AE_IFREG (archive_entry_filetype (pEntry)) "type"
-            Send AssertIAreEqual ARCHIVE_FORMAT_MTREE ((peFormat (hoReader)) iand ARCHIVE_FORMAT_BASE_MASK) "mtree format"
+            Get peFormat of hoReader to eFormat
+            Send AssertIAreEqual ARCHIVE_FORMAT_MTREE ((eFormat) iand ARCHIVE_FORMAT_BASE_MASK) "mtree format"
             Delegate Send DropReader hoReader
             EraseFile sFile
         End_Procedure
@@ -2058,6 +2211,7 @@ Object oWrapperReaderTests is a cArchiveTestFixture
 
     Object oEmptyFormatTest is a cTest
         Procedure Test
+            Integer eFormat
             Handle hoReader
             Integer iResult
             String sFile
@@ -2066,7 +2220,7 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Delegate Get WriteText sFile "" to iResult
             Delegate Get FileExists sFile to iResult
             Send AssertIAreEqual 1 iResult "empty file exists"
-            Get Create U_cArchiveReader to hoReader
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
             Send CreateReader of hoReader
             Get SupportFormatEmpty of hoReader to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "SupportFormatEmpty"
@@ -2074,7 +2228,8 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Send AssertIAreEqual ARCHIVE_OK iResult "open empty file"
             Get NextHeader of hoReader to iResult
             Send AssertIAreEqual ARCHIVE_EOF iResult "an empty archive has no entries"
-            Send AssertIAreEqual ARCHIVE_FORMAT_EMPTY ((peFormat (hoReader)) iand ARCHIVE_FORMAT_BASE_MASK) "empty format"
+            Get peFormat of hoReader to eFormat
+            Send AssertIAreEqual ARCHIVE_FORMAT_EMPTY ((eFormat) iand ARCHIVE_FORMAT_BASE_MASK) "empty format"
             Delegate Send DropReader hoReader
             EraseFile sFile
         End_Procedure
@@ -2083,13 +2238,17 @@ Object oWrapperReaderTests is a cArchiveTestFixture
     // ---- convenience: ListEntries, ReadEntryData, ExtractAll -----------------------------------------------------
 
     Procedure VerifyEntryInfo tArchiveEntryInfo tInfo Integer iIndex String sLabel
+        BigInt biSampleMTime
+        Boolean bSampleEntryIsDirectory
         String sExpected
 
         Get SampleEntryName iIndex to sExpected
         Send AssertSAreEqual sExpected tInfo.sPathname (sLabel * "name" * String (iIndex))
-        Send AssertBIAreEqual (SampleMTime (Self)) tInfo.iMtime (sLabel * "mtime" * String (iIndex))
+        Get SampleMTime to biSampleMTime
+        Send AssertBIAreEqual biSampleMTime tInfo.iMtime (sLabel * "mtime" * String (iIndex))
         Send AssertFalse tInfo.bEncrypted (sLabel * "not encrypted" * String (iIndex))
-        If (SampleEntryIsDirectory (Self, iIndex)) Begin
+        Get SampleEntryIsDirectory iIndex to bSampleEntryIsDirectory
+        If bSampleEntryIsDirectory Begin
             Send AssertIAreEqual AE_IFDIR tInfo.eFileType (sLabel * "type" * String (iIndex))
             Send AssertIAreEqual 493 tInfo.iPerm (sLabel * "permission" * String (iIndex))
             Send AssertBIAreEqual 0 tInfo.iSize (sLabel * "size" * String (iIndex))
@@ -2106,14 +2265,18 @@ Object oWrapperReaderTests is a cArchiveTestFixture
         Function_Return (oFakeDiskWriter (Self))
     End_Function
 
-    // Checks the files ExtractAll creates for the sample archive below sFolder (with trailing backslash).
+    // Checks the files ExtractZipArchive creates for the sample archive below sFolder (with trailing backslash).
     Procedure VerifyExtractedSample String sFolder String sLabel
+        String sReadFileText
         BigInt iMtime iDevice iInode
         Integer iResult
 
-        Send AssertSAreEqual "Hello Archive" (ReadFileText (Self, sFolder + "hello.txt")) (sLabel * "hello.txt")
-        Send AssertSAreEqual "Nested content" (ReadFileText (Self, sFolder + "docs\nested.txt")) (sLabel * "docs\nested.txt")
-        Send AssertSAreEqual "Unicode name" (ReadFileText (Self, sFolder + "héllo-ünï.txt")) (sLabel * "unicode name")
+        Get ReadFileText (sFolder + "hello.txt") to sReadFileText
+        Send AssertSAreEqual "Hello Archive" sReadFileText (sLabel * "hello.txt")
+        Get ReadFileText (sFolder + "docs\nested.txt") to sReadFileText
+        Send AssertSAreEqual "Nested content" sReadFileText (sLabel * "docs\nested.txt")
+        Get ReadFileText (sFolder + "héllo-ünï.txt") to sReadFileText
+        Send AssertSAreEqual "Unicode name" sReadFileText (sLabel * "unicode name")
         Send Assert (IsDirectory (sFolder + "docs")) (sLabel * "directory")
     End_Procedure
 
@@ -2127,36 +2290,53 @@ Object oWrapperReaderTests is a cArchiveTestFixture
 
     Object oListEntriesTest is a cTest
         Procedure Test
+            Boolean bRaiseErrors
+            Integer iLastResult
+            Boolean bHasHandle
             Handle hoReader
             Integer iResult iIndex
             String sFile
             tArchiveEntryInfo[] aEntries
+            tArchiveOperationResult Result
 
             Delegate Get TempFile "wr_list.zip" to sFile
             Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_ZIP ARCHIVE_FILTER_NONE to iResult
-            Get Create U_cArchiveReader to hoReader
-            Get ListEntries of hoReader sFile to aEntries
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Get ListEntries of hoReader sFile (&aEntries) to Result
+            Send Assert Result.bSuccess ("zip listed: " + Result.sErrorMessage)
+            Send AssertIAreEqual 4 Result.iEntryCount "zip entry count in the result"
             Send AssertIAreEqual 4 (SizeOfArray (aEntries)) "zip entry count"
             If (SizeOfArray (aEntries) = 4) Begin
                 For iIndex from 0 to 3
                     Delegate Send VerifyEntryInfo aEntries[iIndex] iIndex "zip"
                 Loop
             End
-            Send AssertFalse (HasHandle (hoReader)) "ListEntries frees the handle"
+            Get HasHandle of hoReader to bHasHandle
+            Send AssertFalse bHasHandle "ListEntries frees the handle"
             Delegate Get TempFile "wr_list.zip" to sFile
             Delegate Get TempFile "wr_list.tar.gz" to sFile
             Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_GZIP to iResult
-            Get ListEntries of hoReader sFile to aEntries
+            Get ListEntries of hoReader sFile (&aEntries) to Result
+            Send Assert Result.bSuccess "tar.gz listed"
             Send AssertIAreEqual 4 (SizeOfArray (aEntries)) "tar.gz entry count"
             If (SizeOfArray (aEntries) = 4) Begin
                 For iIndex from 0 to 3
                     Delegate Send VerifyEntryInfo aEntries[iIndex] iIndex "tar.gz"
                 Loop
             End
-            // missing file
-            Set pbRaiseErrors of hoReader to False
-            Get ListEntries of hoReader (sFile + ".missing") to aEntries
+            // A missing file is returned as a failure and never raised, although pbRaiseErrors is True (default).
+            Get ListEntries of hoReader (sFile + ".missing") (&aEntries) to Result
+            Send AssertFalse Result.bSuccess "missing file fails"
+            Send AssertIAreEqual C_ARCHIVE_RESULT_OPEN_FAILED Result.iErrorCode "missing file code"
+            Send Assert (Result.sErrorMessage <> "") "the libarchive text is returned"
             Send AssertIAreEqual 0 (SizeOfArray (aEntries)) "missing file gives an empty list"
+            Get pbRaiseErrors of hoReader to bRaiseErrors
+            Send Assert bRaiseErrors "pbRaiseErrors is restored"
+            Get piLastResult of hoReader to iLastResult
+            Send AssertIAreEqual ARCHIVE_OK iLastResult "the failure is not stored in piLastResult"
+            // An empty path is an invalid argument, also without a handle.
+            Get ListEntries of hoReader "" (&aEntries) to Result
+            Send AssertIAreEqual C_ARCHIVE_RESULT_INVALID_ARGUMENT Result.iErrorCode "empty path"
             Delegate Send DropReader hoReader
             EraseFile sFile
         End_Procedure
@@ -2168,11 +2348,13 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Integer iResult
             String sFile
             tArchiveEntryInfo[] aEntries
+            tArchiveOperationResult Result
 
             Delegate Get TempFile "wr_list_secret.zip" to sFile
             Delegate Get BuildEncryptedZip sFile "secret" to iResult
-            Get Create U_cArchiveReader to hoReader
-            Get ListEntries of hoReader sFile to aEntries
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Get ListEntries of hoReader sFile (&aEntries) to Result
+            Send Assert Result.bSuccess "listing needs no passphrase"
             Send AssertIAreEqual 4 (SizeOfArray (aEntries)) "entry count"
             If (SizeOfArray (aEntries) = 4) Begin
                 Send Assert aEntries[0].bEncrypted "hello.txt is encrypted"
@@ -2186,33 +2368,45 @@ Object oWrapperReaderTests is a cArchiveTestFixture
 
     Object oReadEntryDataTest is a cTest
         Procedure Test
+            Boolean bRaiseErrors
+            Boolean bHasHandle
             Handle hoReader
             Integer iResult
             String sFile sData
             UChar[] ucData
-            Boolean bFound
+            tArchiveOperationResult Result
 
             Delegate Get TempFile "wr_entry.tar" to sFile
             Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_NONE to iResult
-            Get Create U_cArchiveReader to hoReader
-            Get ReadEntryData of hoReader sFile "docs/nested.txt" (&ucData) to bFound
-            Send Assert bFound "entry found"
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Get ReadEntryData of hoReader sFile "docs/nested.txt" (&ucData) to Result
+            Send Assert Result.bSuccess ("entry found: " + Result.sErrorMessage)
+            Send AssertIAreEqual C_ARCHIVE_RESULT_OK Result.iErrorCode "result code"
+            Send AssertBIAreEqual 14 Result.biExtractedBytes "byte count"
             Delegate Get BytesToString (&ucData) to sData
             Send AssertSAreEqual "Nested content" sData "entry data"
-            Send AssertFalse (HasHandle (hoReader)) "the handle is freed"
-            Get ReadEntryData of hoReader sFile "héllo-ünï.txt" (&ucData) to bFound
-            Send Assert bFound "unicode entry found"
+            Get HasHandle of hoReader to bHasHandle
+            Send AssertFalse bHasHandle "the handle is freed"
+            Get ReadEntryData of hoReader sFile "héllo-ünï.txt" (&ucData) to Result
+            Send Assert Result.bSuccess "unicode entry found"
             Delegate Get BytesToString (&ucData) to sData
             Send AssertSAreEqual "Unicode name" sData "unicode entry data"
-            Get ReadEntryData of hoReader sFile "docs/" (&ucData) to bFound
-            Send Assert bFound "directory found"
+            Get ReadEntryData of hoReader sFile "docs/" (&ucData) to Result
+            Send Assert Result.bSuccess "directory found"
             Send AssertIAreEqual 0 (SizeOfArray (ucData)) "directory has no data"
-            Get ReadEntryData of hoReader sFile "no/such/entry" (&ucData) to bFound
-            Send AssertFalse bFound "missing entry"
+            // Failures are returned, never raised, although pbRaiseErrors is True (default).
+            Get pbRaiseErrors of hoReader to bRaiseErrors
+            Send Assert bRaiseErrors "pbRaiseErrors is True and stays True"
+            Get ReadEntryData of hoReader sFile "no/such/entry" (&ucData) to Result
+            Send AssertFalse Result.bSuccess "missing entry"
+            Send AssertIAreEqual C_ARCHIVE_RESULT_ENTRY_NOT_FOUND Result.iErrorCode "missing entry code"
             Send AssertIAreEqual 0 (SizeOfArray (ucData)) "no data for a missing entry"
-            Set pbRaiseErrors of hoReader to False
-            Get ReadEntryData of hoReader (sFile + ".missing") "hello.txt" (&ucData) to bFound
-            Send AssertFalse bFound "missing archive"
+            Get ReadEntryData of hoReader (sFile + ".missing") "hello.txt" (&ucData) to Result
+            Send AssertFalse Result.bSuccess "missing archive"
+            Send AssertIAreEqual C_ARCHIVE_RESULT_OPEN_FAILED Result.iErrorCode "missing archive code"
+            Send Assert (Result.sErrorMessage <> "") "the libarchive text is returned"
+            Get ReadEntryData of hoReader sFile "" (&ucData) to Result
+            Send AssertIAreEqual C_ARCHIVE_RESULT_INVALID_ARGUMENT Result.iErrorCode "empty entry path"
             Delegate Send DropReader hoReader
             EraseFile sFile
         End_Procedure
@@ -2225,126 +2419,52 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Integer iResult
             String sFile sData
             UChar[] ucData
-            Boolean bFound
             tArchiveEntryInfo[] aEntries
+            tArchiveOperationResult Result
 
             Delegate Get TempFile "wr_conv_secret.zip" to sFile
             Delegate Get BuildEncryptedZip sFile "s3cret" to iResult
-            Get Create U_cArchiveReader to hoReader
-            Set pbRaiseErrors of hoReader to False
-            Get ReadEntryData of hoReader sFile "hello.txt" (&ucData) to bFound
-            Send AssertFalse bFound "no passphrase: the data cannot be read"
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Get ReadEntryData of hoReader sFile "hello.txt" (&ucData) to Result
+            Send AssertFalse Result.bSuccess "no passphrase: the data cannot be read"
+            Send AssertIAreEqual C_ARCHIVE_RESULT_ENCRYPTED Result.iErrorCode "the failure is reported as encrypted"
+            Send AssertIAreEqual 0 (SizeOfArray (ucData)) "no data without passphrase"
             Set psPassphrase of hoReader to "s3cret"
-            Get ReadEntryData of hoReader sFile "hello.txt" (&ucData) to bFound
-            Send Assert bFound "with passphrase"
+            Get ReadEntryData of hoReader sFile "hello.txt" (&ucData) to Result
+            Send Assert Result.bSuccess ("with passphrase: " + Result.sErrorMessage)
             Delegate Get BytesToString (&ucData) to sData
             Send AssertSAreEqual "Hello Archive" sData "decrypted data"
-            Get ListEntries of hoReader sFile to aEntries
+            Get ListEntries of hoReader sFile (&aEntries) to Result
+            Send Assert Result.bSuccess "ListEntries with passphrase"
             Send AssertIAreEqual 4 (SizeOfArray (aEntries)) "entries"
             Delegate Send DropReader hoReader
             EraseFile sFile
         End_Procedure
     End_Object
 
-    Object oExtractAllZipTest is a cTest
+    // ExtractZipArchive extracts the sample archive below a destination that does not exist yet and reports the counts.
+    Object oExtractZipArchiveSampleTest is a cTest
         Procedure Test
+            Boolean bHasHandle
             Handle hoReader
-            Integer iResult iFlags
+            Integer iResult
             String sFile sFolder
-            BigInt iMtime iDevice iInode
+            tArchiveOperationResult Result
 
             Delegate Get TempFile "wr_extract.zip" to sFile
             Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_ZIP ARCHIVE_FILTER_NONE to iResult
             Delegate Get TempFolder to sFolder
-            Move (sFolder + "wr_extract_zip\") to sFolder
-            Move (ARCHIVE_EXTRACT_TIME ior ARCHIVE_EXTRACT_PERM ior ARCHIVE_EXTRACT_SECURE_NODOTDOT ior ARCHIVE_EXTRACT_SECURE_SYMLINKS) to iFlags
-            Get Create U_cArchiveReader to hoReader
-            Get ExtractAll of hoReader sFile sFolder iFlags to iResult
-            Send AssertIAreEqual ARCHIVE_OK iResult "ExtractAll"
-            Send AssertIAreEqual 4 (piExtractedCount (hoReader)) "extracted entries"
-            Send AssertFalse (HasHandle (hoReader)) "the handle is freed"
-            Delegate Send VerifyExtractedSample sFolder "zip"
-            Delegate Get FileFacts (sFolder + "hello.txt") (&iMtime) (&iDevice) (&iInode) to iResult
-            Send AssertBIAreEqual 1700000000 iMtime "ARCHIVE_EXTRACT_TIME restores the modification time"
-            Delegate Send RemoveExtractedSample sFolder
-            Delegate Send DropReader hoReader
-            EraseFile sFile
-        End_Procedure
-    End_Object
-
-    // The target folder is created, a trailing slash is optional, tar.gz works too.
-    Object oExtractAllTarGzTest is a cTest
-        Procedure Test
-            Handle hoReader
-            Integer iResult
-            String sFile sFolder
-
-            Delegate Get TempFile "wr_extract.tar.gz" to sFile
-            Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_GZIP to iResult
-            Delegate Get TempFolder to sFolder
-            Move (sFolder + "wr_extract_tgz\sub") to sFolder
-            Get Create U_cArchiveReader to hoReader
-            Get ExtractAll of hoReader sFile sFolder 0 to iResult
-            Send AssertIAreEqual ARCHIVE_OK iResult "ExtractAll"
-            Send AssertIAreEqual 4 (piExtractedCount (hoReader)) "extracted entries"
-            Delegate Send VerifyExtractedSample (sFolder + "\") "tar.gz"
+            Move (sFolder + "wr_extract_zip") to sFolder
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Get ExtractZipArchive of hoReader sFile sFolder to Result
+            Send Assert Result.bSuccess ("ExtractZipArchive: " + Result.sErrorMessage)
+            Send AssertIAreEqual 4 Result.iEntryCount "entries"
+            Get HasHandle of hoReader to bHasHandle
+            Send AssertFalse bHasHandle "no handle is left"
+            Delegate Send VerifyExtractedSample (sFolder + "\") "zip"
             Delegate Send RemoveExtractedSample (sFolder + "\")
-            Delegate Send RemoveFolder (sFolder + "\..")
             Delegate Send DropReader hoReader
             EraseFile sFile
-        End_Procedure
-    End_Object
-
-    // ARCHIVE_EXTRACT_SECURE_NODOTDOT refuses entries that leave the target folder.
-    Object oExtractAllSecurityTest is a cTest
-        Procedure Test
-            Handle hoReader
-            Integer iResult
-            String sFile sFolder sEvil sText
-            String[] asNames
-            UChar[] ucContent
-
-            Delegate Get TextToBytes "payload" to ucContent
-            Move "ok.txt" to asNames[0]
-            Move "../wr_evil.txt" to asNames[1]
-            Delegate Get TempFile "wr_evil.tar" to sFile
-            Delegate Get BuildArchiveWithEntries sFile ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_NONE asNames (&ucContent) to iResult
-            Send AssertIAreEqual ARCHIVE_OK iResult "build"
-            Delegate Get TempFolder to sFolder
-            Delegate Get TempFile "wr_evil.txt" to sEvil
-            Move (sFolder + "wr_extract_evil") to sFolder
-            Get Create U_cArchiveReader to hoReader
-            Set pbRaiseErrors of hoReader to False
-            Get ExtractAll of hoReader sFile sFolder ARCHIVE_EXTRACT_SECURE_NODOTDOT to iResult
-            Send Assert (iResult < ARCHIVE_OK) "the entry with .. is refused"
-            Send AssertIAreEqual ARCHIVE_WARN iResult "libarchive reports the refused entry as a warning"
-            Send AssertIAreEqual 1 (piExtractedCount (hoReader)) "only the harmless entry was extracted"
-            Delegate Get FileExists sEvil to iResult
-            Send AssertIAreEqual 0 iResult "nothing was written outside the folder"
-            Delegate Get ReadFileText (sFolder + "\ok.txt") to sText
-            Send AssertSAreEqual "payload" sText "harmless entry"
-            EraseFile (sFolder + "\ok.txt")
-            Delegate Send RemoveFolder sFolder
-            Delegate Send DropReader hoReader
-            EraseFile sFile
-        End_Procedure
-    End_Object
-
-    Object oExtractAllErrorTest is a cTest
-        Procedure Test
-            Handle hoReader
-            Integer iResult
-            String sFile sFolder
-
-            Delegate Get TempFile "wr_noarchive.zip" to sFile
-            Delegate Get TempFolder to sFolder
-            Get Create U_cArchiveReader to hoReader
-            Set pbRaiseErrors of hoReader to False
-            Get ExtractAll of hoReader sFile (sFolder + "wr_never") 0 to iResult
-            Send Assert (iResult <= ARCHIVE_FAILED) "missing archive"
-            Send AssertIAreEqual 0 (piExtractedCount (hoReader)) "nothing extracted"
-            Delegate Send DropReader hoReader
-            Delegate Send RemoveFolder (sFolder + "wr_never")
         End_Procedure
     End_Object
 
@@ -2432,6 +2552,7 @@ Object oWrapperReaderTests is a cArchiveTestFixture
     // SetExtractSkipFile protects a file (normally the archive being read) from being overwritten.
     Object oSetExtractSkipFileTest is a cTest
         Procedure Test
+            String sErrorString
             Handle hoReader hoEntry
             Integer iResult
             String sFile sTarget sText
@@ -2468,7 +2589,8 @@ Object oWrapperReaderTests is a cArchiveTestFixture
             Set psPathname of hoEntry to sTarget
             Get ExtractCurrent of hoReader 0 to iResult
             Send AssertIAreEqual ARCHIVE_WARN iResult "extraction onto the skip file is refused"
-            Send AssertSAreEqual "Refusing to overwrite archive" (psErrorString (hoReader)) "reason"
+            Get psErrorString of hoReader to sErrorString
+            Send AssertSAreEqual "Refusing to overwrite archive" sErrorString "reason"
             Delegate Get ReadFileText sTarget to sText
             Send AssertSAreEqual "original" sText "the file is untouched"
             Delegate Send DropReader hoReader

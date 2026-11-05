@@ -297,7 +297,7 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
     // Opens a disk reader (with a handle) for the test tree.
     Function NewDiskReader Returns Handle
         Handle hoReader
-        Get Create U_cArchiveDiskReader to hoReader
+        Get CreateNamed (RefClass (cArchiveDiskReader)) "oArchiveDiskReader" to hoReader
         Send CreateDiskReader of hoReader
         Function_Return hoReader
     End_Function
@@ -310,7 +310,7 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
     Procedure VerifyTreeEntries tArchiveEntryInfo[] ByRef aEntries String sLabel Boolean bWithLog
         Integer iIndex iCount
 
-        Move (TreeEntryCount (Self)) to iCount
+        Get TreeEntryCount to iCount
         If (not (bWithLog)) Begin
             Decrement iCount
         End
@@ -370,19 +370,28 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
 
     Object oLifecycleTest is a cTest
         Procedure Test
+            Integer iCurrentFilesystemId
+            Boolean bCurrentFilesystemIsSynthetic bCurrentFilesystemIsRemote
+            Boolean bHasHandle bCanDescend
+            String sUserName sGroupName
             Handle hoReader
             Integer iResult
 
-            Get Create U_cArchiveDiskReader to hoReader
-            Send AssertFalse (HasHandle (hoReader)) "no handle before CreateDiskReader"
+            Get CreateNamed (RefClass (cArchiveDiskReader)) "oArchiveDiskReader" to hoReader
+            Get HasHandle of hoReader to bHasHandle
+            Send AssertFalse bHasHandle "no handle before CreateDiskReader"
             Send CreateDiskReader of hoReader
-            Send Assert (HasHandle (hoReader)) "CreateDiskReader creates a handle"
+            Get HasHandle of hoReader to bHasHandle
+            Send Assert bHasHandle "CreateDiskReader creates a handle"
             Send CreateDiskReader of hoReader
-            Send Assert (HasHandle (hoReader)) "CreateDiskReader again"
+            Get HasHandle of hoReader to bHasHandle
+            Send Assert bHasHandle "CreateDiskReader again"
             Send CloseDiskReader of hoReader
-            Send Assert (HasHandle (hoReader)) "CloseDiskReader keeps the handle"
+            Get HasHandle of hoReader to bHasHandle
+            Send Assert bHasHandle "CloseDiskReader keeps the handle"
             Send FreeHandle of hoReader
-            Send AssertFalse (HasHandle (hoReader)) "FreeHandle frees the handle"
+            Get HasHandle of hoReader to bHasHandle
+            Send AssertFalse bHasHandle "FreeHandle frees the handle"
             Send FreeHandle of hoReader
 
             // without a handle the methods report ARCHIVE_FATAL
@@ -397,12 +406,18 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
             Send AssertIAreEqual ARCHIVE_FATAL iResult "SetMatching without handle"
             Get SetStandardLookup of hoReader to iResult
             Send AssertIAreEqual ARCHIVE_FATAL iResult "SetStandardLookup without handle"
-            Send AssertFalse (CanDescend (hoReader)) "CanDescend without handle"
-            Send AssertSAreEqual "" (UserName (hoReader, 0)) "UserName without handle"
-            Send AssertSAreEqual "" (GroupName (hoReader, 0)) "GroupName without handle"
-            Send AssertIAreEqual (-1) (piCurrentFilesystemId (hoReader)) "filesystem id without handle"
-            Send AssertFalse (pbCurrentFilesystemIsSynthetic (hoReader)) "synthetic without handle"
-            Send AssertFalse (pbCurrentFilesystemIsRemote (hoReader)) "remote without handle"
+            Get CanDescend of hoReader to bCanDescend
+            Send AssertFalse bCanDescend "CanDescend without handle"
+            Get UserName of hoReader 0 to sUserName
+            Send AssertSAreEqual "" sUserName "UserName without handle"
+            Get GroupName of hoReader 0 to sGroupName
+            Send AssertSAreEqual "" sGroupName "GroupName without handle"
+            Get piCurrentFilesystemId of hoReader to iCurrentFilesystemId
+            Send AssertIAreEqual (-1) iCurrentFilesystemId "filesystem id without handle"
+            Get pbCurrentFilesystemIsSynthetic of hoReader to bCurrentFilesystemIsSynthetic
+            Send AssertFalse bCurrentFilesystemIsSynthetic "synthetic without handle"
+            Get pbCurrentFilesystemIsRemote of hoReader to bCurrentFilesystemIsRemote
+            Send AssertFalse bCurrentFilesystemIsRemote "remote without handle"
             Set pbRaiseErrors of hoReader to True
             Send ExpectError DFERR_PROGRAM
             Get NextHeader of hoReader to iResult
@@ -416,6 +431,8 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
     // Manual traversal: Descend enters every folder.
     Object oTraversalTest is a cTest
         Procedure Test
+            String sPathname
+            Boolean bCanDescend
             Handle hoReader hoEntry
             Integer iResult iCount iFolders iFiles
             String sRoot sName
@@ -435,11 +452,13 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
             Get NextHeader of hoReader to iResult
             While (iResult = ARCHIVE_OK)
                 Get ppEntry of hoEntry to pEntry
-                Delegate Get RelativeName (psPathname (hoEntry)) to sName
+                Get psPathname of hoEntry to sPathname
+                Delegate Get RelativeName sPathname to sName
                 Move sName to asNames[iCount]
                 Increment iCount
                 Move (archive_entry_filetype (pEntry) = AE_IFDIR) to bFolder
-                Send Assert (bFolder = CanDescend (hoReader)) ("CanDescend equals is-folder:" * sName)
+                Get CanDescend of hoReader to bCanDescend
+                Send Assert (bFolder = bCanDescend) ("CanDescend equals is-folder:" * sName)
                 If (bFolder) Begin
                     Increment iFolders
                     Get Descend of hoReader to iResult
@@ -467,6 +486,7 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
     // Without Descend the traversal stops after the root; descending the root only lists its children.
     Object oDescendControlTest is a cTest
         Procedure Test
+            Boolean bCanDescend
             Handle hoReader
             Integer iResult iCount
             String sRoot
@@ -493,7 +513,8 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
             Get OpenDisk of hoReader (sRoot + "\a.txt") to iResult
             Get NextHeader of hoReader to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "single file"
-            Send AssertFalse (CanDescend (hoReader)) "a file cannot be descended"
+            Get CanDescend of hoReader to bCanDescend
+            Send AssertFalse bCanDescend "a file cannot be descended"
             Get Descend of hoReader to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "Descend on a file is ignored"
             Delegate Get CountEntries hoReader to iCount
@@ -505,6 +526,7 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
 
     Object oListFolderTest is a cTest
         Procedure Test
+            Boolean bHasHandle
             Handle hoReader
             Integer iResult
             String sRoot
@@ -512,10 +534,11 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
 
             Delegate Send BuildTree
             Delegate Get TreeRoot to sRoot
-            Get Create U_cArchiveDiskReader to hoReader
+            Get CreateNamed (RefClass (cArchiveDiskReader)) "oArchiveDiskReader" to hoReader
             Get ListFolder of hoReader sRoot to aEntries
             Delegate Send VerifyTreeEntries (&aEntries) "ListFolder" True
-            Send Assert (HasHandle (hoReader)) "ListFolder creates and keeps the handle"
+            Get HasHandle of hoReader to bHasHandle
+            Send Assert bHasHandle "ListFolder creates and keeps the handle"
             // the handle can be reused
             Get ListFolder of hoReader sRoot to aEntries
             Delegate Send VerifyTreeEntries (&aEntries) "ListFolder again" True
@@ -537,6 +560,8 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
 
     Object oReadDataTest is a cTest
         Procedure Test
+            String sPathname
+            Boolean bCanDescend
             Handle hoReader hoEntry
             Integer iResult iIndex iBad
             BigInt iOffset
@@ -552,8 +577,10 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
             Get NextHeader of hoReader to iResult
             While (iResult = ARCHIVE_OK)
                 Get ppEntry of hoEntry to pEntry
-                Delegate Get RelativeName (psPathname (hoEntry)) to sName
-                If (CanDescend (hoReader)) Begin
+                Get psPathname of hoEntry to sPathname
+                Delegate Get RelativeName sPathname to sName
+                Get CanDescend of hoReader to bCanDescend
+                If bCanDescend Begin
                     Get Descend of hoReader to iResult
                 End
                 Else Begin
@@ -653,6 +680,9 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
 
     Object oEntryFromFileTest is a cTest
         Procedure Test
+            Boolean bOwnsEntry
+            String sPathname sLastError
+            Boolean bHasEntry
             Handle hoReader hoEntry
             Integer iResult
             Pointer pEntry
@@ -662,16 +692,20 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
             Delegate Send BuildTree
             Delegate Get TreeRoot to sRoot
             Delegate Get NewDiskReader to hoReader
-            Get Create U_cArchiveEntry to hoEntry
-            Send AssertFalse (HasEntry (hoEntry)) "entry starts empty"
+            Get CreateNamed (RefClass (cArchiveEntry)) "oArchiveEntry" to hoEntry
+            Get HasEntry of hoEntry to bHasEntry
+            Send AssertFalse bHasEntry "entry starts empty"
 
             Move (sRoot + "\a.txt") to sFile
             Get EntryFromFile of hoReader hoEntry sFile to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "EntryFromFile"
-            Send Assert (HasEntry (hoEntry)) "an entry was created"
-            Send Assert (pbOwnsEntry (hoEntry)) "the new entry is owned"
+            Get HasEntry of hoEntry to bHasEntry
+            Send Assert bHasEntry "an entry was created"
+            Get pbOwnsEntry of hoEntry to bOwnsEntry
+            Send Assert bOwnsEntry "the new entry is owned"
             Get ppEntry of hoEntry to pEntry
-            Send AssertSAreEqual sFile (psPathname (hoEntry)) "path name"
+            Get psPathname of hoEntry to sPathname
+            Send AssertSAreEqual sFile sPathname "path name"
             Send AssertBIAreEqual 5 (archive_entry_size (pEntry)) "size"
             Send AssertIAreEqual AE_IFREG (archive_entry_filetype (pEntry)) "type"
             Delegate Get FileFacts sFile (&iMtime) (&iDevice) (&iInode) to iResult
@@ -684,7 +718,8 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
             Send AssertIAreEqual ARCHIVE_OK iResult "EntryFromFile folder"
             Get ppEntry of hoEntry to pEntry
             Send AssertIAreEqual AE_IFDIR (archive_entry_filetype (pEntry)) "folder type"
-            Send AssertSAreEqual (sRoot + "\sub") (psPathname (hoEntry)) "folder path name"
+            Get psPathname of hoEntry to sPathname
+            Send AssertSAreEqual (sRoot + "\sub") sPathname "folder path name"
 
             // a Unicode file name
             Move (sRoot + "\unicode-ünï-€.txt") to sFile
@@ -692,13 +727,15 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
             Send AssertIAreEqual ARCHIVE_OK iResult "EntryFromFile unicode"
             Get ppEntry of hoEntry to pEntry
             Send AssertBIAreEqual 15 (archive_entry_size (pEntry)) "unicode file size"
-            Send AssertSAreEqual sFile (psPathname (hoEntry)) "unicode path name"
+            Get psPathname of hoEntry to sPathname
+            Send AssertSAreEqual sFile sPathname "unicode path name"
 
             // a missing file
             Set pbRaiseErrors of hoReader to False
             Get EntryFromFile of hoReader hoEntry (sRoot + "\missing.txt") to iResult
             Send Assert (iResult <= ARCHIVE_FAILED) "missing file"
-            Send Assert (psLastError (hoReader) <> "") "error text"
+            Get psLastError of hoReader to sLastError
+            Send Assert (sLastError <> "") "error text"
             Send Destroy_Object of hoEntry
             Delegate Send DropReader hoReader
             Delegate Send RemoveTree
@@ -709,6 +746,8 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
 
     Object oBehaviorFlagsTest is a cTest
         Procedure Test
+            Integer iBehaviorFlags
+            Boolean bAtimeRestored
             Handle hoReader
             Integer iResult iFlags
             tArchiveEntryInfo[] aEntries
@@ -716,32 +755,42 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
 
             Delegate Send BuildTree
             Delegate Get TreeRoot to sRoot
-            Get Create U_cArchiveDiskReader to hoReader
-            Send AssertIAreEqual 0 (piBehaviorFlags (hoReader)) "default flags"
-            Send AssertFalse (pbAtimeRestored (hoReader)) "atime not restored by default"
+            Get CreateNamed (RefClass (cArchiveDiskReader)) "oArchiveDiskReader" to hoReader
+            Get piBehaviorFlags of hoReader to iBehaviorFlags
+            Send AssertIAreEqual 0 iBehaviorFlags "default flags"
+            Get pbAtimeRestored of hoReader to bAtimeRestored
+            Send AssertFalse bAtimeRestored "atime not restored by default"
 
             // set before the handle exists: applied by CreateDiskReader
             Move (ARCHIVE_READDISK_NO_XATTR ior ARCHIVE_READDISK_NO_ACL ior ARCHIVE_READDISK_NO_FFLAGS ior ARCHIVE_READDISK_NO_SPARSE) to iFlags
             Set piBehaviorFlags of hoReader to iFlags
-            Send AssertIAreEqual iFlags (piBehaviorFlags (hoReader)) "flags are stored"
+            Get piBehaviorFlags of hoReader to iBehaviorFlags
+            Send AssertIAreEqual iFlags iBehaviorFlags "flags are stored"
             Send CreateDiskReader of hoReader
-            Send AssertIAreEqual iFlags (piBehaviorFlags (hoReader)) "flags survive CreateDiskReader"
+            Get piBehaviorFlags of hoReader to iBehaviorFlags
+            Send AssertIAreEqual iFlags iBehaviorFlags "flags survive CreateDiskReader"
             Get ListFolder of hoReader sRoot to aEntries
             Delegate Send VerifyTreeEntries (&aEntries) "flags" True
 
             // atime restore: through archive_read_disk_set_atime_restored and through the flag
             Set pbAtimeRestored of hoReader to True
-            Send Assert (pbAtimeRestored (hoReader)) "atime restored"
-            Send AssertIAreEqual (iFlags ior ARCHIVE_READDISK_RESTORE_ATIME) (piBehaviorFlags (hoReader)) "flag is set"
+            Get pbAtimeRestored of hoReader to bAtimeRestored
+            Send Assert bAtimeRestored "atime restored"
+            Get piBehaviorFlags of hoReader to iBehaviorFlags
+            Send AssertIAreEqual (iFlags ior ARCHIVE_READDISK_RESTORE_ATIME) iBehaviorFlags "flag is set"
             Get ListFolder of hoReader sRoot to aEntries
             Delegate Send VerifyTreeEntries (&aEntries) "atime restored" True
             Set pbAtimeRestored of hoReader to False
-            Send AssertFalse (pbAtimeRestored (hoReader)) "atime restore cleared"
-            Send AssertIAreEqual iFlags (piBehaviorFlags (hoReader)) "other flags are kept"
+            Get pbAtimeRestored of hoReader to bAtimeRestored
+            Send AssertFalse bAtimeRestored "atime restore cleared"
+            Get piBehaviorFlags of hoReader to iBehaviorFlags
+            Send AssertIAreEqual iFlags iBehaviorFlags "other flags are kept"
             Set piBehaviorFlags of hoReader to ARCHIVE_READDISK_RESTORE_ATIME
-            Send Assert (pbAtimeRestored (hoReader)) "flag through piBehaviorFlags"
+            Get pbAtimeRestored of hoReader to bAtimeRestored
+            Send Assert bAtimeRestored "flag through piBehaviorFlags"
             Set piBehaviorFlags of hoReader to 0
-            Send AssertFalse (pbAtimeRestored (hoReader)) "flags cleared"
+            Get pbAtimeRestored of hoReader to bAtimeRestored
+            Send AssertFalse bAtimeRestored "flags cleared"
 
             // another traversal option on an existing handle
             Set piBehaviorFlags of hoReader to ARCHIVE_READDISK_NO_TRAVERSE_MOUNTS
@@ -754,6 +803,7 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
 
     Object oSymlinkModeTest is a cTest
         Procedure Test
+            Integer eSymlinkMode
             Handle hoReader hoEntry
             Integer iResult iIndex
             Pointer pEntry
@@ -764,20 +814,25 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
 
             Delegate Send BuildTree
             Delegate Get TreeRoot to sRoot
-            Get Create U_cArchiveDiskReader to hoReader
-            Send AssertIAreEqual ARCHIVE_SYMLINK_PHYSICAL (peSymlinkMode (hoReader)) "default is physical"
+            Get CreateNamed (RefClass (cArchiveDiskReader)) "oArchiveDiskReader" to hoReader
+            Get peSymlinkMode of hoReader to eSymlinkMode
+            Send AssertIAreEqual ARCHIVE_SYMLINK_PHYSICAL eSymlinkMode "default is physical"
             Set peSymlinkMode of hoReader to ARCHIVE_SYMLINK_HYBRID
-            Send AssertIAreEqual ARCHIVE_SYMLINK_HYBRID (peSymlinkMode (hoReader)) "mode stored without a handle"
+            Get peSymlinkMode of hoReader to eSymlinkMode
+            Send AssertIAreEqual ARCHIVE_SYMLINK_HYBRID eSymlinkMode "mode stored without a handle"
             Send CreateDiskReader of hoReader
-            Send AssertIAreEqual ARCHIVE_SYMLINK_HYBRID (peSymlinkMode (hoReader)) "mode survives CreateDiskReader"
+            Get peSymlinkMode of hoReader to eSymlinkMode
+            Send AssertIAreEqual ARCHIVE_SYMLINK_HYBRID eSymlinkMode "mode survives CreateDiskReader"
             Get ListFolder of hoReader sRoot to aEntries
             Delegate Send VerifyTreeEntries (&aEntries) "hybrid" True
             Set peSymlinkMode of hoReader to ARCHIVE_SYMLINK_LOGICAL
-            Send AssertIAreEqual ARCHIVE_SYMLINK_LOGICAL (peSymlinkMode (hoReader)) "logical"
+            Get peSymlinkMode of hoReader to eSymlinkMode
+            Send AssertIAreEqual ARCHIVE_SYMLINK_LOGICAL eSymlinkMode "logical"
             Get ListFolder of hoReader sRoot to aEntries
             Delegate Send VerifyTreeEntries (&aEntries) "logical" True
             Set peSymlinkMode of hoReader to ARCHIVE_SYMLINK_PHYSICAL
-            Send AssertIAreEqual ARCHIVE_SYMLINK_PHYSICAL (peSymlinkMode (hoReader)) "physical"
+            Get peSymlinkMode of hoReader to eSymlinkMode
+            Send AssertIAreEqual ARCHIVE_SYMLINK_PHYSICAL eSymlinkMode "physical"
             Get ListFolder of hoReader sRoot to aEntries
             Delegate Send VerifyTreeEntries (&aEntries) "physical" True
 
@@ -787,7 +842,7 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
             Move (WrapDiskTestCreateSymlink (wsLink, wsTarget, 2)) to iResult
             Delegate Get FileExists (sRoot + "\link.txt") to bLinked
             If (bLinked) Begin
-                Get Create U_cArchiveEntry to hoEntry
+                Get CreateNamed (RefClass (cArchiveEntry)) "oArchiveEntry" to hoEntry
                 Set peSymlinkMode of hoReader to ARCHIVE_SYMLINK_PHYSICAL
                 Get EntryFromFile of hoReader hoEntry (sRoot + "\link.txt") to iResult
                 Get ppEntry of hoEntry to pEntry
@@ -810,6 +865,8 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
 
     Object oLookupTest is a cTest
         Procedure Test
+            String sLastError
+            String sUserName sGroupName
             Handle hoReader
             Integer iResult
 
@@ -817,16 +874,21 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
             Set pbRaiseErrors of hoReader to False
             Get SetStandardLookup of hoReader to iResult
             Send AssertIAreEqual ARCHIVE_FATAL iResult "SetStandardLookup is not available on Windows"
-            Send Assert (psLastError (hoReader) <> "") "error text"
+            Get psLastError of hoReader to sLastError
+            Send Assert (sLastError <> "") "error text"
             // Windows has no numeric user and group ids, the lookups find no names
-            Send AssertSAreEqual "" (UserName (hoReader, 0)) "UserName"
-            Send AssertSAreEqual "" (GroupName (hoReader, 0)) "GroupName"
+            Get UserName of hoReader 0 to sUserName
+            Send AssertSAreEqual "" sUserName "UserName"
+            Get GroupName of hoReader 0 to sGroupName
+            Send AssertSAreEqual "" sGroupName "GroupName"
             Delegate Send DropReader hoReader
         End_Procedure
     End_Object
 
     Object oFilesystemInfoTest is a cTest
         Procedure Test
+            Integer iCurrentFilesystemId
+            Boolean bCurrentFilesystemIsSynthetic bCurrentFilesystemIsRemote
             Handle hoReader
             Integer iResult
             String sRoot
@@ -837,12 +899,16 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
             Get OpenDisk of hoReader sRoot to iResult
             Get NextHeader of hoReader to iResult
             Send AssertIAreEqual ARCHIVE_OK iResult "header"
-            Send Assert (piCurrentFilesystemId (hoReader) >= 0) "file system id"
-            Send AssertFalse (pbCurrentFilesystemIsSynthetic (hoReader)) "not synthetic"
-            Send AssertFalse (pbCurrentFilesystemIsRemote (hoReader)) "not remote"
+            Get piCurrentFilesystemId of hoReader to iCurrentFilesystemId
+            Send Assert (iCurrentFilesystemId >= 0) "file system id"
+            Get pbCurrentFilesystemIsSynthetic of hoReader to bCurrentFilesystemIsSynthetic
+            Send AssertFalse bCurrentFilesystemIsSynthetic "not synthetic"
+            Get pbCurrentFilesystemIsRemote of hoReader to bCurrentFilesystemIsRemote
+            Send AssertFalse bCurrentFilesystemIsRemote "not remote"
             Get Descend of hoReader to iResult
             Get NextHeader of hoReader to iResult
-            Send AssertIAreEqual (piCurrentFilesystemId (hoReader)) (piCurrentFilesystemId (hoReader)) "stable id"
+            Get piCurrentFilesystemId of hoReader to iCurrentFilesystemId
+            Send AssertIAreEqual iCurrentFilesystemId iCurrentFilesystemId "stable id"
             Delegate Send DropReader hoReader
             Delegate Send RemoveTree
         End_Procedure
@@ -889,6 +955,8 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
 
     Object oMissingPathTest is a cTest
         Procedure Test
+            String sLastError
+            Integer iErrorNumber
             Handle hoReader
             Integer iResult
             String sRoot
@@ -899,8 +967,10 @@ Object oWrapperDiskReaderTests is a cArchiveTestFixture
             Get OpenDisk of hoReader (sRoot + "\does-not-exist") to iResult
             Get NextHeader of hoReader to iResult
             Send Assert (iResult <= ARCHIVE_FAILED) "a missing path fails at the first header"
-            Send Assert (psLastError (hoReader) <> "") "error text"
-            Send Assert (piErrorNumber (hoReader) <> 0) "errno"
+            Get psLastError of hoReader to sLastError
+            Send Assert (sLastError <> "") "error text"
+            Get piErrorNumber of hoReader to iErrorNumber
+            Send Assert (iErrorNumber <> 0) "errno"
             Delegate Send DropReader hoReader
         End_Procedure
     End_Object

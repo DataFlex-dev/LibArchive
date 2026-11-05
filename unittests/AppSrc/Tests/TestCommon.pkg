@@ -36,7 +36,7 @@ Object oCommonTests is a cArchiveTestFixture
 
     // Builds the sample archive in the given format with the given filter, reads it back and checks the format and
     // filter information functions. iExpectedFormat is compared with the format code of the first entry when it
-    // is not 0, otherwise only the format family (eFormat) is compared.
+    // is not 0, otherwise only the format family eFormat is compared.
     Procedure CheckInfo String sLabel Integer eFormat Integer eFilter Integer iExpectedFilterCount String sExpectedFormatName String sExpectedFilterName
         String sFile sName
         Pointer pArchive pEntry pText

@@ -53,7 +53,7 @@ Void_Type iVoid
 Send CreateDiskWriter of oDiskWriter
 Set piOptions of oDiskWriter to (ARCHIVE_EXTRACT_TIME ior ARCHIVE_EXTRACT_PERM)
 
-Get Create (RefClass (cArchiveEntry)) to hoEntry
+Get CreateNamed (RefClass (cArchiveEntry)) "oArchiveEntry" to hoEntry
 
 // a directory
 Send CreateEntry of hoEntry

@@ -610,17 +610,25 @@ Object oEntryTests is a cArchiveTestFixture
     // The "link" functions write to the hardlink or the symlink field, depending on the last call of
     // archive_entry_set_link_to_hardlink / archive_entry_set_link_to_symlink.
     Function LinkText Pointer pEntry Boolean bSymlink Returns String
+        String sPStr
+
         If (bSymlink) Begin
-            Function_Return (PStr (Self, archive_entry_symlink_utf8 (pEntry)))
+            Get PStr (archive_entry_symlink_utf8 (pEntry)) to sPStr
+            Function_Return sPStr
         End
-        Function_Return (PStr (Self, archive_entry_hardlink_utf8 (pEntry)))
+        Get PStr (archive_entry_hardlink_utf8 (pEntry)) to sPStr
+        Function_Return sPStr
     End_Function
 
     Function OtherLinkText Pointer pEntry Boolean bSymlink Returns String
+        String sPStr
+
         If (bSymlink) Begin
-            Function_Return (PStr (Self, archive_entry_hardlink_utf8 (pEntry)))
+            Get PStr (archive_entry_hardlink_utf8 (pEntry)) to sPStr
+            Function_Return sPStr
         End
-        Function_Return (PStr (Self, archive_entry_symlink_utf8 (pEntry)))
+        Get PStr (archive_entry_symlink_utf8 (pEntry)) to sPStr
+        Function_Return sPStr
     End_Function
 
     Object oLinkTest is a cTest

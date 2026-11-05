@@ -57,8 +57,10 @@ Object oReader is a cArchiveReader
 End_Object
 
 Integer iResult
+String sLastError
 Get OpenFile of oReader "c:\missing.zip" 10240 to iResult
 If (iResult <> ARCHIVE_OK) Begin
-    Showln "Failed:" (psLastError (oReader))
+    Get psLastError of oReader to sLastError
+    Showln "Failed:" sLastError
 End
 ```

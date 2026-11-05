@@ -592,6 +592,8 @@ Object oEntryLinksTests is a cArchiveTestFixture
 
     // st_size / st_mtime of _wstat64 (struct _stat64: size at 24, mtime at 40).
     Function DiskInfo String sFile Integer iWhat Returns BigInt
+        BigInt biField
+
         WString wsFile
         UChar[] ucStat
         Integer iResult
@@ -603,9 +605,11 @@ Object oEntryLinksTests is a cArchiveTestFixture
             Function_Return -1
         End
         If (iWhat = 1) Begin
-            Function_Return (Field (Self, ucStat, 24, 8))
+            Get Field ucStat 24 8 to biField
+            Function_Return biField
         End
-        Function_Return (Field (Self, ucStat, 40, 8))
+        Get Field ucStat 40 8 to biField
+        Function_Return biField
     End_Function
 
     // ---- stat structures -------------------------------------------------------------------------------------------
@@ -614,6 +618,7 @@ Object oEntryLinksTests is a cArchiveTestFixture
     // rdev 16, size 20 (32 bit), atime 24, mtime 32, ctime 40 (64 bit).
     Object oStatTest is a cTest
         Procedure Test
+            BigInt biField
             Pointer pEntry pStat
             Void_Type iVoid
             UChar[] ucStat
@@ -634,16 +639,26 @@ Object oEntryLinksTests is a cArchiveTestFixture
             Send Assert (pStat <> 0) "archive_entry_stat returns a structure"
             Move (ResizeArray (ucStat, 64)) to ucStat
             Move (tel_copymem (AddressOf (ucStat), pStat, 48)) to iVoid
-            Send AssertBIAreEqual 3 (Field (Self, ucStat, 0, 4)) "st_dev"
-            Send AssertBIAreEqual 77 (Field (Self, ucStat, 4, 2)) "st_ino"
-            Send AssertBIAreEqual (AE_IFREG ior 420) (Field (Self, ucStat, 6, 2)) "st_mode"
-            Send AssertBIAreEqual 2 (Field (Self, ucStat, 8, 2)) "st_nlink"
-            Send AssertBIAreEqual 1000 (Field (Self, ucStat, 10, 2)) "st_uid"
-            Send AssertBIAreEqual 2000 (Field (Self, ucStat, 12, 2)) "st_gid"
-            Send AssertBIAreEqual 123456 (Field (Self, ucStat, 20, 4)) "st_size"
-            Send AssertBIAreEqual 1700000100 (Field (Self, ucStat, 24, 8)) "st_atime"
-            Send AssertBIAreEqual 1700000000 (Field (Self, ucStat, 32, 8)) "st_mtime"
-            Send AssertBIAreEqual 1700000200 (Field (Self, ucStat, 40, 8)) "st_ctime"
+            Get Field ucStat 0 4 to biField
+            Send AssertBIAreEqual 3 biField "st_dev"
+            Get Field ucStat 4 2 to biField
+            Send AssertBIAreEqual 77 biField "st_ino"
+            Get Field ucStat 6 2 to biField
+            Send AssertBIAreEqual (AE_IFREG ior 420) biField "st_mode"
+            Get Field ucStat 8 2 to biField
+            Send AssertBIAreEqual 2 biField "st_nlink"
+            Get Field ucStat 10 2 to biField
+            Send AssertBIAreEqual 1000 biField "st_uid"
+            Get Field ucStat 12 2 to biField
+            Send AssertBIAreEqual 2000 biField "st_gid"
+            Get Field ucStat 20 4 to biField
+            Send AssertBIAreEqual 123456 biField "st_size"
+            Get Field ucStat 24 8 to biField
+            Send AssertBIAreEqual 1700000100 biField "st_atime"
+            Get Field ucStat 32 8 to biField
+            Send AssertBIAreEqual 1700000000 biField "st_mtime"
+            Get Field ucStat 40 8 to biField
+            Send AssertBIAreEqual 1700000200 biField "st_ctime"
             Delegate Send FreeEntry pEntry
         End_Procedure
     End_Object
@@ -893,10 +908,14 @@ Object oEntryLinksTests is a cArchiveTestFixture
 
     // "pathname|size|hardlink" of an entry, "none" for a NULL pointer.
     Function Describe Pointer pEntry Returns String
+        String sPStr sPStr2
+
         If (pEntry = 0) Begin
             Function_Return "none"
         End
-        Function_Return (PStr (Self, archive_entry_pathname (pEntry)) + "|" + String (archive_entry_size (pEntry)) + "|" + PStr (Self, archive_entry_hardlink (pEntry)))
+        Get PStr (archive_entry_pathname (pEntry)) to sPStr
+        Get PStr (archive_entry_hardlink (pEntry)) to sPStr2
+        Function_Return (sPStr + "|" + String (archive_entry_size (pEntry)) + "|" + sPStr2)
     End_Function
 
     Object oLinkResolverTarTest is a cTest

@@ -26,7 +26,6 @@ Names (path name, hard link, symbolic link, user name, group name) are available
 |---|---|---|
 | `psX` | UTF-8, **recommended**. The setter validates the text first and raises a DataFlex error (`DFERR_PROGRAM`) only when it is **not valid UTF-8**; libarchive is not called then and the entry is unchanged. Valid text that cannot be converted to the ANSI code page without loss (for example Japanese text on a Western Windows) is accepted and stored as it is: `archive_entry_update_X_utf8` returns 0 for it, which is reported in `pbLastTextLossless` instead of an error. | `archive_entry_X_utf8`, `archive_entry_update_X_utf8` |
 | `psXWide` | Wide (UTF-16), lossless for all characters. | `archive_entry_X_w`, `archive_entry_copy_X_w` |
-| `psXLocale` | Narrow text. The bytes of the DataFlex string (UTF-8) are passed to and returned from libarchive unchanged, libarchive interprets them in the ANSI code page. Only ASCII text is portable. | `archive_entry_X`, `archive_entry_set_X` |
 
 Setting a name to an empty string removes it. **Source files with non-ASCII string literals must be saved as UTF-8 with BOM**, otherwise the text is not valid UTF-8.
 
@@ -54,21 +53,15 @@ Access: **rw** = read/write, **r** = read only. Times are Unix time (seconds sin
 | `pbLastTextLossless` | `Boolean` | r | False when the last UTF-8 name setter (`psPathname`, `psHardlink`, `psSymlink`, `psUname`, `psGname`, `psLink`) stored valid text that could not be converted to the ANSI code page without loss; True otherwise. Informational: libarchive keeps and writes the UTF-8 text either way. |
 | `psPathname` | `String` | rw | `archive_entry_pathname_utf8`, `archive_entry_update_pathname_utf8` — path name, UTF-8 |
 | `psPathnameWide` | `String` | rw | `archive_entry_pathname_w`, `archive_entry_copy_pathname_w` — path name, wide |
-| `psPathnameLocale` | `String` | rw | `archive_entry_pathname`, `archive_entry_set_pathname` — path name, narrow |
 | `psHardlink` | `String` | rw | `archive_entry_hardlink_utf8`, `archive_entry_update_hardlink_utf8` — hard link target, UTF-8 |
 | `psHardlinkWide` | `String` | rw | `archive_entry_hardlink_w`, `archive_entry_copy_hardlink_w` — hard link target, wide |
-| `psHardlinkLocale` | `String` | rw | `archive_entry_hardlink`, `archive_entry_set_hardlink` — hard link target, narrow |
 | `psSymlink` | `String` | rw | `archive_entry_symlink_utf8`, `archive_entry_update_symlink_utf8` — symbolic link target, UTF-8 |
 | `psSymlinkWide` | `String` | rw | `archive_entry_symlink_w`, `archive_entry_copy_symlink_w` — symbolic link target, wide |
-| `psSymlinkLocale` | `String` | rw | `archive_entry_symlink`, `archive_entry_set_symlink` — symbolic link target, narrow |
 | `psUname` | `String` | rw | `archive_entry_uname_utf8`, `archive_entry_update_uname_utf8` — user name, UTF-8 |
 | `psUnameWide` | `String` | rw | `archive_entry_uname_w`, `archive_entry_copy_uname_w` — user name, wide |
-| `psUnameLocale` | `String` | rw | `archive_entry_uname`, `archive_entry_set_uname` — user name, narrow |
 | `psGname` | `String` | rw | `archive_entry_gname_utf8`, `archive_entry_update_gname_utf8` — group name, UTF-8 |
 | `psGnameWide` | `String` | rw | `archive_entry_gname_w`, `archive_entry_copy_gname_w` — group name, wide |
-| `psGnameLocale` | `String` | rw | `archive_entry_gname`, `archive_entry_set_gname` — group name, narrow |
 | `psSourcePath` | `String` | rw | `archive_entry_sourcepath_w`, `archive_entry_copy_sourcepath_w` — source path on disk, wide |
-| `psSourcePathLocale` | `String` | rw | `archive_entry_sourcepath`, `archive_entry_copy_sourcepath` — source path, narrow |
 | `psLink` | `String` | rw | `archive_entry_hardlink_utf8` / `archive_entry_symlink_utf8`, `archive_entry_update_link_utf8` — the link target of the kind that is set (see notes) |
 | `pbHardlinkIsSet` | `Boolean` | r | `archive_entry_hardlink_is_set` |
 | `peSymlinkType` | `Integer` | rw | `archive_entry_symlink_type`, `archive_entry_set_symlink_type` — `AE_SYMLINK_TYPE_UNDEFINED`, `_FILE`, `_DIRECTORY` |
@@ -137,26 +130,23 @@ For each name X in Pathname, Hardlink, Symlink, Uname, Gname:
 | Method | Description | libarchive function |
 |---|---|---|
 | `Procedure SetXUtf8 String sValue` | Sets the name from UTF-8 text without a validity report (empty removes). | `archive_entry_set_X_utf8` |
-| `Procedure CopyXLocale String sValue` | Copies the name from narrow text (empty removes). Same as setting `psXLocale`. | `archive_entry_copy_X` |
 
 The concrete names are:
 
-| X | `SetXUtf8` | `CopyXLocale` |
-|---|---|---|
-| Pathname | `SetPathnameUtf8` | `CopyPathnameLocale` |
-| Hardlink | `SetHardlinkUtf8` | `CopyHardlinkLocale` |
-| Symlink | `SetSymlinkUtf8` | `CopySymlinkLocale` |
-| Uname | `SetUnameUtf8` | `CopyUnameLocale` |
-| Gname | `SetGnameUtf8` | `CopyGnameLocale` |
+| X | `SetXUtf8` |
+|---|---|
+| Pathname | `SetPathnameUtf8` |
+| Hardlink | `SetHardlinkUtf8` |
+| Symlink | `SetSymlinkUtf8` |
+| Uname | `SetUnameUtf8` |
+| Gname | `SetGnameUtf8` |
 
 Further name methods:
 
 | Method | Description | libarchive function |
 |---|---|---|
 | `Procedure ClearHardlink` / `Procedure ClearSymlink` | Remove the link target. | `archive_entry_set_hardlink_utf8` / `archive_entry_set_symlink_utf8` (NULL) |
-| `Procedure SetLinkLocale String sValue` | Sets the link target of the kind that is set, narrow text. | `archive_entry_set_link` |
 | `Procedure SetLinkUtf8 String sValue` | Same, UTF-8 without validity report. | `archive_entry_set_link_utf8` |
-| `Procedure CopyLinkLocale String sValue` | Copies the link target, narrow text. | `archive_entry_copy_link` |
 | `Procedure CopyLinkWide String sValue` | Copies the link target, wide text. | `archive_entry_copy_link_w` |
 | `Procedure SetLinkToHardlink` / `Procedure SetLinkToSymlink` | Declare the kind of the link target. | `archive_entry_set_link_to_hardlink` / `archive_entry_set_link_to_symlink` |
 
@@ -179,9 +169,8 @@ The concrete names are `SetAtime`, `SetBirthtime`, `SetCtime`, `SetMtime` and `U
 |---|---|---|
 | `Procedure UnsetSize` | Marks the size as not set. | `archive_entry_unset_size` |
 | `Procedure SetFFlags UInteger iSet UInteger iClear` | Sets the file flag bits in one call. | `archive_entry_set_fflags` |
-| `Function CopyFFlagsText String sFlags Returns String` | Parses file flag text; returns the first invalid token or "" when all was valid. Empty text clears the flags. | `archive_entry_copy_fflags_text` |
+| `Function CopyFFlagsText String sFlags Returns String` | Parses file flag text; returns the first invalid token or "" when all was valid. Empty text clears the flags. | `archive_entry_copy_fflags_text_w` |
 | `Function CopyFFlagsTextLen String sFlags Integer iLength Returns String` | Same, using only the first `iLength` bytes. | `archive_entry_copy_fflags_text_len` |
-| `Function CopyFFlagsTextWide String sFlags Returns String` | Same with wide text. | `archive_entry_copy_fflags_text_w` |
 | `Function StatPointer Returns Pointer` | Pointer to a C runtime `struct stat` filled from the entry; owned by the entry, valid until the entry changes. | `archive_entry_stat` |
 | `Procedure CopyStat Pointer pStat` | Copies the fields of a C runtime `struct stat` into the entry. | `archive_entry_copy_stat` |
 | `Procedure CopyBhfi Pointer pFileInfo` | Copies a Windows `BY_HANDLE_FILE_INFORMATION` (52 bytes) into the entry. | `archive_entry_copy_bhfi` |
@@ -195,18 +184,15 @@ The concrete names are `SetAtime`, `SetBirthtime`, `SetCtime`, `SetMtime` and `U
 | Method | Description | libarchive function |
 |---|---|---|
 | `Procedure AclClear` | Removes all ACL entries. | `archive_entry_acl_clear` |
-| `Function AclAddEntry Integer eType Integer iPermset Integer eTag Integer iQualifier String sName Returns Integer` | Adds an ACL entry; `sName` "" for none. Returns `ARCHIVE_OK` or `ARCHIVE_FAILED` (invalid type or tag). | `archive_entry_acl_add_entry` |
-| `Function AclAddEntryWide ...` | Same with a wide name (use it for non-ASCII names). | `archive_entry_acl_add_entry_w` |
+| `Function AclAddEntry Integer eType Integer iPermset Integer eTag Integer iQualifier String sName Returns Integer` | Adds an ACL entry; `sName` is any text, "" for none. Returns `ARCHIVE_OK` or `ARCHIVE_FAILED` (invalid type or tag). | `archive_entry_acl_add_entry_w` |
 | `Function AclReset Integer iWantType Returns Integer` | Starts an enumeration of the wanted types and returns the number of entries. | `archive_entry_acl_reset` |
-| `Function AclNext Integer iWantType Returns tArchiveEntryAcl` | Next entry of the enumeration; `eType` 0 at the end. The name is converted from the ANSI code page. | `archive_entry_acl_next` |
+| `Function AclNext Integer iWantType Returns tArchiveEntryAcl` | Next entry of the enumeration; `eType` 0 at the end. The name is converted from the ANSI code page (`archive_entry_acl_next` has no wide variant). | `archive_entry_acl_next` |
 | `Function AclEntries Integer iWantType Returns tArchiveEntryAcl[]` | All entries as an array. | `archive_entry_acl_reset`, `archive_entry_acl_next` |
 | `Function AclCount Integer iWantType Returns Integer` | Number of entries of the wanted types. | `archive_entry_acl_count` |
 | `Function AclTypes Returns Integer` | Bit mask of the `ARCHIVE_ENTRY_ACL_TYPE_*` values present. | `archive_entry_acl_types` |
-| `Function AclToText Integer iFlags Returns String` | Text form; `iFlags` combines the wanted types (`ARCHIVE_ENTRY_ACL_TYPE_ACCESS`, `_DEFAULT`, `_NFS4`) with `ARCHIVE_ENTRY_ACL_STYLE_*` flags. The memory libarchive allocates is released. | `archive_entry_acl_to_text` |
-| `Function AclToTextWide Integer iFlags Returns String` | Wide variant. | `archive_entry_acl_to_text_w` |
-| `Function AclTextLegacy Integer iFlags Returns String` / `Function AclTextLegacyWide ...` | Deprecated libarchive text functions (text owned by the entry); prefer `AclToText`. | `archive_entry_acl_text` / `archive_entry_acl_text_w` |
-| `Function AclFromText String sText Integer eType Returns Integer` | Parses ACL text of one type and **adds** the entries. Returns `ARCHIVE_OK`, `ARCHIVE_WARN` or `ARCHIVE_FAILED`. | `archive_entry_acl_from_text` |
-| `Function AclFromTextWide ...` | Wide variant. | `archive_entry_acl_from_text_w` |
+| `Function AclToText Integer iFlags Returns String` | Text form; `iFlags` combines the wanted types (`ARCHIVE_ENTRY_ACL_TYPE_ACCESS`, `_DEFAULT`, `_NFS4`) with `ARCHIVE_ENTRY_ACL_STYLE_*` flags. The memory libarchive allocates is released with the DataFlex function `Free`. | `archive_entry_acl_to_text_w` |
+| `Function AclTextLegacy Integer iFlags Returns String` | Deprecated libarchive text function (text owned by the entry); prefer `AclToText`. | `archive_entry_acl_text_w` |
+| `Function AclFromText String sText Integer eType Returns Integer` | Parses ACL text of one type and **adds** the entries. Returns `ARCHIVE_OK`, `ARCHIVE_WARN` or `ARCHIVE_FAILED`. | `archive_entry_acl_from_text_w` |
 | `Function AclPointer Returns Pointer` | The opaque ACL object (nothing to do with it from DataFlex). | `archive_entry_acl` |
 
 ### Extended attributes
@@ -238,8 +224,8 @@ The concrete names are `SetAtime`, `SetBirthtime`, `SetCtime`, `SetMtime` and `U
 |---|---|---|
 | `Function PointerText Pointer pText Returns String` | Converts a zero terminated UTF-8 C string pointer to a string; 0 gives "". | |
 | `Function PointerWideText Pointer pText Returns String` | Same for a wide string pointer. | |
-| `Function AnsiPointerText Pointer pText Returns String` | Converts a zero terminated string in the ANSI code page (what libarchive returns for ACL names) to a string. | `MultiByteToWideChar` |
-| `Function IsValidUtf8 String sText Returns Boolean` | True when the text is valid UTF-8; used by the UTF-8 name setters before they call libarchive. | `MultiByteToWideChar` |
+| `Function AnsiPointerText Pointer pText Returns String` | Converts a zero terminated string in the ANSI code page (what libarchive returns for ACL names) to a string with `AnsiToUtf8` of `CharTranslate.pkg` (a DataFlex package that declares `kernel32.dll` itself). The unchanged bytes are returned when the text cannot be converted. | `AnsiToUtf8` |
+| `Function IsValidUtf8 String sText Returns Boolean` | True when the text is valid UTF-8; used by the UTF-8 name setters before they call libarchive. A DataFlex check of RFC 3629 (no overlong forms, no surrogates, nothing above U+10FFFF), no Windows API. | |
 
 ## Example
 
@@ -267,7 +253,9 @@ Inspecting the entry a reader returned:
 Pointer pEntry
 Move (archive_read_next_header (pArchive, AddressOf (pEntry))) to iResult
 Send AttachEntry of oEntry pEntry False                 // borrowed: libarchive owns it
-Showln (psPathname (oEntry)) (piSize (oEntry))
+Get psPathname of oEntry to sPathname
+Get piSize of oEntry to iSize
+Showln sPathname iSize
 ```
 
 ## Notes

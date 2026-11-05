@@ -1091,6 +1091,8 @@ Returns: `Integer`
 Integer archive_read_open_filename (Pointer pArchive, Pointer pFileName, Longptr iBlockSize)
 ```
 
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_read_open_filename_w` instead. The wrapper classes do not call this function.
+
 Opens an archive file by name (narrow string in the ANSI code page). A zero pointer reads stdin. A block size of 10240 is a good default.
 
 | Parameter | Type |
@@ -1124,6 +1126,8 @@ Returns: `Integer`
 ```
 Integer archive_read_open_filenames (Pointer pArchive, Pointer pFileNames, Longptr iBlockSize)
 ```
+
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_read_open_filenames_w` instead. The wrapper classes do not call this function.
 
 Opens a multi-volume archive. pFileNames points to a zero-terminated array of pointers to file names; the files are not sorted.
 
