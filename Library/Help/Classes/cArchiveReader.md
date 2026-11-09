@@ -167,7 +167,7 @@ They use (and free) the handle of the object and add `psPassphrase` when set.
 | `Function OpenArchive String sFileName Returns Integer` | `CreateReaderAll`, `AddPassphrase psPassphrase`, `OpenFile`. On failure the handle is kept so the error text can be read. |
 | `Function ListEntries String sFileName tArchiveEntryInfo[] ByRef aEntries Returns tArchiveOperationResult` | Opens the archive, reads all headers and frees the handle. `aEntries` is empty unless `bSuccess`; `iEntryCount` holds the count. Never raises an error. |
 | `Function ReadEntryData String sArchiveFile String sPathname UChar[] ByRef ucData Returns tArchiveOperationResult` | Reads the data of the first entry named `sPathname` (exact, "/" separators). `ucData` is empty unless `bSuccess`; `biExtractedBytes` is its size. Codes: `C_ARCHIVE_RESULT_OPEN_FAILED`, `_ENTRY_NOT_FOUND`, `_ENCRYPTED` (passphrase missing or wrong), `_IO_ERROR`, `_INVALID_ARGUMENT`. The data is read completely into memory. Never raises an error. |
-| `Function InspectZipArchive String sArchivePath Returns tArchiveOperationResult` | Validates a ZIP file and reads the entry metadata without extracting anything. See the ZIP limits in the [README](../README.md). |
+| `Function InspectZipArchive String sArchivePath Returns tArchiveOperationResult` | Validates a ZIP file and reads the entry metadata without extracting anything. See the ZIP limits in the [README](../../README.md). |
 | `Function ExtractZipArchive String sArchivePath String sDestination Returns tArchiveOperationResult` | Runs `InspectZipArchive`, then extracts every regular file through application-enforced byte limits. `sDestination` must not exist; a failure removes what was created. |
 
 ### struct tArchiveOperationResult
