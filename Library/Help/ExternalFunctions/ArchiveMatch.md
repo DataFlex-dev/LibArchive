@@ -115,6 +115,8 @@ Returns: `Integer`
 Integer archive_match_exclude_pattern (Pointer pArchive, Pointer pPattern)
 ```
 
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_match_exclude_pattern_w` instead. The wrapper classes do not call this function.
+
 Adds an exclusion pathname pattern.
 
 | Parameter | Type |
@@ -144,6 +146,8 @@ Returns: `Integer`
 ```
 Integer archive_match_exclude_pattern_from_file (Pointer pArchive, Pointer pFileName, Integer iNullSeparator)
 ```
+
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_match_exclude_pattern_from_file_w` instead. The wrapper classes do not call this function.
 
 Adds exclusion patterns read from a text file; patterns are separated by a null byte instead of a newline when iNullSeparator is not 0.
 
@@ -177,6 +181,8 @@ Returns: `Integer`
 Integer archive_match_include_pattern (Pointer pArchive, Pointer pPattern)
 ```
 
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_match_include_pattern_w` instead. The wrapper classes do not call this function.
+
 Adds an inclusion pathname pattern.
 
 | Parameter | Type |
@@ -206,6 +212,8 @@ Returns: `Integer`
 ```
 Integer archive_match_include_pattern_from_file (Pointer pArchive, Pointer pFileName, Integer iNullSeparator)
 ```
+
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_match_include_pattern_from_file_w` instead. The wrapper classes do not call this function.
 
 Adds inclusion patterns read from a text file; patterns are separated by a null byte instead of a newline when iNullSeparator is not 0.
 
@@ -252,6 +260,8 @@ Returns: `Integer`
 ```
 Integer archive_match_path_unmatched_inclusions_next (Pointer pArchive, Pointer ppPattern)
 ```
+
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_match_path_unmatched_inclusions_next_w` instead. The wrapper classes do not call this function.
 
 Stores a pointer to the next unmatched inclusion pattern in the variable pointed to; returns ARCHIVE_EOF when there are no more.
 
@@ -315,6 +325,8 @@ Returns: `Integer`
 Integer archive_match_include_date (Pointer pArchive, Integer iFlag, Pointer pDateString)
 ```
 
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_match_include_date_w` instead. The wrapper classes do not call this function.
+
 Sets an inclusion time from a date string. iFlag as for archive_match_include_time.
 
 | Parameter | Type |
@@ -346,6 +358,8 @@ Returns: `Integer`
 ```
 Integer archive_match_include_file_time (Pointer pArchive, Integer iFlag, Pointer pPathName)
 ```
+
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_match_include_file_time_w` instead. The wrapper classes do not call this function.
 
 Sets an inclusion time from the time stamps of a file. iFlag as for archive_match_include_time.
 
@@ -442,6 +456,8 @@ Returns: `Integer`
 Integer archive_match_include_uname (Pointer pArchive, Pointer pUserName)
 ```
 
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_match_include_uname_w` instead. The wrapper classes do not call this function.
+
 Adds a user name to the inclusion list.
 
 | Parameter | Type |
@@ -471,6 +487,8 @@ Returns: `Integer`
 ```
 Integer archive_match_include_gname (Pointer pArchive, Pointer pGroupName)
 ```
+
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_match_include_gname_w` instead. The wrapper classes do not call this function.
 
 Adds a group name to the inclusion list.
 

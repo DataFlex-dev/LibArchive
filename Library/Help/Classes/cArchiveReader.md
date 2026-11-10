@@ -14,7 +14,7 @@ Reads archives with libarchive: zip, tar, 7zip, cpio, ar, iso9660, rar/rar5, cab
 4. `NextHeader` returns the next entry (`ARCHIVE_OK`), `ARCHIVE_EOF` at the end. The entry is available through `phoEntry` (a [cArchiveEntry](cArchiveEntry.md) that borrows the entry; it is only valid until the next `NextHeader`). Read its data with `ReadData`, `ReadAllData`, `ReadDataToString`, `ReadDataBlock` or `DataToFile`, skip it with `SkipData` or extract it with `ExtractCurrent`.
 5. `FreeReader` (also done when the object is destroyed).
 
-For the common tasks there are one-call convenience methods: `ListEntries`, `ReadEntryData` and `ExtractAll`.
+For the common tasks there are one-call methods that return a `tArchiveOperationResult` and never raise an error: `ListEntries` and `ReadEntryData` for every format, and `InspectZipArchive` / `ExtractZipArchive` for bounded, safe ZIP extraction. To extract other formats, loop over `NextHeader` and call `ExtractCurrent`.
 
 ## Notes
 
@@ -37,8 +37,7 @@ For the common tasks there are one-call convenience methods: `ListEntries`, `Rea
 |---|---|---|---|
 | `ppArchive` | `Pointer` | read/write | The handle (`struct archive *`), see [cArchiveBase](cArchiveBase.md). |
 | `phoEntry` | `Handle` | read | Object of class `cArchiveEntry` that wraps the entry `NextHeader` returned (borrowed, invalid after the next header or `FreeReader`). |
-| `psPassphrase` | `String` | read/write | Passphrase that `OpenArchive`, `ListEntries`, `ExtractAll` and `ReadEntryData` add before opening. |
-| `piExtractedCount` | `Integer` | read | Number of entries `ExtractAll` extracted with `ARCHIVE_OK`. |
+| `psPassphrase` | `String` | read/write | Passphrase that `OpenArchive`, `ListEntries` and `ReadEntryData` add before opening. |
 | `pbUtf8HeaderCharset` | `Boolean` | read/write | Default False. True sets `hdrcharset=UTF-8` for the format readers before opening. libarchive 3.7.7 then reports `ARCHIVE_WARN` for every non ASCII entry name and returns no name (`psPathname` is empty, the entry cannot be extracted) because it converts to the locale of the process; without the option names are UTF-8 and correct. `ARCHIVE_WARN` is never raised as an error. |
 | `ppMemory` | `Pointer` | read | The memory copy `OpenMemory` made. |
 | `piMemorySize` | `Integer` | read | Its size in bytes. |
@@ -146,7 +145,7 @@ For the common tasks there are one-call convenience methods: `ListEntries`, `Rea
 | `Function ReadAllData UChar[] ByRef ucData Returns Integer` | Reads all remaining data into `ucData`. | `archive_read_data` |
 | `Function ReadDataToString Returns String` | All remaining data as a binary safe string. | `archive_read_data` |
 | `Function ReadDataBlock BigInt ByRef iOffset UChar[] ByRef ucData Returns Integer` | Next data block and its offset in the entry; `ARCHIVE_EOF` at the end. | `archive_read_data_block` |
-| `Function DataToFile String sFileName Returns Integer` | Writes the remaining data to a file (created or truncated, wide name). | `archive_read_data_block` |
+| `Function DataToFile String sFileName Returns Integer` | Writes the remaining data of the current entry to a file (created or replaced) through libarchive's disk writer, so any Unicode name works and the holes of sparse entries are written at their offsets. The folder of the file must exist. `ARCHIVE_FAILED` when the file cannot be created. | `archive_read_data_block`, `archive_write_disk_*` |
 | `Function SkipData Returns Integer` | Skips the remaining data of the current entry. | `archive_read_data_skip` |
 | `Function SeekData BigInt iOffset Integer eWhence Returns BigInt` | Seeks in the entry data; returns the new offset or a negative code. Not supported by the readers of libarchive 3.7.7 that can be tested. | `archive_seek_data` |
 | `Function EncryptedEntriesState Returns Integer` | Raw result of `archive_read_has_encrypted_entries`: 1 found, 0 none yet, `ARCHIVE_READ_FORMAT_ENCRYPTION_DONT_KNOW` / `_UNSUPPORTED` unknown. | `archive_read_has_encrypted_entries` |
@@ -166,9 +165,21 @@ They use (and free) the handle of the object and add `psPassphrase` when set.
 | Method | Description |
 |---|---|
 | `Function OpenArchive String sFileName Returns Integer` | `CreateReaderAll`, `AddPassphrase psPassphrase`, `OpenFile`. On failure the handle is kept so the error text can be read. |
-| `Function ListEntries String sFileName Returns tArchiveEntryInfo[]` | Opens the archive, reads all headers and frees the handle. Empty when it cannot be opened. |
-| `Function ExtractAll String sArchiveFile String sTargetFolder Integer iFlags Returns Integer` | Extracts everything below `sTargetFolder` (created when missing) through an archive_write_disk handle with `iFlags`. Returns `ARCHIVE_OK` or the first result that was not `ARCHIVE_OK`; later entries are still extracted. `piExtractedCount` holds the count. |
-| `Function ReadEntryData String sArchiveFile String sPathname UChar[] ByRef ucData Returns Boolean` | Reads the data of the first entry named `sPathname` (exact, "/" separators). False when the archive or the entry is missing or unreadable. |
+| `Function ListEntries String sFileName tArchiveEntryInfo[] ByRef aEntries Returns tArchiveOperationResult` | Opens the archive, reads all headers and frees the handle. `aEntries` is empty unless `bSuccess`; `iEntryCount` holds the count. Never raises an error. |
+| `Function ReadEntryData String sArchiveFile String sPathname UChar[] ByRef ucData Returns tArchiveOperationResult` | Reads the data of the first entry named `sPathname` (exact, "/" separators). `ucData` is empty unless `bSuccess`; `biExtractedBytes` is its size. Codes: `C_ARCHIVE_RESULT_OPEN_FAILED`, `_ENTRY_NOT_FOUND`, `_ENCRYPTED` (passphrase missing or wrong), `_IO_ERROR`, `_INVALID_ARGUMENT`. The data is read completely into memory. Never raises an error. |
+| `Function InspectZipArchive String sArchivePath Returns tArchiveOperationResult` | Validates a ZIP file and reads the entry metadata without extracting anything. See the ZIP limits in the [README](../../README.md). |
+| `Function ExtractZipArchive String sArchivePath String sDestination Returns tArchiveOperationResult` | Runs `InspectZipArchive`, then extracts every regular file through application-enforced byte limits. `sDestination` must not exist; a failure removes what was created. |
+
+### struct tArchiveOperationResult
+
+| Member | Type | Description |
+|---|---|---|
+| `bSuccess` | `Boolean` | True when the operation succeeded. |
+| `iErrorCode` | `Integer` | `C_ARCHIVE_RESULT_OK` (0) or the stable failure code (`_INVALID_ARGUMENT`, `_OPEN_FAILED`, `_MALFORMED`, `_UNSUPPORTED_FORMAT`, `_ENCRYPTED`, `_TOO_MANY_ENTRIES`, `_ENTRY_TOO_LARGE`, `_TOTAL_TOO_LARGE`, `_UNSAFE_PATH`, `_UNSAFE_TYPE`, `_DUPLICATE_PATH`, `_DESTINATION_EXISTS`, `_IO_ERROR`, `_SIZE_MISMATCH`, `_CLEANUP_FAILED`, `_TOO_MANY_PATH_COMPONENTS`, `_ARCHIVE_TOO_LARGE`, `_CENTRAL_DIRECTORY_TOO_LARGE`, `_ENTRY_NOT_FOUND`). |
+| `sErrorMessage` | `String` | Diagnostic with the libarchive text, meant for trusted logs, not for clients. |
+| `iEntryCount`, `iPathComponentCount` | `Integer` | Entries and path components that were counted. |
+| `biArchiveBytes`, `biCentralDirectoryBytes`, `biDeclaredUncompressedBytes` | `BigInt` | ZIP sizes (`InspectZipArchive`, `ExtractZipArchive`). |
+| `biExtractedBytes` | `BigInt` | Bytes actually written (`ExtractZipArchive`) or read (`ReadEntryData`). |
 
 ### struct tArchiveEntryInfo
 
@@ -190,21 +201,26 @@ Object oReader is a cArchiveReader
 End_Object
 
 tArchiveEntryInfo[] aEntries
+tArchiveOperationResult Result
 Integer iIndex
-Get ListEntries of oReader "C:\data\backup.zip" to aEntries
-For iIndex from 0 to (SizeOfArray (aEntries) - 1)
-    Showln aEntries[iIndex].sPathname aEntries[iIndex].iSize
-Loop
+Get ListEntries of oReader "C:\data\backup.zip" (&aEntries) to Result
+If (Result.bSuccess) Begin
+    For iIndex from 0 to (SizeOfArray (aEntries) - 1)
+        Showln aEntries[iIndex].sPathname aEntries[iIndex].iSize
+    Loop
+End
+Else Begin
+    Showln Result.iErrorCode Result.sErrorMessage
+End
 ```
 
-Extract an archive:
+Extract a ZIP file (the destination must not exist):
 
 ```
-Integer iResult iFlags
-Move (ARCHIVE_EXTRACT_TIME ior ARCHIVE_EXTRACT_PERM ior ARCHIVE_EXTRACT_SECURE_NODOTDOT ior ARCHIVE_EXTRACT_SECURE_SYMLINKS) to iFlags
-Get ExtractAll of oReader "C:\data\backup.tar.gz" "C:\restore" iFlags to iResult
-If (iResult <> ARCHIVE_OK) Begin
-    Showln "Extraction problem:" (psLastError (oReader))
+tArchiveOperationResult Result
+Get ExtractZipArchive of oReader "C:\data\backup.zip" "C:\restore" to Result
+If (not (Result.bSuccess)) Begin
+    Showln "Extraction problem:" Result.iErrorCode Result.sErrorMessage
 End
 ```
 
@@ -212,9 +228,9 @@ Read one entry into memory (an encrypted zip):
 
 ```
 UChar[] ucData
-Boolean bFound
+tArchiveOperationResult Result
 Set psPassphrase of oReader to "secret"
-Get ReadEntryData of oReader "C:\data\secret.zip" "docs/readme.txt" (&ucData) to bFound
+Get ReadEntryData of oReader "C:\data\secret.zip" "docs/readme.txt" (&ucData) to Result
 ```
 
 Walk through an archive in memory (the data of the entries is read as strings):
@@ -229,7 +245,8 @@ Get phoEntry of oReader to hoEntry
 Get NextHeader of oReader to iResult
 While (iResult = ARCHIVE_OK)
     Get ReadDataToString of oReader to sData
-    Showln (psPathname (hoEntry)) (SizeOfString (sData))
+    Get psPathname of hoEntry to sPathname
+    Showln sPathname (SizeOfString (sData))
     Get NextHeader of oReader to iResult
 Loop
 Send FreeReader of oReader
@@ -239,7 +256,9 @@ Extract the current entry to another folder:
 
 ```
 Get NextHeader of oReader to iResult
-Set psPathname of (phoEntry (oReader)) to ("C:\restore\" + psPathname (phoEntry (oReader)))
+Get phoEntry of oReader to hoEntry
+Get psPathname of hoEntry to sPathname
+Set psPathname of hoEntry to ("C:\restore\" + sPathname)
 Get ExtractCurrent of oReader (ARCHIVE_EXTRACT_TIME ior ARCHIVE_EXTRACT_SECURE_NODOTDOT) to iResult
 ```
 
@@ -258,7 +277,8 @@ Find out whether a passphrase is needed (the headers of an encrypted zip can be 
 ```
 Get OpenArchive of oReader "C:\data\secret.zip" to iResult
 Get NextHeader of oReader to iResult
-If (pbHasEncryptedEntries (oReader)) Begin
+Get pbHasEncryptedEntries of oReader to bEncrypted
+If (bEncrypted) Begin
     Showln "A passphrase is needed"
 End
 ```

@@ -1,18 +1,18 @@
 # Notes: libarchive 3.7.7 on Windows
 
-Behavior of the shipped `archive.dll` that differs from what the libarchive documentation (or the C headers) suggest. All of it was verified by the unit tests in `Demo/AppSrc/Tests`. The wrapper classes handle most of these cases for you.
+Behavior of the shipped `archive.dll` that differs from what the libarchive documentation (or the C headers) suggest. All of it was verified by the unit tests in `unittests/AppSrc/Tests`. The wrapper classes handle most of these cases for you.
 
 ## Strings and file names
 
 - Strings are UTF-8. **A DataFlex source file needs a BOM** to contain UTF-8 string literals; without it a non-ASCII literal is not valid UTF-8, the entry pathname becomes NULL and `archive_write_header` crashes the program (silent exit code 5).
-- Narrow (`char *`) functions that take file names or patterns (`archive_read_open_filename`, `archive_write_open_filename`, `archive_read_disk_open`, `archive_match_*_pattern`, ...) interpret them in the ANSI code page. Use the `_w` variants (pass a `WString` with `AddressOf`) for names with other characters. The wrapper classes do.
+- Narrow (`char *`) functions that take file names or patterns (`archive_read_open_filename`, `archive_write_open_filename`, `archive_read_disk_open`, `archive_match_*_pattern`, ...) interpret them in the ANSI code page. Use the `_w` variants (pass a `WString` with `AddressOf`) for names with other characters. The external functions of these narrow variants are marked obsolete in the `.h.pkg` files and in the documentation, and the wrapper classes neither call nor offer them (the `*Locale` methods and `OpenFileAnsi` do not exist).
 - Writing a pathname with characters outside the ANSI code page (for example `a-€-b.txt`) with `archive_entry_set_pathname_utf8` crashes the zip writer unless the writer option `hdrcharset=UTF-8` is set. `cArchiveWriter` sets it by default (`pbUtf8HeaderCharset`). cpio refuses such names, 7zip garbles non-ASCII names set with `archive_entry_set_pathname_utf8` (use `archive_entry_update_pathname_utf8`).
 - When reading with `hdrcharset=UTF-8` libarchive returns `ARCHIVE_WARN` for names it cannot convert to the locale and an empty pathname. `cArchiveReader.pbUtf8HeaderCharset` therefore defaults to False.
 - `archive_entry_update_*_utf8` returns 0 when the text cannot be converted to the locale without loss; libarchive keeps the text anyway.
 
 ## C runtime objects
 
-`archive.dll` uses the universal C runtime. File descriptors (`archive_read_open_fd`, `archive_write_open_fd`, `archive_read_data_into_fd`) and `FILE` pointers (`archive_read_open_FILE_Ptr`, `archive_write_open_FILE_Ptr`) must be created with `ucrtbase.dll` (`_open`, `_wfopen`), not with `msvcrt.dll`. Memory returned by `archive_entry_acl_to_text(_w)` is malloc'ed and must be freed with `free` from `ucrtbase.dll`.
+`archive.dll` uses the universal C runtime. File descriptors (`archive_read_open_fd`, `archive_write_open_fd`, `archive_read_data_into_fd`) and `FILE` pointers (`archive_read_open_FILE_Ptr`, `archive_write_open_FILE_Ptr`) must be created with `ucrtbase.dll` (`_open`, `_wfopen`), not with `msvcrt.dll`. Memory returned by `archive_entry_acl_to_text(_w)` is malloc'ed and must be freed: `cArchiveEntry.AclToText` does it with the DataFlex function `Free`, which needs no C runtime declaration; with the raw external function use `Free` too, or `free` from `ucrtbase.dll`.
 
 ## Crashes to avoid
 

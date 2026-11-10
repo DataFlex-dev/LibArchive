@@ -1,0 +1,369 @@
+Use Archive.h.pkg
+Use seq_chnl.pkg
+
+// File system helpers of the library as methods of one class, so no global function is added to the application.
+// The helpers keep the runtime library independent from GlobalFunctionsProcedures.pkg, whose path functions call Win32
+// directly, and use libarchive and DataFlex file I/O only.
+//
+// The library classes create their own cArchivePath object when they need one (PathTools of cArchiveBase and
+// cFilesArchiver); applications can create an object themselves:
+//
+//     Get CreateNamed (RefClass (cArchivePath)) "oArchivePath" to hoPath
+//     Get IsPhysicalFolder of hoPath "C:\Temp" to bIsFolder
+Class cArchivePath is a cObject
+    // Splits sValue at every sDelimiter. Empty parts are kept; an empty sValue gives an empty array.
+    Function SplitDelimited String sValue String sDelimiter Returns String[]
+        Integer iStart iEnd iDelimiterLength
+        String[] asParts
+
+        If (sValue = "") ;
+            Function_Return asParts
+
+        Move 1 to iStart
+        Move (Length(sDelimiter)) to iDelimiterLength
+        Move (Pos(sDelimiter, sValue, iStart)) to iEnd
+        While (iEnd > 0)
+            Move (Mid(sValue, iEnd - iStart, iStart)) to asParts[-1]
+            Move (iEnd + iDelimiterLength) to iStart
+            Move (Pos(sDelimiter, sValue, iStart)) to iEnd
+        Loop
+        Move (Right(sValue, Length(sValue) - iStart + 1)) to asParts[-1]
+
+        Function_Return asParts
+    End_Function
+
+    // The folder part of sPath including the native separator at the end ("" when there is none).
+    Function DirectoryPart String sPath Returns String
+        Integer iPosition
+        String sSeparator
+
+        Move (SysConf(SYSCONF_DIR_SEPARATOR)) to sSeparator
+        Move (Length(sPath)) to iPosition
+        While (iPosition > 0 and Mid(sPath, 1, iPosition) <> sSeparator)
+            Decrement iPosition
+        Loop
+
+        Function_Return (Left(sPath, iPosition))
+    End_Function
+
+    // The file name part of sPath (everything after the last native separator).
+    Function FileNamePart String sPath Returns String
+        String sDirectory
+
+        Get DirectoryPart sPath to sDirectory
+        Function_Return (Right(sPath, Length(sPath) - Length(sDirectory)))
+    End_Function
+
+    // Reads filesystem metadata through libarchive so directory and symlink
+    // classification follows the native implementation on the current platform.
+    // bFollowLinks True reports a symbolic link as the file it points to, False
+    // reports the link itself (AE_IFLNK). The size is only meaningful for regular
+    // files.
+    Function ReadDiskFileInfo String sPath Boolean bFollowLinks UShort ByRef eFileType BigInt ByRef biSize BigInt ByRef biModificationTime Integer ByRef iModificationNano Returns Boolean
+        Integer iResult iIgnored
+        Pointer pDisk pEntry
+
+        Move 0 to eFileType
+        Move 0 to biSize
+        Move 0 to biModificationTime
+        Move 0 to iModificationNano
+        Move (archive_read_disk_new()) to pDisk
+        If (pDisk = 0) ;
+            Function_Return False
+
+        Move (archive_entry_new()) to pEntry
+        If (pEntry = 0) Begin
+            Move (archive_read_free(pDisk)) to iIgnored
+            Function_Return False
+        End
+
+        Move (archive_entry_set_pathname_utf8(pEntry, AddressOf(sPath))) to iIgnored
+        // Only type, size and modification time are needed. Avoid platform-specific ACL,
+        // extended-attribute, and file-flag lookups that could produce warnings.
+        Move (archive_read_disk_set_behavior(pDisk, ;
+            (ARCHIVE_READDISK_NO_ACL ior ARCHIVE_READDISK_NO_XATTR ior ARCHIVE_READDISK_NO_FFLAGS))) to iResult
+        If (iResult = ARCHIVE_OK) Begin
+            If (bFollowLinks) ;
+                Move (archive_read_disk_set_symlink_logical(pDisk)) to iResult
+            Else ;
+                Move (archive_read_disk_set_symlink_physical(pDisk)) to iResult
+        End
+        If (iResult = ARCHIVE_OK) ;
+            Move (archive_read_disk_entry_from_file(pDisk, pEntry, -1, 0)) to iResult
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_entry_filetype(pEntry)) to eFileType
+            Move (archive_entry_size(pEntry)) to biSize
+            Move (archive_entry_mtime(pEntry)) to biModificationTime
+            Move (archive_entry_mtime_nsec(pEntry)) to iModificationNano
+        End
+
+        Move (archive_entry_free(pEntry)) to iIgnored
+        Move (archive_read_free(pDisk)) to iIgnored
+        Function_Return (iResult = ARCHIVE_OK)
+    End_Function
+
+    // True when sPath is a folder itself; a symbolic link to a folder is not.
+    Function IsPhysicalFolder String sPath Returns Boolean
+        Boolean bMetadataRead
+        UShort eFileType
+        BigInt biSize biModificationTime
+        Integer iModificationNano
+
+        Get ReadDiskFileInfo sPath False (&eFileType) (&biSize) (&biModificationTime) (&iModificationNano) to bMetadataRead
+        Function_Return (bMetadataRead and eFileType = AE_IFDIR)
+    End_Function
+
+    // True when sPath is a folder or a symbolic link that points to one.
+    Function IsFolder String sPath Returns Boolean
+        Boolean bMetadataRead
+        UShort eFileType
+        BigInt biSize biModificationTime
+        Integer iModificationNano
+
+        Get ReadDiskFileInfo sPath True (&eFileType) (&biSize) (&biModificationTime) (&iModificationNano) to bMetadataRead
+        Function_Return (bMetadataRead and eFileType = AE_IFDIR)
+    End_Function
+
+    // Last modification time of sPath as seconds since 1970-01-01 UTC, 0 when it cannot be read.
+    Function ModificationTime String sPath Returns BigInt
+        Boolean bMetadataRead
+        UShort eFileType
+        BigInt biSize biModificationTime
+        Integer iModificationNano
+
+        Get ReadDiskFileInfo sPath False (&eFileType) (&biSize) (&biModificationTime) (&iModificationNano) to bMetadataRead
+        Function_Return (If(bMetadataRead, biModificationTime, 0))
+    End_Function
+
+    // Converts the path separators of sPath to the native one. Windows accepts "/"
+    // as well as "\"; on other platforms "\" is an ordinary file name character and
+    // nothing is changed.
+    Function NativePath String sPath Returns String
+        String sSeparator
+
+        Move (SysConf(SYSCONF_DIR_SEPARATOR)) to sSeparator
+        If (sSeparator = "\") ;
+            Function_Return (Replaces("/", sPath, sSeparator))
+        Function_Return sPath
+    End_Function
+
+    // Creates the folder sPath (and the missing parent folders) through
+    // libarchive's platform-native disk writer. True when it exists afterwards.
+    Function CreateFolder String sPath Returns Boolean
+        Boolean bIsPhysicalFolder
+        Integer iResult iIgnored
+        Pointer pDisk pEntry
+
+        Move (archive_write_disk_new()) to pDisk
+        If (pDisk = 0) ;
+            Function_Return False
+        Move (archive_entry_new()) to pEntry
+        If (pEntry = 0) Begin
+            Move (archive_write_free(pDisk)) to iIgnored
+            Function_Return False
+        End
+
+        Move (archive_entry_set_pathname_utf8(pEntry, AddressOf(sPath))) to iIgnored
+        Move (archive_entry_set_filetype(pEntry, AE_IFDIR)) to iIgnored
+        Move (archive_entry_set_perm(pEntry, ARCHIVE_COMMON_FOR_EXECUTABLE_FILES_AND_DIRS)) to iIgnored
+        Move (archive_write_header(pDisk, pEntry)) to iResult
+        If (iResult = ARCHIVE_OK) ;
+            Move (archive_write_finish_entry(pDisk)) to iResult
+
+        Move (archive_entry_free(pEntry)) to iIgnored
+        Move (archive_write_close(pDisk)) to iIgnored
+        Move (archive_write_free(pDisk)) to iIgnored
+        Get IsPhysicalFolder sPath to bIsPhysicalFolder
+        Function_Return bIsPhysicalFolder
+    End_Function
+
+    // Lists the content of a folder through the portable DataFlex DIR: device.
+    // sFolder must end with the native separator. Folders are flagged in abFolders.
+    // Symbolic links and junctions that point to a folder are left out: they are
+    // not followed. Returns False when the folder cannot be listed.
+    Function ListFolderContent String sFolder String[] ByRef asNames Boolean[] ByRef abFolders Returns Boolean
+        Integer iChannel iIndex iCount
+        Boolean bFolder bLink bInfo
+        UShort eFileType eLinkTarget
+        BigInt biSize biModificationTime
+        Integer iModificationNano
+        String sEntry sName
+        String[] asEntries
+        String[] asNoNames
+        Boolean[] abNoFolders
+
+        Move asNoNames to asNames
+        Move abNoFolders to abFolders
+
+        // Read the complete listing first: sequential I/O only has a small channel pool.
+        Move (Seq_Open_Input_Channel("DIR:" + sFolder + SysConf(SYSCONF_FILE_MASK))) to iChannel
+        If (iChannel = DF_SEQ_CHANNEL_ERROR) ;
+            Function_Return False
+        While (not(SeqEof))
+            Readln channel iChannel sEntry
+            If (sEntry <> "[.]" and sEntry <> "[..]" and sEntry <> "") ;
+                Move sEntry to asEntries[-1]
+        Loop
+        Send Seq_Close_Channel iChannel
+
+        Move (SizeOfArray(asEntries)) to iCount
+        For iIndex from 0 to (iCount - 1)
+            Move asEntries[iIndex] to sEntry
+            Move sEntry to sName
+            Move False to bFolder
+            Move False to bLink
+
+            // DIR: encloses folder names in brackets. Confirm the stripped name on
+            // disk so a file whose name happens to use brackets is not misclassified.
+            If (Left(sEntry, 1) = "[" and Right(sEntry, 1) = "]") Begin
+                Move (Mid(sEntry, Length(sEntry) - 2, 2)) to sName
+                Get ReadDiskFileInfo (sFolder + sName) False (&eFileType) (&biSize) (&biModificationTime) (&iModificationNano) to bInfo
+                If (bInfo and eFileType = AE_IFDIR) Begin
+                    Move True to bFolder
+                End
+                Else If (bInfo and eFileType = AE_IFLNK) Begin
+                    Get IsFolder (sFolder + sName) to bLink
+                End
+                If (not(bFolder or bLink)) ;
+                    Move sEntry to sName
+            End
+            Else Begin
+                Get ReadDiskFileInfo (sFolder + sName) False (&eFileType) (&biSize) (&biModificationTime) (&iModificationNano) to bInfo
+                If (bInfo and eFileType = AE_IFDIR) Begin
+                    Move True to bFolder
+                End
+                Else If (bInfo and eFileType = AE_IFLNK) Begin
+                    Get ReadDiskFileInfo (sFolder + sName) True (&eLinkTarget) (&biSize) (&biModificationTime) (&iModificationNano) to bInfo
+                    Move (bInfo and eLinkTarget = AE_IFDIR) to bLink
+                End
+            End
+
+            If (not(bLink)) Begin
+                Move sName to asNames[-1]
+                Move bFolder to abFolders[-1]
+            End
+        Loop
+
+        Function_Return True
+    End_Function
+
+    // Current time as seconds since 1970-01-01 UTC. DataFlex only offers the local
+    // clock, so the UTC time is taken from libarchive: an archive_match object
+    // remembers the time it was created at and returns it for the date text "now".
+    // An entry time is bisected against that moment.
+    Function CurrentUnixTime Returns BigInt
+        Integer iResult iIgnored
+        Pointer pMatch pEntry
+        BigInt biLow biHigh biMiddle
+        WString wsNow
+
+        Move 0 to biLow
+        Move (archive_match_new()) to pMatch
+        Move (archive_entry_new()) to pEntry
+        If (pMatch = 0 or pEntry = 0) Begin
+            If (pMatch <> 0) ;
+                Move (archive_match_free(pMatch)) to iIgnored
+            If (pEntry <> 0) ;
+                Move (archive_entry_free(pEntry)) to iIgnored
+            Function_Return 0
+        End
+
+        Move "now" to wsNow
+        Move (archive_match_include_date_w(pMatch, (ARCHIVE_MATCH_MTIME ior ARCHIVE_MATCH_NEWER), AddressOf(wsNow))) to iResult
+        If (iResult = ARCHIVE_OK) Begin
+            // Largest time that is not newer than "now". 8000000000 is far beyond the year 2200.
+            Move 8000000000 to biHigh
+            While (biLow < biHigh)
+                Move ((biLow + biHigh + 1) / 2) to biMiddle
+                Move (archive_entry_set_mtime(pEntry, biMiddle, 0)) to iIgnored
+                If (archive_match_time_excluded(pMatch, pEntry) <> 0) Begin
+                    Move biMiddle to biLow
+                End
+                Else Begin
+                    Move (biMiddle - 1) to biHigh
+                End
+            Loop
+        End
+
+        Move (archive_entry_free(pEntry)) to iIgnored
+        Move (archive_match_free(pMatch)) to iIgnored
+        Function_Return biLow
+    End_Function
+
+    // Produces an absolute, lexically normalized native path without relying on an
+    // operating-system DLL. Drive-relative Windows paths are deliberately rejected.
+    Function AbsoluteNativePath String sPath Returns String
+        Integer i iStart iPartCount
+        String sCurrentDirectory sPrefix sRemainder sResult sSeparator sPart
+        String[] asParts asNormalizedParts
+
+        Move (Trim(sPath)) to sPath
+        If (sPath = "") ;
+            Function_Return ""
+
+        Move (SysConf(SYSCONF_DIR_SEPARATOR)) to sSeparator
+        Get_Current_Directory to sCurrentDirectory
+
+        If (sSeparator = "\") Begin
+            // Windows accepts forward slashes as path separators; normalize them
+            // before determining whether the path is absolute.
+            Move (Replaces("/", sPath, sSeparator)) to sPath
+            If (Left(sPath, 2) = sSeparator + sSeparator) Begin
+                Get SplitDelimited (Mid(sPath, Length(sPath) - 2, 3)) sSeparator to asParts
+                If (SizeOfArray(asParts) < 2) ;
+                    Function_Return ""
+                Move (sSeparator + sSeparator + asParts[0] + sSeparator + asParts[1]) to sPrefix
+                Move 2 to iStart
+            End
+            Else Begin
+                If (Length(sPath) >= 2 and Mid(sPath, 1, 2) = ":") Begin
+                    If (Length(sPath) < 3 or Mid(sPath, 1, 3) <> sSeparator) ;
+                        Function_Return ""
+                End
+                Else If (Left(sPath, 1) = sSeparator) Begin
+                    If (Length(sCurrentDirectory) < 2 or Mid(sCurrentDirectory, 1, 2) <> ":") ;
+                        Function_Return ""
+                    Move (Left(sCurrentDirectory, 2) + sPath) to sPath
+                End
+                Else Begin
+                    Move (sCurrentDirectory - sSeparator - sPath) to sPath
+                End
+
+                Move (Left(sPath, 3)) to sPrefix
+                Move (Mid(sPath, Length(sPath) - 3, 4)) to sRemainder
+                Get SplitDelimited sRemainder sSeparator to asParts
+            End
+        End
+        Else Begin
+            If (Left(sPath, 1) <> sSeparator) ;
+                Move (sCurrentDirectory - sSeparator - sPath) to sPath
+            Move sSeparator to sPrefix
+            Move (Mid(sPath, Length(sPath) - 1, 2)) to sRemainder
+            Get SplitDelimited sRemainder sSeparator to asParts
+        End
+
+        Move (SizeOfArray(asParts)) to iPartCount
+        For i from iStart to (iPartCount - 1)
+            Move asParts[i] to sPart
+            If (sPart <> "" and sPart <> ".") Begin
+                If (sPart = "..") Begin
+                    If (SizeOfArray(asNormalizedParts) = 0) ;
+                        Function_Return ""
+                    Move (ResizeArray(asNormalizedParts, SizeOfArray(asNormalizedParts) - 1)) to asNormalizedParts
+                End
+                Else Begin
+                    Move sPart to asNormalizedParts[-1]
+                End
+            End
+        Loop
+
+        Move sPrefix to sResult
+        For i from 0 to (SizeOfArray(asNormalizedParts) - 1)
+            If (Right(sResult, 1) <> sSeparator) ;
+                Move (sResult + sSeparator) to sResult
+            Move (sResult + asNormalizedParts[i]) to sResult
+        Loop
+
+        Function_Return sResult
+    End_Function
+End_Class

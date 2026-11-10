@@ -466,6 +466,7 @@ of 10240 is a good default.
 Note: The narrow name is interpreted in the ANSI code page; use archive_read_open_filename_w for file names
 with other characters. Opening a handle a second time (even after a failed open) corrupts the heap.
 */
+// OBSOLETE (ANSI code page): use archive_read_open_filename_w instead. The wrapper classes do not call this function.
 External_Function archive_read_open_filename "archive_read_open_filename" archive.dll ;
     Pointer pArchive ;
     Pointer pFileName ;
@@ -483,6 +484,7 @@ External_Function archive_read_open_filename_w "archive_read_open_filename_w" ar
 Opens a multi-volume archive. pFileNames points to a zero-terminated array of pointers to file names; the
 files are not sorted.
 */
+// OBSOLETE (ANSI code page): use archive_read_open_filenames_w instead. The wrapper classes do not call this function.
 External_Function archive_read_open_filenames "archive_read_open_filenames" archive.dll ;
     Pointer pArchive ;
     Pointer pFileNames ;

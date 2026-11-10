@@ -28,6 +28,7 @@ External_Function archive_match_set_inclusion_recursion "archive_match_set_inclu
     Returns Integer
 
 /* Adds an exclusion pathname pattern. */
+// OBSOLETE (ANSI code page): use archive_match_exclude_pattern_w instead. The wrapper classes do not call this function.
 External_Function archive_match_exclude_pattern "archive_match_exclude_pattern" archive.dll ;
     Pointer pArchive ;
     Pointer pPattern ;
@@ -43,6 +44,7 @@ External_Function archive_match_exclude_pattern_w "archive_match_exclude_pattern
 Adds exclusion patterns read from a text file; patterns are separated by a null byte instead of a newline when
 iNullSeparator is not 0.
 */
+// OBSOLETE (ANSI code page): use archive_match_exclude_pattern_from_file_w instead. The wrapper classes do not call this function.
 External_Function archive_match_exclude_pattern_from_file "archive_match_exclude_pattern_from_file" archive.dll ;
     Pointer pArchive ;
     Pointer pFileName ;
@@ -57,6 +59,7 @@ External_Function archive_match_exclude_pattern_from_file_w "archive_match_exclu
     Returns Integer
 
 /* Adds an inclusion pathname pattern. */
+// OBSOLETE (ANSI code page): use archive_match_include_pattern_w instead. The wrapper classes do not call this function.
 External_Function archive_match_include_pattern "archive_match_include_pattern" archive.dll ;
     Pointer pArchive ;
     Pointer pPattern ;
@@ -72,6 +75,7 @@ External_Function archive_match_include_pattern_w "archive_match_include_pattern
 Adds inclusion patterns read from a text file; patterns are separated by a null byte instead of a newline when
 iNullSeparator is not 0.
 */
+// OBSOLETE (ANSI code page): use archive_match_include_pattern_from_file_w instead. The wrapper classes do not call this function.
 External_Function archive_match_include_pattern_from_file "archive_match_include_pattern_from_file" archive.dll ;
     Pointer pArchive ;
     Pointer pFileName ;
@@ -94,6 +98,7 @@ External_Function archive_match_path_unmatched_inclusions "archive_match_path_un
 Stores a pointer to the next unmatched inclusion pattern in the variable pointed to; returns ARCHIVE_EOF when
 there are no more.
 */
+// OBSOLETE (ANSI code page): use archive_match_path_unmatched_inclusions_next_w instead. The wrapper classes do not call this function.
 External_Function archive_match_path_unmatched_inclusions_next "archive_match_path_unmatched_inclusions_next" archive.dll ;
     Pointer pArchive ;
     Pointer ppPattern ;
@@ -123,6 +128,7 @@ External_Function archive_match_include_time "archive_match_include_time" archiv
     Returns Integer
 
 /* Sets an inclusion time from a date string. iFlag as for archive_match_include_time. */
+// OBSOLETE (ANSI code page): use archive_match_include_date_w instead. The wrapper classes do not call this function.
 External_Function archive_match_include_date "archive_match_include_date" archive.dll ;
     Pointer pArchive ;
     Integer iFlag ;
@@ -137,6 +143,7 @@ External_Function archive_match_include_date_w "archive_match_include_date_w" ar
     Returns Integer
 
 /* Sets an inclusion time from the time stamps of a file. iFlag as for archive_match_include_time. */
+// OBSOLETE (ANSI code page): use archive_match_include_file_time_w instead. The wrapper classes do not call this function.
 External_Function archive_match_include_file_time "archive_match_include_file_time" archive.dll ;
     Pointer pArchive ;
     Integer iFlag ;
@@ -180,6 +187,7 @@ External_Function archive_match_include_gid "archive_match_include_gid" archive.
     Returns Integer
 
 /* Adds a user name to the inclusion list. */
+// OBSOLETE (ANSI code page): use archive_match_include_uname_w instead. The wrapper classes do not call this function.
 External_Function archive_match_include_uname "archive_match_include_uname" archive.dll ;
     Pointer pArchive ;
     Pointer pUserName ;
@@ -192,6 +200,7 @@ External_Function archive_match_include_uname_w "archive_match_include_uname_w" 
     Returns Integer
 
 /* Adds a group name to the inclusion list. */
+// OBSOLETE (ANSI code page): use archive_match_include_gname_w instead. The wrapper classes do not call this function.
 External_Function archive_match_include_gname "archive_match_include_gname" archive.dll ;
     Pointer pArchive ;
     Pointer pGroupName ;

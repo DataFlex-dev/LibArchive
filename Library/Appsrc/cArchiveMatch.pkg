@@ -9,7 +9,7 @@ Use cArchiveEntry.pkg
 //
 // Entries are passed as cArchiveEntry object handles (CreateEntry / AttachEntry); an object without an entry raises a
 // DataFlex error. Strings (patterns, names, file names, dates) are passed as wide strings (the *_w functions) so every
-// character survives; the methods with the suffix Locale use the narrow functions (current ANSI code page).
+// character survives (the narrow functions use the ANSI code page and are not wrapped).
 // Methods return the libarchive result (ARCHIVE_OK, ...) like the other wrapper classes (see cArchiveBase for error
 // handling) except where documented.
 //
@@ -89,7 +89,10 @@ Class cArchiveMatch is a cArchiveBase
     // one last set. A new handle (CreateMatch) starts with True again.
     { MethodType = Property }
     Function pbInclusionRecursion Returns Boolean
-        Function_Return (pbInclusionRecursionState (Self))
+        Boolean bInclusionRecursionState
+
+        Get pbInclusionRecursionState to bInclusionRecursionState
+        Function_Return bInclusionRecursionState
     End_Function
 
     { MethodType = Property }
@@ -116,6 +119,7 @@ Class cArchiveMatch is a cArchiveBase
 
     // True when the entry is excluded by the path, time or owner conditions (archive_match_excluded).
     Function IsExcluded Handle hoEntry Returns Boolean
+        Boolean bExcludedResult
         Pointer pMatch pEntry
         Integer iResult
 
@@ -125,11 +129,13 @@ Class cArchiveMatch is a cArchiveBase
             Function_Return False
         End
         Move (archive_match_excluded (pMatch, pEntry)) to iResult
-        Function_Return (ExcludedResult (Self, iResult, "archive_match_excluded"))
+        Get ExcludedResult iResult "archive_match_excluded" to bExcludedResult
+        Function_Return bExcludedResult
     End_Function
 
     // True when the path name of the entry is excluded by the path patterns (archive_match_path_excluded).
     Function IsPathExcluded Handle hoEntry Returns Boolean
+        Boolean bExcludedResult
         Pointer pMatch pEntry
         Integer iResult
 
@@ -139,11 +145,13 @@ Class cArchiveMatch is a cArchiveBase
             Function_Return False
         End
         Move (archive_match_path_excluded (pMatch, pEntry)) to iResult
-        Function_Return (ExcludedResult (Self, iResult, "archive_match_path_excluded"))
+        Get ExcludedResult iResult "archive_match_path_excluded" to bExcludedResult
+        Function_Return bExcludedResult
     End_Function
 
     // True when the entry is excluded by the time conditions (archive_match_time_excluded).
     Function IsTimeExcluded Handle hoEntry Returns Boolean
+        Boolean bExcludedResult
         Pointer pMatch pEntry
         Integer iResult
 
@@ -153,11 +161,13 @@ Class cArchiveMatch is a cArchiveBase
             Function_Return False
         End
         Move (archive_match_time_excluded (pMatch, pEntry)) to iResult
-        Function_Return (ExcludedResult (Self, iResult, "archive_match_time_excluded"))
+        Get ExcludedResult iResult "archive_match_time_excluded" to bExcludedResult
+        Function_Return bExcludedResult
     End_Function
 
     // True when the entry is excluded by the owner (uid, gid, user name, group name) conditions (archive_match_owner_excluded).
     Function IsOwnerExcluded Handle hoEntry Returns Boolean
+        Boolean bExcludedResult
         Pointer pMatch pEntry
         Integer iResult
 
@@ -167,7 +177,8 @@ Class cArchiveMatch is a cArchiveBase
             Function_Return False
         End
         Move (archive_match_owner_excluded (pMatch, pEntry)) to iResult
-        Function_Return (ExcludedResult (Self, iResult, "archive_match_owner_excluded"))
+        Get ExcludedResult iResult "archive_match_owner_excluded" to bExcludedResult
+        Function_Return bExcludedResult
     End_Function
 
     // ---- path patterns ------------------------------------------------------------------------------------------
@@ -187,17 +198,6 @@ Class cArchiveMatch is a cArchiveBase
         Function_Return iResult
     End_Function
 
-    // Like ExcludePattern with a pattern in the current ANSI code page (archive_match_exclude_pattern).
-    Function ExcludePatternLocale String sValue Returns Integer
-        Pointer pMatch
-        Integer iResult
-
-        Get EnsureHandle to pMatch
-        Move (archive_match_exclude_pattern (pMatch, AddressOf (sValue))) to iResult
-        Get CheckResult iResult "archive_match_exclude_pattern" to iResult
-        Function_Return iResult
-    End_Function
-
     // Adds an inclusion path name pattern (archive_match_include_pattern_w).
     Function IncludePattern String sValue Returns Integer
         Pointer pMatch
@@ -208,17 +208,6 @@ Class cArchiveMatch is a cArchiveBase
         Move sValue to wsValue
         Move (archive_match_include_pattern_w (pMatch, AddressOf (wsValue))) to iResult
         Get CheckResult iResult "archive_match_include_pattern_w" to iResult
-        Function_Return iResult
-    End_Function
-
-    // Like IncludePattern with a pattern in the current ANSI code page (archive_match_include_pattern).
-    Function IncludePatternLocale String sValue Returns Integer
-        Pointer pMatch
-        Integer iResult
-
-        Get EnsureHandle to pMatch
-        Move (archive_match_include_pattern (pMatch, AddressOf (sValue))) to iResult
-        Get CheckResult iResult "archive_match_include_pattern" to iResult
         Function_Return iResult
     End_Function
 
@@ -241,23 +230,6 @@ Class cArchiveMatch is a cArchiveBase
         Function_Return iResult
     End_Function
 
-    // Like ExcludePatternFromFile with a file name in the current ANSI code page (archive_match_exclude_pattern_from_file).
-    Function ExcludePatternFromFileLocale String sFileName Boolean bNullSeparator Returns Integer
-        Pointer pMatch
-        Integer iResult iNull
-
-        Get EnsureHandle to pMatch
-        If bNullSeparator Begin
-            Move 1 to iNull
-        End
-        Else Begin
-            Move 0 to iNull
-        End
-        Move (archive_match_exclude_pattern_from_file (pMatch, AddressOf (sFileName), iNull)) to iResult
-        Get CheckResult iResult "archive_match_exclude_pattern_from_file" to iResult
-        Function_Return iResult
-    End_Function
-
     // Adds the inclusion patterns of a text file, one per line, or separated by a null byte when bNullSeparator is True (archive_match_include_pattern_from_file_w).
     Function IncludePatternFromFile String sFileName Boolean bNullSeparator Returns Integer
         Pointer pMatch
@@ -274,23 +246,6 @@ Class cArchiveMatch is a cArchiveBase
         Move sFileName to wsFileName
         Move (archive_match_include_pattern_from_file_w (pMatch, AddressOf (wsFileName), iNull)) to iResult
         Get CheckResult iResult "archive_match_include_pattern_from_file_w" to iResult
-        Function_Return iResult
-    End_Function
-
-    // Like IncludePatternFromFile with a file name in the current ANSI code page (archive_match_include_pattern_from_file).
-    Function IncludePatternFromFileLocale String sFileName Boolean bNullSeparator Returns Integer
-        Pointer pMatch
-        Integer iResult iNull
-
-        Get EnsureHandle to pMatch
-        If bNullSeparator Begin
-            Move 1 to iNull
-        End
-        Else Begin
-            Move 0 to iNull
-        End
-        Move (archive_match_include_pattern_from_file (pMatch, AddressOf (sFileName), iNull)) to iResult
-        Get CheckResult iResult "archive_match_include_pattern_from_file" to iResult
         Function_Return iResult
     End_Function
 
@@ -327,28 +282,6 @@ Class cArchiveMatch is a cArchiveBase
         Function_Return asPatterns
     End_Function
 
-    // Like UnmatchedInclusionPatterns with the patterns in the current ANSI code page
-    // (archive_match_path_unmatched_inclusions_next).
-    Function UnmatchedInclusionPatternsLocale Returns String[]
-        Pointer pMatch pPattern
-        Integer iResult
-        String[] asPatterns
-
-        Get ppArchive to pMatch
-        If (pMatch = 0) Begin
-            Function_Return asPatterns
-        End
-        Move ARCHIVE_OK to iResult
-        While (iResult = ARCHIVE_OK)
-            Move 0 to pPattern
-            Move (archive_match_path_unmatched_inclusions_next (pMatch, AddressOf (pPattern))) to iResult
-            If (iResult = ARCHIVE_OK and pPattern <> 0) Begin
-                Move (PointerToString (pPattern)) to asPatterns[SizeOfArray (asPatterns)]
-            End
-        Loop
-        Function_Return asPatterns
-    End_Function
-
     // ---- time conditions ----------------------------------------------------------------------------------------
     // iFlag combines ARCHIVE_MATCH_MTIME or ARCHIVE_MATCH_CTIME (which time of the entry is tested) with
     // ARCHIVE_MATCH_NEWER, ARCHIVE_MATCH_OLDER and/or ARCHIVE_MATCH_EQUAL (which entries are included).
@@ -377,17 +310,6 @@ Class cArchiveMatch is a cArchiveBase
         Function_Return iResult
     End_Function
 
-    // Like IncludeDate with a date text in the current ANSI code page (archive_match_include_date).
-    Function IncludeDateLocale Integer iFlag String sDate Returns Integer
-        Pointer pMatch
-        Integer iResult
-
-        Get EnsureHandle to pMatch
-        Move (archive_match_include_date (pMatch, iFlag, AddressOf (sDate))) to iResult
-        Get CheckResult iResult "archive_match_include_date" to iResult
-        Function_Return iResult
-    End_Function
-
     // Includes entries by comparing their time with the time stamps of a file (archive_match_include_file_time_w).
     Function IncludeFileTime Integer iFlag String sFileName Returns Integer
         Pointer pMatch
@@ -398,17 +320,6 @@ Class cArchiveMatch is a cArchiveBase
         Move sFileName to wsFileName
         Move (archive_match_include_file_time_w (pMatch, iFlag, AddressOf (wsFileName))) to iResult
         Get CheckResult iResult "archive_match_include_file_time_w" to iResult
-        Function_Return iResult
-    End_Function
-
-    // Like IncludeFileTime with a file name in the current ANSI code page (archive_match_include_file_time).
-    Function IncludeFileTimeLocale Integer iFlag String sFileName Returns Integer
-        Pointer pMatch
-        Integer iResult
-
-        Get EnsureHandle to pMatch
-        Move (archive_match_include_file_time (pMatch, iFlag, AddressOf (sFileName))) to iResult
-        Get CheckResult iResult "archive_match_include_file_time" to iResult
         Function_Return iResult
     End_Function
 
@@ -465,17 +376,6 @@ Class cArchiveMatch is a cArchiveBase
         Function_Return iResult
     End_Function
 
-    // Like IncludeUname with a name in the current ANSI code page (archive_match_include_uname).
-    Function IncludeUnameLocale String sValue Returns Integer
-        Pointer pMatch
-        Integer iResult
-
-        Get EnsureHandle to pMatch
-        Move (archive_match_include_uname (pMatch, AddressOf (sValue))) to iResult
-        Get CheckResult iResult "archive_match_include_uname" to iResult
-        Function_Return iResult
-    End_Function
-
     // Adds a group name to the inclusion list (archive_match_include_gname_w).
     Function IncludeGname String sValue Returns Integer
         Pointer pMatch
@@ -486,17 +386,6 @@ Class cArchiveMatch is a cArchiveBase
         Move sValue to wsValue
         Move (archive_match_include_gname_w (pMatch, AddressOf (wsValue))) to iResult
         Get CheckResult iResult "archive_match_include_gname_w" to iResult
-        Function_Return iResult
-    End_Function
-
-    // Like IncludeGname with a name in the current ANSI code page (archive_match_include_gname).
-    Function IncludeGnameLocale String sValue Returns Integer
-        Pointer pMatch
-        Integer iResult
-
-        Get EnsureHandle to pMatch
-        Move (archive_match_include_gname (pMatch, AddressOf (sValue))) to iResult
-        Get CheckResult iResult "archive_match_include_gname" to iResult
         Function_Return iResult
     End_Function
 

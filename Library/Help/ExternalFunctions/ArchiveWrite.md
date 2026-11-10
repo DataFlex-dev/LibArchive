@@ -1155,6 +1155,8 @@ Returns: `Integer`
 Integer archive_write_open_filename (Pointer pArchive, Pointer pFileName)
 ```
 
+> **Obsolete:** uses the ANSI code page of the system. Use `archive_write_open_filename_w` instead. The wrapper classes do not call this function.
+
 Opens the file: It attempts to open the specified file in write mode. If the file doesn't exist, it will typically be created. If it exists, it will usually be overwritten.
 Associates the file with the archive handle: It sets up the necessary internal structures so that subsequent calls to archive_write_header() and archive_write_data() will write to this opened file.
 Return Value:

@@ -68,7 +68,7 @@ Reads files and folders of the local file system as archive entries: libarchive'
 | `Function ReadAllData UChar[] ByRef ucData Returns Integer` | Reads the remaining data of the current file. | `archive_read_data` |
 | `Function ReadDataToString Returns String` | The remaining data as a binary safe string. | `archive_read_data` |
 | `Function ReadDataBlock BigInt ByRef iOffset UChar[] ByRef ucData Returns Integer` | Next data block and its offset. | `archive_read_data_block` |
-| `Function DataToFile String sFileName Returns Integer` | Copies the remaining data of the current file to another file. | `archive_read_data_block` |
+| `Function DataToFile String sFileName Returns Integer` | Copies the remaining data of the current file to another file (created or replaced) through libarchive's disk writer. The folder of the file must exist. | `archive_read_data_block`, `archive_write_disk_*` |
 | `Function ListFolder String sFolder Returns tArchiveEntryInfo[]` | Lists a folder tree recursively: the folder itself, then every file and sub folder. Uses the handle of the object (created when missing; settings and matching are kept) and closes the traversal afterwards. Empty when the folder does not exist. | `archive_read_disk_open_w`, `archive_read_next_header`, `archive_read_disk_descend` |
 
 ## Examples
@@ -98,12 +98,14 @@ Get OpenDisk of oDisk "C:\data" to iResult
 Get phoEntry of oDisk to hoEntry
 Get NextHeader of oDisk to iResult
 While (iResult = ARCHIVE_OK)
-    If (CanDescend (oDisk)) Begin
+    Get CanDescend of oDisk to bCanDescend
+    If (bCanDescend) Begin
         Get Descend of oDisk to iResult          // enter the folder
     End
     Else Begin
         Get ReadAllData of oDisk (&ucData) to iResult
-        Showln (psPathname (hoEntry)) (SizeOfArray (ucData))
+        Get psPathname of hoEntry to sPathname
+        Showln sPathname (SizeOfArray (ucData))
     End
     Get NextHeader of oDisk to iResult
 Loop
@@ -123,8 +125,9 @@ Read the metadata of one file:
 
 ```
 Handle hoEntry
-Get Create U_cArchiveEntry to hoEntry
+Get CreateNamed (RefClass (cArchiveEntry)) "oArchiveEntry" to hoEntry
 Send CreateDiskReader of oDisk
 Get EntryFromFile of oDisk hoEntry "C:\data\report.pdf" to iResult
-Showln (archive_entry_size (ppEntry (hoEntry)))
+Get ppEntry of hoEntry to pEntry
+Showln (archive_entry_size (pEntry))
 ```

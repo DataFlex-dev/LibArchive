@@ -1,11 +1,14 @@
 ﻿Use Archive.h.pkg
+Use ArchivePath.pkg
 
 // Base class of the LibArchive wrapper classes that own a libarchive "struct archive" handle
 // (cArchiveReader, cArchiveWriter, cArchiveDiskReader, cArchiveDiskWriter, cArchiveMatch).
 //
 // Conventions of all wrapper classes:
 //  - Methods return the libarchive result code (ARCHIVE_OK, ARCHIVE_EOF, ARCHIVE_WARN, ARCHIVE_RETRY, ARCHIVE_FAILED,
-//    ARCHIVE_FATAL) unless documented otherwise.
+//    ARCHIVE_FATAL) unless documented otherwise. The one-call operations of cArchiveReader (ListEntries,
+//    ReadEntryData, InspectZipArchive, ExtractZipArchive) are the exception: they return a tArchiveOperationResult,
+//    never raise an error and do not use piLastResult / psLastError.
 //  - Every result goes through CheckResult. A result of ARCHIVE_FAILED or worse is remembered in piLastResult and
 //    psLastError and, when pbRaiseErrors is True (default), reported with a DataFlex Error DFERR_PROGRAM.
 //    Set pbRaiseErrors to False to inspect the returned code yourself. Override OnError to handle errors differently.
@@ -29,6 +32,10 @@ Class cArchiveBase is a cObject
         Property Integer piLastResult ARCHIVE_OK
         { DesignTime = False }
         Property String psLastError ""
+
+        // The cArchivePath object PathTools created (0 until then).
+        { DesignTime = False }
+        Property Handle phoPathTools 0
     End_Procedure
 
     // ---- helpers for the subclasses -----------------------------------------------------------------------------
@@ -50,6 +57,24 @@ Class cArchiveBase is a cObject
         Function_Return (PointerToWString (pText))
     End_Function
 
+    // The cArchivePath object of this object (file system helpers), created the first time it is needed and destroyed
+    // with this object. phoPathTools is a handle property: when the object it points to was destroyed (Send Destroy leaves
+    // the ID behind) a new one is created.
+    { Visibility = Private }
+    Function PathTools Returns Handle
+        Handle hoPath
+
+        Get phoPathTools to hoPath
+        If (hoPath <> 0) Begin
+            Get Object_Id of hoPath to hoPath
+        End
+        If (hoPath = 0) Begin
+            Get CreateNamed (RefClass (cArchivePath)) "oArchivePath" to hoPath
+            Set phoPathTools to hoPath
+        End
+        Function_Return hoPath
+    End_Function
+
     Procedure Destroy_Object
         Send FreeHandle
         Forward Send Destroy_Object
@@ -59,7 +84,10 @@ Class cArchiveBase is a cObject
 
     // True when the object has a libarchive handle.
     Function HasHandle Returns Boolean
-        Function_Return (ppArchive (Self) <> 0)
+        Pointer pArchive
+
+        Get ppArchive to pArchive
+        Function_Return (pArchive <> 0)
     End_Function
 
     // Releases the libarchive handle (archive_free, which closes the archive when needed). Subclasses that need
@@ -80,7 +108,10 @@ Class cArchiveBase is a cObject
     // Hook that is called for every result of ARCHIVE_FAILED or worse. The default raises a DataFlex error when
     // pbRaiseErrors is True. sOperation names the failing operation.
     Procedure OnError Integer iResult String sOperation String sErrorText
-        If (pbRaiseErrors (Self)) Begin
+        Boolean bRaiseErrors
+
+        Get pbRaiseErrors to bRaiseErrors
+        If bRaiseErrors Begin
             Error DFERR_PROGRAM (SFormat ("%1 failed (%2): %3", sOperation, String (iResult), sErrorText))
         End
     End_Procedure
@@ -118,12 +149,14 @@ Class cArchiveBase is a cObject
     // Error text of the last failed operation on the handle (archive_error_string). Empty when there is none.
     { MethodType = Property }
     Function psErrorString Returns String
+        String sPointerText
         Pointer pArchive
         Get ppArchive to pArchive
         If (pArchive = 0) Begin
             Function_Return ""
         End
-        Function_Return (PointerText (Self, archive_error_string (pArchive)))
+        Get PointerText (archive_error_string (pArchive)) to sPointerText
+        Function_Return sPointerText
     End_Function
 
     // Clears the error number and error text of the handle (archive_clear_error) and the last result.
@@ -191,12 +224,14 @@ Class cArchiveBase is a cObject
     // Human readable format name of the current entry (archive_format_name).
     { MethodType = Property }
     Function psFormatName Returns String
+        String sPointerText
         Pointer pArchive
         Get ppArchive to pArchive
         If (pArchive = 0) Begin
             Function_Return ""
         End
-        Function_Return (PointerText (Self, archive_format_name (pArchive)))
+        Get PointerText (archive_format_name (pArchive)) to sPointerText
+        Function_Return sPointerText
     End_Function
 
     // Number of filters in the pipeline (archive_filter_count). Filter 0 is the one closest to the format, -1 is the last.
@@ -232,12 +267,14 @@ Class cArchiveBase is a cObject
 
     // Name of a filter (archive_filter_name). iIndex -1 is the last filter.
     Function FilterName Integer iIndex Returns String
+        String sPointerText
         Pointer pArchive
         Get ppArchive to pArchive
         If (pArchive = 0) Begin
             Function_Return ""
         End
-        Function_Return (PointerText (Self, archive_filter_name (pArchive, iIndex)))
+        Get PointerText (archive_filter_name (pArchive, iIndex)) to sPointerText
+        Function_Return sPointerText
     End_Function
 
     // ---- library version (do not need a handle) -----------------------------------------------------------------
@@ -251,38 +288,59 @@ Class cArchiveBase is a cObject
     // "libarchive 3.7.7" (archive_version_string).
     { MethodType = Property }
     Function psVersionString Returns String
-        Function_Return (PointerText (Self, archive_version_string ()))
+        String sPointerText
+
+        Get PointerText (archive_version_string ()) to sPointerText
+        Function_Return sPointerText
     End_Function
 
     // Version of libarchive followed by the libraries it was built with (archive_version_details).
     { MethodType = Property }
     Function psVersionDetails Returns String
-        Function_Return (PointerText (Self, archive_version_details ()))
+        String sPointerText
+
+        Get PointerText (archive_version_details ()) to sPointerText
+        Function_Return sPointerText
     End_Function
 
     // Versions of the compression libraries libarchive was built with; empty when built without (archive_zlib_version etc.).
     { MethodType = Property }
     Function psZlibVersion Returns String
-        Function_Return (PointerText (Self, archive_zlib_version ()))
+        String sPointerText
+
+        Get PointerText (archive_zlib_version ()) to sPointerText
+        Function_Return sPointerText
     End_Function
 
     { MethodType = Property }
     Function psLibLzmaVersion Returns String
-        Function_Return (PointerText (Self, archive_liblzma_version ()))
+        String sPointerText
+
+        Get PointerText (archive_liblzma_version ()) to sPointerText
+        Function_Return sPointerText
     End_Function
 
     { MethodType = Property }
     Function psBzlibVersion Returns String
-        Function_Return (PointerText (Self, archive_bzlib_version ()))
+        String sPointerText
+
+        Get PointerText (archive_bzlib_version ()) to sPointerText
+        Function_Return sPointerText
     End_Function
 
     { MethodType = Property }
     Function psLibLz4Version Returns String
-        Function_Return (PointerText (Self, archive_liblz4_version ()))
+        String sPointerText
+
+        Get PointerText (archive_liblz4_version ()) to sPointerText
+        Function_Return sPointerText
     End_Function
 
     { MethodType = Property }
     Function psLibZstdVersion Returns String
-        Function_Return (PointerText (Self, archive_libzstd_version ()))
+        String sPointerText
+
+        Get PointerText (archive_libzstd_version ()) to sPointerText
+        Function_Return sPointerText
     End_Function
 End_Class

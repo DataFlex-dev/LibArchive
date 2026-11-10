@@ -21,7 +21,8 @@ Define ARCHIVE_SYMLINK_HYBRID   for 2 // Follow the symbolic links given on the 
 //     Get OpenDisk "C:\data" to iResult
 //     Get NextHeader to iResult
 //     While (iResult = ARCHIVE_OK)
-//         Get psPathname of (phoEntry (Self)) to sName
+//         Get phoEntry to hoEntry
+//         Get psPathname of hoEntry to sName
 //         If (CanDescend (Self)) Begin
 //             Get Descend to iResult        // enter the folder, otherwise it is skipped
 //         End
@@ -163,7 +164,8 @@ Class cArchiveDiskReader is a cArchiveReaderBase
         Loop
         Move sPath to wsPath
         Move (archive_read_disk_open_w (pArchive, AddressOf (wsPath))) to iResult
-        Function_Return (CheckResult (Self, iResult, "archive_read_disk_open_w"))
+        Get CheckResult iResult "archive_read_disk_open_w" to iResult
+        Function_Return iResult
     End_Function
 
     // ---- traversal ----------------------------------------------------------------------------------------------
@@ -179,7 +181,8 @@ Class cArchiveDiskReader is a cArchiveReaderBase
             Function_Return ARCHIVE_FATAL
         End
         Move (archive_read_disk_descend (pArchive)) to iResult
-        Function_Return (CheckResult (Self, iResult, "archive_read_disk_descend"))
+        Get CheckResult iResult "archive_read_disk_descend" to iResult
+        Function_Return iResult
     End_Function
 
     // True when the current entry is a folder that Descend can enter (archive_read_disk_can_descend).
@@ -197,6 +200,7 @@ Class cArchiveDiskReader is a cArchiveReaderBase
     // buffer). hoEntry is a cArchiveEntry (an entry is created when it has none); its path name and source path are set
     // to sFileName first. Does not need an open traversal.
     Function EntryFromFile Handle hoEntry String sFileName Returns Integer
+        Boolean bHasEntry
         Pointer pArchive pEntry
         Integer iResult
         Void_Type iVoid
@@ -206,7 +210,8 @@ Class cArchiveDiskReader is a cArchiveReaderBase
         If (pArchive = 0) Begin
             Function_Return ARCHIVE_FATAL
         End
-        If (not (HasEntry (hoEntry))) Begin
+        Get HasEntry of hoEntry to bHasEntry
+        If (not (bHasEntry)) Begin
             Send CreateEntry of hoEntry
         End
         Get ppEntry of hoEntry to pEntry
@@ -214,7 +219,8 @@ Class cArchiveDiskReader is a cArchiveReaderBase
         Move sFileName to wsFileName
         Move (archive_entry_copy_sourcepath_w (pEntry, AddressOf (wsFileName))) to iVoid
         Move (archive_read_disk_entry_from_file (pArchive, pEntry, -1, 0)) to iResult
-        Function_Return (CheckResult (Self, iResult, "archive_read_disk_entry_from_file"))
+        Get CheckResult iResult "archive_read_disk_entry_from_file" to iResult
+        Function_Return iResult
     End_Function
 
     // ---- matching and lookups -----------------------------------------------------------------------------------
@@ -234,7 +240,8 @@ Class cArchiveDiskReader is a cArchiveReaderBase
             Get ppArchive of hoMatch to pMatch
         End
         Move (archive_read_disk_set_matching (pArchive, pMatch, 0, 0)) to iResult
-        Function_Return (CheckResult (Self, iResult, "archive_read_disk_set_matching"))
+        Get CheckResult iResult "archive_read_disk_set_matching" to iResult
+        Function_Return iResult
     End_Function
 
     // Installs the standard user and group name lookup (archive_read_disk_set_standard_lookup). Windows has no such
@@ -249,30 +256,35 @@ Class cArchiveDiskReader is a cArchiveReaderBase
             Function_Return ARCHIVE_FATAL
         End
         Move (archive_read_disk_set_standard_lookup (pArchive)) to iResult
-        Function_Return (CheckResult (Self, iResult, "archive_read_disk_set_standard_lookup"))
+        Get CheckResult iResult "archive_read_disk_set_standard_lookup" to iResult
+        Function_Return iResult
     End_Function
 
     // User name for a user id with the installed lookup (archive_read_disk_uname). Empty when unknown (Windows has no
     // numeric user ids, so it is empty there).
     Function UserName BigInt iUserId Returns String
+        String sPointerText
         Pointer pArchive
 
         Get ppArchive to pArchive
         If (pArchive = 0) Begin
             Function_Return ""
         End
-        Function_Return (PointerText (Self, archive_read_disk_uname (pArchive, iUserId)))
+        Get PointerText (archive_read_disk_uname (pArchive, iUserId)) to sPointerText
+        Function_Return sPointerText
     End_Function
 
     // Group name for a group id with the installed lookup (archive_read_disk_gname). Empty when unknown.
     Function GroupName BigInt iGroupId Returns String
+        String sPointerText
         Pointer pArchive
 
         Get ppArchive to pArchive
         If (pArchive = 0) Begin
             Function_Return ""
         End
-        Function_Return (PointerText (Self, archive_read_disk_gname (pArchive, iGroupId)))
+        Get PointerText (archive_read_disk_gname (pArchive, iGroupId)) to sPointerText
+        Function_Return sPointerText
     End_Function
 
     // ---- file system of the current entry (valid after NextHeader) -----------------------------------------------
@@ -322,11 +334,13 @@ Class cArchiveDiskReader is a cArchiveReaderBase
     // closes the traversal afterwards. Path names are as libarchive builds them from sFolder. The array is empty
     // when the folder does not exist.
     Function ListFolder String sFolder Returns tArchiveEntryInfo[]
+        Boolean bHasHandle bCanDescend
         tArchiveEntryInfo[] aEntries
         tArchiveEntryInfo tInfo
         Integer iResult iCount
 
-        If (not (HasHandle (Self))) Begin
+        Get HasHandle to bHasHandle
+        If (not (bHasHandle)) Begin
             Send CreateDiskReader
         End
         Get OpenDisk sFolder to iResult
@@ -339,7 +353,8 @@ Class cArchiveDiskReader is a cArchiveReaderBase
             Get EntryInfo to tInfo
             Move tInfo to aEntries[iCount]
             Increment iCount
-            If (CanDescend (Self)) Begin
+            Get CanDescend to bCanDescend
+            If bCanDescend Begin
                 Get Descend to iResult
             End
             Get NextHeader to iResult

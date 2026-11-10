@@ -1,0 +1,1888 @@
+﻿// Tests for the archive_write_* functions of ArchiveWrite.h.pkg: formats, filters, open variants, options, encryption.
+// Every archive that is written is read back with the libarchive read API and the entries are compared.
+
+// C runtime functions (the UCRT that archive.dll uses) to create file descriptors / FILE pointers.
+External_Function tw_crt_open "_open" ucrtbase.dll ;
+    Pointer pFileName ;
+    Integer iFlags ;
+    Integer iMode ;
+    Returns Integer
+
+External_Function tw_crt_close "_close" ucrtbase.dll ;
+    Integer iFd ;
+    Returns Integer
+
+External_Function tw_crt_wfopen "_wfopen" ucrtbase.dll ;
+    Pointer pFileName ;
+    Pointer pMode ;
+    Returns Pointer
+
+External_Function tw_crt_fclose "fclose" ucrtbase.dll ;
+    Pointer pFile ;
+    Returns Integer
+
+External_Function tw_copymem "RtlMoveMemory" kernel32.dll ;
+    Pointer pDest ;
+    Pointer pSource ;
+    Longptr iLength ;
+    Returns Void_Type
+
+External_Function tw_crt_wstat64 "_wstat64" ucrtbase.dll ;
+    Pointer pFileName ;
+    Pointer pStat ;
+    Returns Integer
+
+Object oWriteTests is a cArchiveTestFixture
+    Set psTestFixtureName to "Write"
+
+    // ---- results of the last ReadBack ----------------------------------------------------------------------------
+    Property String[]  pasRbName
+    Property String[]  pasRbContent
+    Property BigInt[]  pabiRbSize
+    Property BigInt[]  pabiRbRead
+    Property Integer   piRbCount
+    Property Integer   piRbFormat
+    Property Integer   piRbFilterCount
+    Property Integer   piRbFilterCode
+    Property String    psRbFilterName
+    Property Integer   piRbEncrypted
+    Property Integer   piRbLastResult
+    Property Integer   piRbOpenResult
+    // ---- settings of ReadBack
+    Property Boolean   pbRbRaw
+    Property String    psRbPassphrase
+    // ---- result of BuildMemory
+    Property BigInt    pbiBuildUsed
+    Property Integer   piBuildResult
+
+    // ---- helpers -------------------------------------------------------------------------------------------------
+
+    // Writes one regular file entry (header and data) with permission 0644 and mtime 1700000000.
+    Function AddFile Pointer pArchive String sName String sContent Returns Integer
+        Pointer pEntry
+        Integer iResult
+        BigInt iWritten
+        Void_Type iVoid
+
+        Move (archive_entry_new ()) to pEntry
+        Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sName))) to iVoid
+        Move (archive_entry_set_filetype (pEntry, AE_IFREG)) to iVoid
+        Move (archive_entry_set_perm (pEntry, 420)) to iVoid
+        Move (archive_entry_set_mtime (pEntry, 1700000000, 0)) to iVoid
+        Move (archive_entry_set_size (pEntry, SizeOfString (sContent))) to iVoid
+        Move (archive_write_header (pArchive, pEntry)) to iResult
+        If (iResult = ARCHIVE_OK and SizeOfString (sContent) > 0) Begin
+            Move (archive_write_data (pArchive, AddressOf (sContent), SizeOfString (sContent))) to iWritten
+            If (iWritten <> SizeOfString (sContent)) Begin
+                Move ARCHIVE_FATAL to iResult
+            End
+        End
+        Move (archive_entry_free (pEntry)) to iVoid
+        Function_Return iResult
+    End_Function
+
+    // Writes the two standard files hello.txt and second.txt (only hello.txt when iFiles is 1).
+    Function WriteFiles Pointer pArchive Integer iFiles Returns Integer
+        Integer iResult
+        String sName sContent
+
+        Move "hello.txt" to sName
+        Move "Hello Archive" to sContent
+        Get AddFile pArchive sName sContent to iResult
+        If (iResult = ARCHIVE_OK and iFiles > 1) Begin
+            Move "second.txt" to sName
+            Move "Second file content" to sContent
+            Get AddFile pArchive sName sContent to iResult
+        End
+        Function_Return iResult
+    End_Function
+
+    // Opens the (already configured) writer on a memory buffer, writes the standard files, closes and frees the writer.
+    // ucOut gets the archive bytes. Returns the first failing result or ARCHIVE_OK.
+    Function BuildMemory Pointer pArchive Integer iFiles UChar[] ByRef ucOut Returns Integer
+        Integer iResult iFree
+        BigInt iUsed
+        UChar[] ucWork
+
+        Move (ResizeArray (ucWork, 1048576)) to ucWork
+        Move 0 to iUsed
+        Move (archive_write_open_memory (pArchive, AddressOf (ucWork), 1048576, AddressOf (iUsed))) to iResult
+        If (iResult = ARCHIVE_OK) Begin
+            Get WriteFiles pArchive iFiles to iResult
+        End
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_write_close (pArchive)) to iResult
+        End
+        Move (archive_write_free (pArchive)) to iFree
+        Move (ResizeArray (ucWork, iUsed)) to ucOut
+        Set pbiBuildUsed to iUsed
+        Set piBuildResult to iResult
+        Function_Return iResult
+    End_Function
+
+    // Same as BuildMemory but writes into a file (path as DataFlex string, opened with archive_write_open_filename_w).
+    Function BuildFile Pointer pArchive String sFile Integer iFiles Returns Integer
+        Integer iResult iFree
+        WString wsFile
+
+        Move sFile to wsFile
+        Move (archive_write_open_filename_w (pArchive, AddressOf (wsFile))) to iResult
+        If (iResult = ARCHIVE_OK) Begin
+            Get WriteFiles pArchive iFiles to iResult
+        End
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_write_close (pArchive)) to iResult
+        End
+        Move (archive_write_free (pArchive)) to iFree
+        Function_Return iResult
+    End_Function
+
+    // Reads all entries of an opened read handle and stores names, sizes, contents ... in the Rb properties.
+    Procedure ReadBackEntries Pointer pArchive
+        Pointer pEntry pName
+        Integer iResult iIndex
+        BigInt iRead
+        String[] asName asContent
+        BigInt[] aiSize aiRead
+        UChar[] ucBuf ucEmpty
+        String sContent
+
+        Set piRbCount to 0
+        Set piRbEncrypted to 0
+        Set piRbFormat to 0
+        Set piRbFilterCount to 0
+        Set piRbFilterCode to -1
+        Set psRbFilterName to ""
+        Move 0 to iIndex
+        Move (archive_read_next_header (pArchive, AddressOf (pEntry))) to iResult
+        While (iResult = ARCHIVE_OK or iResult = ARCHIVE_WARN)
+            If (iIndex = 0) Begin
+                Set piRbFormat to (archive_format (pArchive))
+                Set piRbFilterCount to (archive_filter_count (pArchive))
+                Set piRbFilterCode to (archive_filter_code (pArchive, 0))
+                Move (archive_filter_name (pArchive, 0)) to pName
+                If (pName <> 0) Begin
+                    Set psRbFilterName to (PointerToString (pName))
+                End
+            End
+            Move (archive_entry_pathname_utf8 (pEntry)) to pName
+            If (pName <> 0) Begin
+                Move (PointerToString (pName)) to asName[iIndex]
+            End
+            Else Begin
+                Move "" to asName[iIndex]
+            End
+            Move (archive_entry_size (pEntry)) to aiSize[iIndex]
+            Move (ResizeArray (ucEmpty, 262145)) to ucBuf
+            Move (archive_read_data (pArchive, AddressOf (ucBuf), 262144)) to iRead
+            If (iRead > 0) Begin
+                Move (PointerToString (AddressOf (ucBuf))) to sContent
+            End
+            Else Begin
+                Move "" to sContent
+                If (iRead < 0) Begin
+                    Move 0 to iRead
+                End
+            End
+            Move sContent to asContent[iIndex]
+            Move iRead to aiRead[iIndex]
+            Increment iIndex
+            Move (archive_read_next_header (pArchive, AddressOf (pEntry))) to iResult
+        Loop
+        If (iIndex > 0) Begin
+            Set piRbEncrypted to (archive_read_has_encrypted_entries (pArchive))
+        End
+        Set piRbCount to iIndex
+        Set piRbLastResult to iResult
+        Set pasRbName to asName
+        Set pasRbContent to asContent
+        Set pabiRbSize to aiSize
+        Set pabiRbRead to aiRead
+    End_Procedure
+
+    // Opens a read handle (all formats and filters), reads all entries into the Rb properties and frees the handle.
+    // Returns the result of the open call.
+    Function ReadBackMemory UChar[] ucArchive Returns Integer
+        Pointer pArchive
+        Integer iResult iDummy
+        String sPassphrase
+        Boolean bRaw
+
+        Get pbRbRaw to bRaw
+        Get psRbPassphrase to sPassphrase
+        Move (archive_read_new ()) to pArchive
+        Move (archive_read_support_format_all (pArchive)) to iDummy
+        If (bRaw) Begin
+            Move (archive_read_support_format_raw (pArchive)) to iDummy
+        End
+        Move (archive_read_support_filter_all (pArchive)) to iDummy
+        If (sPassphrase <> "") Begin
+            Move (archive_read_add_passphrase (pArchive, AddressOf (sPassphrase))) to iDummy
+        End
+        Move (archive_read_open_memory (pArchive, AddressOf (ucArchive), SizeOfArray (ucArchive))) to iResult
+        If (iResult = ARCHIVE_OK) Begin
+            Send ReadBackEntries pArchive
+        End
+        Move (archive_read_free (pArchive)) to iDummy
+        Set piRbOpenResult to iResult
+        Function_Return iResult
+    End_Function
+
+    // Same as ReadBackMemory for an archive file.
+    Function ReadBackFile String sFile Returns Integer
+        Pointer pArchive
+        Integer iResult iDummy
+        WString wsFile
+        String sPassphrase
+        Boolean bRaw
+
+        Get pbRbRaw to bRaw
+        Get psRbPassphrase to sPassphrase
+        Move sFile to wsFile
+        Move (archive_read_new ()) to pArchive
+        Move (archive_read_support_format_all (pArchive)) to iDummy
+        If (bRaw) Begin
+            Move (archive_read_support_format_raw (pArchive)) to iDummy
+        End
+        Move (archive_read_support_filter_all (pArchive)) to iDummy
+        If (sPassphrase <> "") Begin
+            Move (archive_read_add_passphrase (pArchive, AddressOf (sPassphrase))) to iDummy
+        End
+        Move (archive_read_open_filename_w (pArchive, AddressOf (wsFile), 10240)) to iResult
+        If (iResult = ARCHIVE_OK) Begin
+            Send ReadBackEntries pArchive
+        End
+        Move (archive_read_free (pArchive)) to iDummy
+        Set piRbOpenResult to iResult
+        Function_Return iResult
+    End_Function
+
+    Function RbName Integer iIndex Returns String
+        String[] asName
+        Get pasRbName to asName
+        Function_Return asName[iIndex]
+    End_Function
+
+    Function RbContent Integer iIndex Returns String
+        String[] asContent
+        Get pasRbContent to asContent
+        Function_Return asContent[iIndex]
+    End_Function
+
+    Function RbSize Integer iIndex Returns BigInt
+        BigInt[] aiSize
+        Get pabiRbSize to aiSize
+        Function_Return aiSize[iIndex]
+    End_Function
+
+    Function RbRead Integer iIndex Returns BigInt
+        BigInt[] aiRead
+        Get pabiRbRead to aiRead
+        Function_Return aiRead[iIndex]
+    End_Function
+
+    // Asserts that the last ReadBack found the two standard files with the right size and content.
+    Procedure AssertStandardFiles String sLabel
+        String sRbName sRbContent
+        BigInt biRbSize
+        Integer iCount
+        Get piRbCount to iCount
+        Send AssertIAreEqual 2 iCount (sLabel * "entry count")
+        If (iCount = 2) Begin
+            Get RbName 0 to sRbName
+            Send AssertSAreEqual "hello.txt" sRbName (sLabel * "name 0")
+            Get RbSize 0 to biRbSize
+            Send AssertBIAreEqual 13 biRbSize (sLabel * "size 0")
+            Get RbContent 0 to sRbContent
+            Send AssertSAreEqual "Hello Archive" sRbContent (sLabel * "content 0")
+            Get RbName 1 to sRbName
+            Send AssertSAreEqual "second.txt" sRbName (sLabel * "name 1")
+            Get RbSize 1 to biRbSize
+            Send AssertBIAreEqual 19 biRbSize (sLabel * "size 1")
+            Get RbContent 1 to sRbContent
+            Send AssertSAreEqual "Second file content" sRbContent (sLabel * "content 1")
+        End
+    End_Procedure
+
+    // Size in bytes of a file (-1 when missing) via _wstat64 (struct _stat64: st_size at offset 24).
+    Function FileSize String sFile Returns BigInt
+        WString wsFile
+        UChar[] ucStat
+        BigInt iSize
+        Integer iResult
+        Void_Type iVoid
+
+        Move sFile to wsFile
+        Move (ResizeArray (ucStat, 64)) to ucStat
+        Move (tw_crt_wstat64 (AddressOf (wsFile), AddressOf (ucStat))) to iResult
+        If (iResult <> 0) Begin
+            Function_Return -1
+        End
+        Move (tw_copymem (AddressOf (iSize), AddressOf (ucStat) + 24, 8)) to iVoid
+        Function_Return iSize
+    End_Function
+
+    // ---- tests: create / free ------------------------------------------------------------------------------------
+
+    Object oNewFreeTest is a cTest
+        Procedure Test
+            Pointer pArchive
+            Integer iResult
+
+            Move (archive_write_new ()) to pArchive
+            Send Assert (pArchive <> 0) "archive_write_new returns a handle"
+            Move (archive_write_free (pArchive)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "archive_write_free"
+
+            // deprecated synonym
+            Move (archive_write_new ()) to pArchive
+            Move (archive_write_finish (pArchive)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "archive_write_finish"
+        End_Procedure
+    End_Object
+
+    // ---- format functions ----------------------------------------------------------------------------------------
+
+    Function KindLabel Integer iKind Returns String
+        Case Begin
+            Case (iKind = 1)  Function_Return "7zip"
+            Case (iKind = 2)  Function_Return "ar_bsd"
+            Case (iKind = 3)  Function_Return "ar_svr4"
+            Case (iKind = 4)  Function_Return "cpio"
+            Case (iKind = 5)  Function_Return "cpio_bin"
+            Case (iKind = 6)  Function_Return "cpio_newc"
+            Case (iKind = 7)  Function_Return "cpio_odc"
+            Case (iKind = 8)  Function_Return "cpio_pwb"
+            Case (iKind = 9)  Function_Return "gnutar"
+            Case (iKind = 10) Function_Return "iso9660"
+            Case (iKind = 11) Function_Return "mtree"
+            Case (iKind = 12) Function_Return "mtree_classic"
+            Case (iKind = 13) Function_Return "pax"
+            Case (iKind = 14) Function_Return "pax_restricted"
+            Case (iKind = 15) Function_Return "raw"
+            Case (iKind = 16) Function_Return "shar"
+            Case (iKind = 17) Function_Return "shar_dump"
+            Case (iKind = 18) Function_Return "ustar"
+            Case (iKind = 19) Function_Return "v7tar"
+            Case (iKind = 20) Function_Return "warc"
+            Case (iKind = 21) Function_Return "xar"
+            Case (iKind = 22) Function_Return "zip"
+        Case End
+        Function_Return ""
+    End_Function
+
+    // Calls the archive_write_set_format_* function that belongs to the kind number.
+    Function SetFormatByKind Pointer pArchive Integer iKind Returns Integer
+        Integer iResult
+        Case Begin
+            Case (iKind = 1)  Move (archive_write_set_format_7zip (pArchive)) to iResult
+            Case Break
+            Case (iKind = 2)  Move (archive_write_set_format_ar_bsd (pArchive)) to iResult
+            Case Break
+            Case (iKind = 3)  Move (archive_write_set_format_ar_svr4 (pArchive)) to iResult
+            Case Break
+            Case (iKind = 4)  Move (archive_write_set_format_cpio (pArchive)) to iResult
+            Case Break
+            Case (iKind = 5)  Move (archive_write_set_format_cpio_bin (pArchive)) to iResult
+            Case Break
+            Case (iKind = 6)  Move (archive_write_set_format_cpio_newc (pArchive)) to iResult
+            Case Break
+            Case (iKind = 7)  Move (archive_write_set_format_cpio_odc (pArchive)) to iResult
+            Case Break
+            Case (iKind = 8)  Move (archive_write_set_format_cpio_pwb (pArchive)) to iResult
+            Case Break
+            Case (iKind = 9)  Move (archive_write_set_format_gnutar (pArchive)) to iResult
+            Case Break
+            Case (iKind = 10) Move (archive_write_set_format_iso9660 (pArchive)) to iResult
+            Case Break
+            Case (iKind = 11) Move (archive_write_set_format_mtree (pArchive)) to iResult
+            Case Break
+            Case (iKind = 12) Move (archive_write_set_format_mtree_classic (pArchive)) to iResult
+            Case Break
+            Case (iKind = 13) Move (archive_write_set_format_pax (pArchive)) to iResult
+            Case Break
+            Case (iKind = 14) Move (archive_write_set_format_pax_restricted (pArchive)) to iResult
+            Case Break
+            Case (iKind = 15) Move (archive_write_set_format_raw (pArchive)) to iResult
+            Case Break
+            Case (iKind = 16) Move (archive_write_set_format_shar (pArchive)) to iResult
+            Case Break
+            Case (iKind = 17) Move (archive_write_set_format_shar_dump (pArchive)) to iResult
+            Case Break
+            Case (iKind = 18) Move (archive_write_set_format_ustar (pArchive)) to iResult
+            Case Break
+            Case (iKind = 19) Move (archive_write_set_format_v7tar (pArchive)) to iResult
+            Case Break
+            Case (iKind = 20) Move (archive_write_set_format_warc (pArchive)) to iResult
+            Case Break
+            Case (iKind = 21) Move (archive_write_set_format_xar (pArchive)) to iResult
+            Case Break
+            Case (iKind = 22) Move (archive_write_set_format_zip (pArchive)) to iResult
+            Case Break
+            Case Else Move ARCHIVE_FATAL to iResult
+        Case End
+        Function_Return iResult
+    End_Function
+
+    // Format code the reader reports for the kind, 0 when libarchive cannot read it (shar) and -1 when the format
+    // writer is not available in this build (xar).
+    Function KindReadFormat Integer iKind Returns Integer
+        Case Begin
+            Case (iKind = 1)  Function_Return ARCHIVE_FORMAT_7ZIP
+            Case (iKind = 2)  Function_Return ARCHIVE_FORMAT_AR
+            Case (iKind = 3)  Function_Return ARCHIVE_FORMAT_AR_GNU
+            Case (iKind = 4)  Function_Return ARCHIVE_FORMAT_CPIO_POSIX
+            Case (iKind = 5)  Function_Return ARCHIVE_FORMAT_CPIO_BIN_LE
+            Case (iKind = 6)  Function_Return ARCHIVE_FORMAT_CPIO_SVR4_NOCRC
+            Case (iKind = 7)  Function_Return ARCHIVE_FORMAT_CPIO_POSIX
+            Case (iKind = 8)  Function_Return ARCHIVE_FORMAT_CPIO_BIN_LE
+            Case (iKind = 9)  Function_Return ARCHIVE_FORMAT_TAR_GNUTAR
+            Case (iKind = 10) Function_Return ARCHIVE_FORMAT_ISO9660_ROCKRIDGE
+            Case (iKind = 11 or iKind = 12) Function_Return ARCHIVE_FORMAT_MTREE
+            Case (iKind = 13 or iKind = 14 or iKind = 18) Function_Return ARCHIVE_FORMAT_TAR_USTAR
+            Case (iKind = 15) Function_Return ARCHIVE_FORMAT_RAW
+            Case (iKind = 19) Function_Return ARCHIVE_FORMAT_TAR
+            Case (iKind = 20) Function_Return ARCHIVE_FORMAT_WARC
+            Case (iKind = 21) Function_Return -1
+            Case (iKind = 22) Function_Return ARCHIVE_FORMAT_ZIP
+        Case End
+        Function_Return 0
+    End_Function
+
+    // Index of the entry with the name (also found with a leading "./" as written by mtree), -1 when missing.
+    Function FindEntry String sName Returns Integer
+        Integer iCount iIndex
+        String sFound
+        Get piRbCount to iCount
+        For iIndex from 0 to (iCount - 1)
+            Get RbName iIndex to sFound
+            If (sFound = sName or sFound = ("./" + sName)) Begin
+                Function_Return iIndex
+            End
+        Loop
+        Function_Return -1
+    End_Function
+
+    Object oFormatFunctionsTest is a cTest
+        Procedure Test
+            Integer iKind iResult iFiles iExpected iFormat iIndex
+            Pointer pArchive
+            BigInt iSize
+            UChar[] ucArchive ucText
+            String sLabel sText
+
+            For iKind from 1 to 22
+                Delegate Get KindLabel iKind to sLabel
+                Delegate Get KindReadFormat iKind to iExpected
+                Move (archive_write_new ()) to pArchive
+                Delegate Get SetFormatByKind pArchive iKind to iResult
+                If (iExpected = -1) Begin
+                    // xar needs libxml2 which this archive.dll was built without
+                    Send AssertIAreEqual ARCHIVE_WARN iResult (sLabel * "set_format")
+                    Delegate Get ErrorText pArchive to sText
+                    Send Assert (Pos ("not supported", sText) > 0) (sLabel * "error text:" * sText)
+                    Delegate Get BuildMemory pArchive 2 (&ucArchive) to iResult
+                    Send AssertIAreEqual ARCHIVE_FATAL iResult (sLabel * "write archive without writer")
+                End
+                Else Begin
+                    Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "set_format")
+                    If (iKind = 15) Begin
+                        Move 1 to iFiles
+                    End
+                    Else Begin
+                        Move 2 to iFiles
+                    End
+                    Delegate Get BuildMemory pArchive iFiles (&ucArchive) to iResult
+                    Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "write archive")
+                    Send Assert (SizeOfArray (ucArchive) > 0) (sLabel * "archive has bytes")
+                    If (iExpected = 0) Begin
+                        // shar: a shell script containing the names and the contents
+                        Move (ResizeArray (ucArchive, SizeOfArray (ucArchive) + 1)) to ucText
+                        Move (PointerToString (AddressOf (ucText))) to sText
+                        If (iKind = 16) Begin
+                            // plain text with X prefixed lines
+                            Send Assert (Pos ("XHello Archive", sText) > 0) "shar contains the prefixed content"
+                        End
+                        Else Begin
+                            // uuencoded content
+                            Send Assert (Pos ("begin 644 hello.txt", sText) > 0) "shar_dump contains the uuencoded file"
+                            Send Assert (Pos ("uudecode", sText) > 0) "shar_dump uses uudecode"
+                        End
+                        Send Assert (Pos ("hello.txt", sText) > 0) (sLabel * "script contains name")
+                        Send Assert (Pos ("second.txt", sText) > 0) (sLabel * "script contains second name")
+                    End
+                    Else Begin
+                        Delegate Set pbRbRaw to (iKind = 15)
+                        Delegate Get ReadBackMemory ucArchive to iResult
+                        Delegate Set pbRbRaw to False
+                        Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "read back open")
+                        Delegate Get piRbFormat to iFormat
+                        Send AssertIAreEqual iExpected iFormat (sLabel * "format code")
+                        If (iKind = 15) Begin
+                            Delegate Get RbName 0 to sText
+                            Send AssertSAreEqual "data" sText "raw entry name"
+                            Delegate Get RbContent 0 to sText
+                            Send AssertSAreEqual "Hello Archive" sText "raw content"
+                        End
+                        Else Begin
+                            Delegate Get FindEntry "hello.txt" to iIndex
+                            Send Assert (iIndex >= 0) (sLabel * "hello.txt found")
+                            If (iIndex >= 0) Begin
+                                Delegate Get RbSize iIndex to iSize
+                                Send AssertBIAreEqual 13 iSize (sLabel * "hello.txt size")
+                                If (iKind <> 11 and iKind <> 12) Begin
+                                    Delegate Get RbContent iIndex to sText
+                                    Send AssertSAreEqual "Hello Archive" sText (sLabel * "hello.txt content")
+                                End
+                            End
+                            Delegate Get FindEntry "second.txt" to iIndex
+                            Send Assert (iIndex >= 0) (sLabel * "second.txt found")
+                            If (iIndex >= 0) Begin
+                                Delegate Get RbSize iIndex to iSize
+                                Send AssertBIAreEqual 19 iSize (sLabel * "second.txt size")
+                                If (iKind <> 11 and iKind <> 12) Begin
+                                    Delegate Get RbContent iIndex to sText
+                                    Send AssertSAreEqual "Second file content" sText (sLabel * "second.txt content")
+                                End
+                            End
+                        End
+                    End
+                End
+            Loop
+        End_Procedure
+    End_Object
+
+    // ---- format by code and name ---------------------------------------------------------------------------------
+
+    Function NewTarWriter Returns Pointer
+        Pointer pArchive
+        Integer iResult
+        Move (archive_write_new ()) to pArchive
+        Move (archive_write_set_format_ustar (pArchive)) to iResult
+        Function_Return pArchive
+    End_Function
+
+    // Format codes for archive_write_set_format; the expected reader format is returned by CodeReadFormat.
+    Function CodeValue Integer iIndex Returns Integer
+        Case Begin
+            Case (iIndex = 1)  Function_Return ARCHIVE_FORMAT_ZIP
+            Case (iIndex = 2)  Function_Return ARCHIVE_FORMAT_7ZIP
+            Case (iIndex = 3)  Function_Return ARCHIVE_FORMAT_TAR_PAX_INTERCHANGE
+            Case (iIndex = 4)  Function_Return ARCHIVE_FORMAT_TAR_PAX_RESTRICTED
+            Case (iIndex = 5)  Function_Return ARCHIVE_FORMAT_TAR_USTAR
+            Case (iIndex = 6)  Function_Return ARCHIVE_FORMAT_TAR_GNUTAR
+            Case (iIndex = 7)  Function_Return ARCHIVE_FORMAT_TAR
+            Case (iIndex = 8)  Function_Return ARCHIVE_FORMAT_CPIO_POSIX
+            Case (iIndex = 9)  Function_Return ARCHIVE_FORMAT_CPIO_BIN_LE
+            Case (iIndex = 10) Function_Return ARCHIVE_FORMAT_CPIO_SVR4_NOCRC
+            Case (iIndex = 11) Function_Return ARCHIVE_FORMAT_CPIO_SVR4_CRC
+            Case (iIndex = 12) Function_Return ARCHIVE_FORMAT_CPIO_PWB
+            Case (iIndex = 13) Function_Return ARCHIVE_FORMAT_AR_BSD
+            Case (iIndex = 14) Function_Return ARCHIVE_FORMAT_AR_GNU
+            Case (iIndex = 15) Function_Return ARCHIVE_FORMAT_ISO9660
+            Case (iIndex = 16) Function_Return ARCHIVE_FORMAT_MTREE
+            Case (iIndex = 17) Function_Return ARCHIVE_FORMAT_SHAR_BASE
+            Case (iIndex = 18) Function_Return ARCHIVE_FORMAT_SHAR_DUMP
+            Case (iIndex = 19) Function_Return ARCHIVE_FORMAT_WARC
+        Case End
+        Function_Return 0
+    End_Function
+
+    // Format the reader reports for an archive written with CodeValue (0 = cannot be read back).
+    Function CodeReadFormat Integer iIndex Returns Integer
+        Case Begin
+            Case (iIndex = 1)  Function_Return ARCHIVE_FORMAT_ZIP
+            Case (iIndex = 2)  Function_Return ARCHIVE_FORMAT_7ZIP
+            Case (iIndex = 3 or iIndex = 4 or iIndex = 5) Function_Return ARCHIVE_FORMAT_TAR_USTAR
+            Case (iIndex = 6)  Function_Return ARCHIVE_FORMAT_TAR_GNUTAR
+            Case (iIndex = 7)  Function_Return ARCHIVE_FORMAT_TAR_USTAR // the generic tar code selects ustar
+            Case (iIndex = 8)  Function_Return ARCHIVE_FORMAT_CPIO_POSIX
+            Case (iIndex = 9)  Function_Return ARCHIVE_FORMAT_CPIO_BIN_LE
+            Case (iIndex = 10) Function_Return ARCHIVE_FORMAT_CPIO_SVR4_NOCRC
+            Case (iIndex = 12) Function_Return ARCHIVE_FORMAT_CPIO_BIN_LE
+            Case (iIndex = 15) Function_Return ARCHIVE_FORMAT_ISO9660_ROCKRIDGE
+            Case (iIndex = 19) Function_Return ARCHIVE_FORMAT_WARC
+        Case End
+        Function_Return 0
+    End_Function
+
+    Object oFormatByCodeTest is a cTest
+        Procedure Test
+            Integer iIndex iCode iResult iExpected iFormat iFoundAt
+            Pointer pArchive
+            UChar[] ucArchive
+            String sText
+
+            For iIndex from 1 to 19
+                Delegate Get CodeValue iIndex to iCode
+                Delegate Get CodeReadFormat iIndex to iExpected
+                Move (archive_write_new ()) to pArchive
+                Move (archive_write_set_format (pArchive, iCode)) to iResult
+                If (iIndex = 11 or iIndex = 13 or iIndex = 14) Begin
+                    // cpio svr4 with crc and ar variants cannot be selected by format code
+                    Send AssertIAreEqual ARCHIVE_FATAL iResult ("format code" * String (iCode) * "is not selectable")
+                    Move (archive_write_free (pArchive)) to iResult
+                End
+                Else If (iResult = ARCHIVE_OK) Begin
+                    If (iExpected <> 0) Begin
+                        Delegate Get BuildMemory pArchive 2 (&ucArchive) to iResult
+                        Send AssertIAreEqual ARCHIVE_OK iResult ("format code" * String (iCode) * "write")
+                        Delegate Get ReadBackMemory ucArchive to iResult
+                        Send AssertIAreEqual ARCHIVE_OK iResult ("format code" * String (iCode) * "read back")
+                        Delegate Get piRbFormat to iFormat
+                        Send AssertIAreEqual iExpected iFormat ("format code" * String (iCode) * "reader format")
+                        Delegate Get FindEntry "second.txt" to iFoundAt
+                        Send Assert (iFoundAt >= 0) ("format code" * String (iCode) * "second.txt found")
+                    End
+                    Else Begin
+                        Move (archive_write_free (pArchive)) to iResult
+                    End
+                End
+                Else Begin
+                    Send AssertIAreEqual ARCHIVE_OK iResult ("format code" * String (iCode) * "set_format")
+                    Move (archive_write_free (pArchive)) to iResult
+                End
+            Loop
+
+            // an unknown format code fails
+            Move (archive_write_new ()) to pArchive
+            Move (archive_write_set_format (pArchive, 12345678)) to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "unknown format code"
+            Delegate Get ErrorText pArchive to sText
+            Send Assert (sText <> "") "unknown format code has an error text"
+            Move (archive_write_free (pArchive)) to iResult
+        End_Procedure
+    End_Object
+
+    // Names for archive_write_set_format_by_name and the expected reader format.
+    Function NameValue Integer iIndex Returns String
+        Case Begin
+            Case (iIndex = 1)  Function_Return "zip"
+            Case (iIndex = 2)  Function_Return "7zip"
+            Case (iIndex = 3)  Function_Return "pax"
+            Case (iIndex = 4)  Function_Return "paxr"
+            Case (iIndex = 5)  Function_Return "ustar"
+            Case (iIndex = 6)  Function_Return "gnutar"
+            Case (iIndex = 7)  Function_Return "v7tar"
+            Case (iIndex = 8)  Function_Return "cpio"
+            Case (iIndex = 9)  Function_Return "newc"
+            Case (iIndex = 10) Function_Return "odc"
+            Case (iIndex = 11) Function_Return "bin"
+            Case (iIndex = 12) Function_Return "arbsd"
+            Case (iIndex = 13) Function_Return "argnu"
+            Case (iIndex = 14) Function_Return "arsvr4"
+            Case (iIndex = 15) Function_Return "iso9660"
+            Case (iIndex = 16) Function_Return "mtree"
+            Case (iIndex = 17) Function_Return "shar"
+            Case (iIndex = 18) Function_Return "warc"
+            Case (iIndex = 19) Function_Return "raw"
+        Case End
+        Function_Return ""
+    End_Function
+
+    Function NameReadFormat Integer iIndex Returns Integer
+        Case Begin
+            Case (iIndex = 1)  Function_Return ARCHIVE_FORMAT_ZIP
+            Case (iIndex = 2)  Function_Return ARCHIVE_FORMAT_7ZIP
+            Case (iIndex = 3 or iIndex = 4 or iIndex = 5) Function_Return ARCHIVE_FORMAT_TAR_USTAR
+            Case (iIndex = 6)  Function_Return ARCHIVE_FORMAT_TAR_GNUTAR
+            Case (iIndex = 7)  Function_Return ARCHIVE_FORMAT_TAR
+            Case (iIndex = 8 or iIndex = 10)  Function_Return ARCHIVE_FORMAT_CPIO_POSIX
+            Case (iIndex = 9)  Function_Return ARCHIVE_FORMAT_CPIO_SVR4_NOCRC
+            Case (iIndex = 11) Function_Return ARCHIVE_FORMAT_CPIO_BIN_LE
+            Case (iIndex = 12) Function_Return ARCHIVE_FORMAT_AR
+            Case (iIndex = 13 or iIndex = 14) Function_Return ARCHIVE_FORMAT_AR_GNU
+            Case (iIndex = 15) Function_Return ARCHIVE_FORMAT_ISO9660_ROCKRIDGE
+            Case (iIndex = 16) Function_Return ARCHIVE_FORMAT_MTREE
+            Case (iIndex = 18) Function_Return ARCHIVE_FORMAT_WARC
+        Case End
+        Function_Return 0
+    End_Function
+
+    Object oFormatByNameTest is a cTest
+        Procedure Test
+            Integer iIndex iResult iExpected iFormat iFoundAt
+            Pointer pArchive
+            UChar[] ucArchive
+            String sName sText
+
+            For iIndex from 1 to 18
+                Delegate Get NameValue iIndex to sName
+                Delegate Get NameReadFormat iIndex to iExpected
+                Move (archive_write_new ()) to pArchive
+                Move (archive_write_set_format_by_name (pArchive, AddressOf (sName))) to iResult
+                Send AssertIAreEqual ARCHIVE_OK iResult ("format name" * sName * "set")
+                If (iResult = ARCHIVE_OK and iExpected <> 0) Begin
+                    Delegate Get BuildMemory pArchive 2 (&ucArchive) to iResult
+                    Send AssertIAreEqual ARCHIVE_OK iResult ("format name" * sName * "write")
+                    Delegate Get ReadBackMemory ucArchive to iResult
+                    Send AssertIAreEqual ARCHIVE_OK iResult ("format name" * sName * "read back")
+                    Delegate Get piRbFormat to iFormat
+                    Send AssertIAreEqual iExpected iFormat ("format name" * sName * "reader format")
+                    Delegate Get FindEntry "second.txt" to iFoundAt
+                    Send Assert (iFoundAt >= 0) ("format name" * sName * "second.txt found")
+                End
+                Else Begin
+                    Move (archive_write_free (pArchive)) to iResult
+                End
+            Loop
+
+            // raw
+            Move "raw" to sName
+            Move (archive_write_new ()) to pArchive
+            Move (archive_write_set_format_by_name (pArchive, AddressOf (sName))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "format name raw"
+            Delegate Get BuildMemory pArchive 1 (&ucArchive) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "format name raw write"
+            Delegate Set pbRbRaw to True
+            Delegate Get ReadBackMemory ucArchive to iResult
+            Delegate Set pbRbRaw to False
+            Delegate Get RbContent 0 to sText
+            Send AssertSAreEqual "Hello Archive" sText "format name raw content"
+
+            // unknown name
+            Move "nosuchformat" to sName
+            Move (archive_write_new ()) to pArchive
+            Move (archive_write_set_format_by_name (pArchive, AddressOf (sName))) to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "unknown format name"
+            Delegate Get ErrorText pArchive to sText
+            Send Assert (sText <> "") "unknown format name has an error text"
+            Move (archive_write_free (pArchive)) to iResult
+        End_Procedure
+    End_Object
+
+    Object oFormatByExtTest is a cTest
+        Procedure Test
+            Integer iResult iFormat iFilter
+            Pointer pArchive
+            UChar[] ucArchive
+            String sName sDefault sText
+
+            // .tar.gz selects a tar format with the gzip filter
+            Move "backup.tar.gz" to sName
+            Move (archive_write_new ()) to pArchive
+            Move (archive_write_set_format_filter_by_ext (pArchive, AddressOf (sName))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "by_ext tar.gz"
+            Delegate Get BuildMemory pArchive 2 (&ucArchive) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "by_ext tar.gz write"
+            Delegate Get ReadBackMemory ucArchive to iResult
+            Delegate Get piRbFormat to iFormat
+            Delegate Get piRbFilterCode to iFilter
+            Send AssertIAreEqual ARCHIVE_FORMAT_TAR (iFormat iand ARCHIVE_FORMAT_BASE_MASK) "by_ext tar.gz format"
+            Send AssertIAreEqual ARCHIVE_FILTER_GZIP iFilter "by_ext tar.gz filter"
+            Delegate Send AssertStandardFiles "by_ext tar.gz"
+
+            // .zip
+            Move "backup.zip" to sName
+            Move (archive_write_new ()) to pArchive
+            Move (archive_write_set_format_filter_by_ext (pArchive, AddressOf (sName))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "by_ext zip"
+            Delegate Get BuildMemory pArchive 2 (&ucArchive) to iResult
+            Delegate Get ReadBackMemory ucArchive to iResult
+            Delegate Get piRbFormat to iFormat
+            Send AssertIAreEqual ARCHIVE_FORMAT_ZIP iFormat "by_ext zip format"
+
+            // .7z
+            Move "backup.7z" to sName
+            Move (archive_write_new ()) to pArchive
+            Move (archive_write_set_format_filter_by_ext (pArchive, AddressOf (sName))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "by_ext 7z"
+            Delegate Get BuildMemory pArchive 2 (&ucArchive) to iResult
+            Delegate Get ReadBackMemory ucArchive to iResult
+            Delegate Get piRbFormat to iFormat
+            Send AssertIAreEqual ARCHIVE_FORMAT_7ZIP iFormat "by_ext 7z format"
+
+            // unknown extension without default fails
+            Move "backup.unknownext" to sName
+            Move (archive_write_new ()) to pArchive
+            Move (archive_write_set_format_filter_by_ext (pArchive, AddressOf (sName))) to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "by_ext unknown extension"
+            Move (archive_write_free (pArchive)) to iResult
+
+            // the _def variant uses the default extension instead
+            Move ".tar.bz2" to sDefault
+            Move (archive_write_new ()) to pArchive
+            Move (archive_write_set_format_filter_by_ext_def (pArchive, AddressOf (sName), AddressOf (sDefault))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "by_ext_def unknown extension"
+            Delegate Get BuildMemory pArchive 2 (&ucArchive) to iResult
+            Delegate Get ReadBackMemory ucArchive to iResult
+            Delegate Get piRbFilterCode to iFilter
+            Send AssertIAreEqual ARCHIVE_FILTER_BZIP2 iFilter "by_ext_def default filter"
+            Delegate Send AssertStandardFiles "by_ext_def default"
+
+            // a known extension wins over the default
+            Move "backup.zip" to sName
+            Move (archive_write_new ()) to pArchive
+            Move (archive_write_set_format_filter_by_ext_def (pArchive, AddressOf (sName), AddressOf (sDefault))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "by_ext_def known extension"
+            Delegate Get BuildMemory pArchive 2 (&ucArchive) to iResult
+            Delegate Get ReadBackMemory ucArchive to iResult
+            Delegate Get piRbFormat to iFormat
+            Send AssertIAreEqual ARCHIVE_FORMAT_ZIP iFormat "by_ext_def known extension format"
+        End_Procedure
+    End_Object
+
+    // ---- filters -------------------------------------------------------------------------------------------------
+
+    Function FilterLabel Integer iKind Returns String
+        Case Begin
+            Case (iKind = 1)  Function_Return "gzip"
+            Case (iKind = 2)  Function_Return "bzip2"
+            Case (iKind = 3)  Function_Return "xz"
+            Case (iKind = 4)  Function_Return "lzma"
+            Case (iKind = 5)  Function_Return "lzip"
+            Case (iKind = 6)  Function_Return "zstd"
+            Case (iKind = 7)  Function_Return "lz4"
+            Case (iKind = 8)  Function_Return "compress"
+            Case (iKind = 9)  Function_Return "uuencode"
+            Case (iKind = 10) Function_Return "none"
+            Case (iKind = 11) Function_Return "b64encode"
+            Case (iKind = 12) Function_Return "set_compression_bzip2"
+            Case (iKind = 13) Function_Return "set_compression_compress"
+            Case (iKind = 14) Function_Return "set_compression_gzip"
+            Case (iKind = 15) Function_Return "set_compression_lzip"
+            Case (iKind = 16) Function_Return "set_compression_lzma"
+            Case (iKind = 17) Function_Return "set_compression_none"
+            Case (iKind = 18) Function_Return "set_compression_xz"
+        Case End
+        Function_Return ""
+    End_Function
+
+    Function AddFilterByKind Pointer pArchive Integer iKind Returns Integer
+        Integer iResult
+        Case Begin
+            Case (iKind = 1)  Move (archive_write_add_filter_gzip (pArchive)) to iResult
+            Case Break
+            Case (iKind = 2)  Move (archive_write_add_filter_bzip2 (pArchive)) to iResult
+            Case Break
+            Case (iKind = 3)  Move (archive_write_add_filter_xz (pArchive)) to iResult
+            Case Break
+            Case (iKind = 4)  Move (archive_write_add_filter_lzma (pArchive)) to iResult
+            Case Break
+            Case (iKind = 5)  Move (archive_write_add_filter_lzip (pArchive)) to iResult
+            Case Break
+            Case (iKind = 6)  Move (archive_write_add_filter_zstd (pArchive)) to iResult
+            Case Break
+            Case (iKind = 7)  Move (archive_write_add_filter_lz4 (pArchive)) to iResult
+            Case Break
+            Case (iKind = 8)  Move (archive_write_add_filter_compress (pArchive)) to iResult
+            Case Break
+            Case (iKind = 9)  Move (archive_write_add_filter_uuencode (pArchive)) to iResult
+            Case Break
+            Case (iKind = 10) Move (archive_write_add_filter_none (pArchive)) to iResult
+            Case Break
+            Case (iKind = 11) Move (archive_write_add_filter_b64encode (pArchive)) to iResult
+            Case Break
+            Case (iKind = 12) Move (archive_write_set_compression_bzip2 (pArchive)) to iResult
+            Case Break
+            Case (iKind = 13) Move (archive_write_set_compression_compress (pArchive)) to iResult
+            Case Break
+            Case (iKind = 14) Move (archive_write_set_compression_gzip (pArchive)) to iResult
+            Case Break
+            Case (iKind = 15) Move (archive_write_set_compression_lzip (pArchive)) to iResult
+            Case Break
+            Case (iKind = 16) Move (archive_write_set_compression_lzma (pArchive)) to iResult
+            Case Break
+            Case (iKind = 17) Move (archive_write_set_compression_none (pArchive)) to iResult
+            Case Break
+            Case (iKind = 18) Move (archive_write_set_compression_xz (pArchive)) to iResult
+            Case Break
+            Case Else Move ARCHIVE_FATAL to iResult
+        Case End
+        Function_Return iResult
+    End_Function
+
+    // Filter code the reader reports for the kind; -1 when the filter cannot be read back (base64).
+    Function FilterReadCode Integer iKind Returns Integer
+        Case Begin
+            Case (iKind = 1 or iKind = 14)  Function_Return ARCHIVE_FILTER_GZIP
+            Case (iKind = 2 or iKind = 12)  Function_Return ARCHIVE_FILTER_BZIP2
+            Case (iKind = 3 or iKind = 18)  Function_Return ARCHIVE_FILTER_XZ
+            Case (iKind = 4 or iKind = 16)  Function_Return ARCHIVE_FILTER_LZMA
+            Case (iKind = 5 or iKind = 15)  Function_Return ARCHIVE_FILTER_LZIP
+            Case (iKind = 6)  Function_Return ARCHIVE_FILTER_ZSTD
+            Case (iKind = 7)  Function_Return ARCHIVE_FILTER_LZ4
+            Case (iKind = 8 or iKind = 13)  Function_Return ARCHIVE_FILTER_COMPRESS
+            Case (iKind = 9)  Function_Return ARCHIVE_FILTER_UU
+            Case (iKind = 10 or iKind = 17) Function_Return ARCHIVE_FILTER_NONE
+        Case End
+        Function_Return -1
+    End_Function
+
+    Object oFilterFunctionsTest is a cTest
+        Procedure Test
+            Integer iKind iResult iExpected iCode iCount
+            Pointer pArchive
+            UChar[] ucArchive ucText
+            String sLabel sText
+
+            For iKind from 1 to 18
+                Delegate Get FilterLabel iKind to sLabel
+                Delegate Get FilterReadCode iKind to iExpected
+                Delegate Get NewTarWriter to pArchive
+                Delegate Get AddFilterByKind pArchive iKind to iResult
+                Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "add filter")
+                Move (archive_filter_count (pArchive)) to iCount
+                Move (archive_filter_code (pArchive, 0)) to iCode
+                If (iKind = 10 or iKind = 17) Begin
+                    Send AssertIAreEqual 0 iCount (sLabel * "writer filter count")
+                End
+                Else Begin
+                    Send AssertIAreEqual 1 iCount (sLabel * "writer filter count")
+                    If (iKind = 11) Begin
+                        // the base64 writer reports the code of the uuencode filter
+                        Send AssertIAreEqual ARCHIVE_FILTER_UU iCode (sLabel * "writer filter code")
+                    End
+                    Else Begin
+                        Send AssertIAreEqual iExpected iCode (sLabel * "writer filter code")
+                    End
+                End
+                Delegate Get BuildMemory pArchive 2 (&ucArchive) to iResult
+                Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "write archive")
+                If (iExpected >= 0) Begin
+                    Delegate Get ReadBackMemory ucArchive to iResult
+                    Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "read back")
+                    Delegate Get piRbFilterCode to iCode
+                    Send AssertIAreEqual iExpected iCode (sLabel * "filter code")
+                    Delegate Send AssertStandardFiles sLabel
+                End
+                Else Begin
+                    // base64: text that starts with the begin-base64 line
+                    Move (ResizeArray (ucArchive, SizeOfArray (ucArchive) + 1)) to ucText
+                    Move (PointerToString (AddressOf (ucText))) to sText
+                    Send AssertSAreEqual "begin-base64 644 " (Left (sText, 17)) (sLabel * "starts with begin-base64")
+                End
+            Loop
+        End_Procedure
+    End_Object
+
+    // Writes the standard files, closes and frees an already opened writer.
+    Function FinishOpened Pointer pArchive Integer iFiles Returns Integer
+        Integer iResult iFree
+
+        Get WriteFiles pArchive iFiles to iResult
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_write_close (pArchive)) to iResult
+        End
+        Move (archive_write_free (pArchive)) to iFree
+        Function_Return iResult
+    End_Function
+
+    Function FilterCodeValue Integer iIndex Returns Integer
+        Case Begin
+            Case (iIndex = 1) Function_Return ARCHIVE_FILTER_GZIP
+            Case (iIndex = 2) Function_Return ARCHIVE_FILTER_BZIP2
+            Case (iIndex = 3) Function_Return ARCHIVE_FILTER_COMPRESS
+            Case (iIndex = 4) Function_Return ARCHIVE_FILTER_LZMA
+            Case (iIndex = 5) Function_Return ARCHIVE_FILTER_XZ
+            Case (iIndex = 6) Function_Return ARCHIVE_FILTER_UU
+            Case (iIndex = 7) Function_Return ARCHIVE_FILTER_LZIP
+            Case (iIndex = 8) Function_Return ARCHIVE_FILTER_LZ4
+            Case (iIndex = 9) Function_Return ARCHIVE_FILTER_ZSTD
+        Case End
+        Function_Return -1
+    End_Function
+
+    Object oFilterByCodeTest is a cTest
+        Procedure Test
+            Integer iIndex iCode iResult iCount iFilter
+            Pointer pArchive
+            UChar[] ucArchive
+
+            For iIndex from 1 to 9
+                Delegate Get FilterCodeValue iIndex to iCode
+                Delegate Get NewTarWriter to pArchive
+                Move (archive_write_add_filter (pArchive, iCode)) to iResult
+                Send AssertIAreEqual ARCHIVE_OK iResult ("add_filter code" * String (iCode))
+                Move (archive_filter_code (pArchive, 0)) to iFilter
+                Send AssertIAreEqual iCode iFilter ("writer filter code" * String (iCode))
+                Delegate Get BuildMemory pArchive 2 (&ucArchive) to iResult
+                Send AssertIAreEqual ARCHIVE_OK iResult ("write code" * String (iCode))
+                Delegate Get ReadBackMemory ucArchive to iResult
+                Delegate Get piRbFilterCode to iFilter
+                Send AssertIAreEqual iCode iFilter ("read filter code" * String (iCode))
+                Delegate Send AssertStandardFiles ("filter code" * String (iCode))
+            Loop
+
+            // none adds no filter
+            Move (archive_write_new ()) to pArchive
+            Move (archive_write_add_filter (pArchive, ARCHIVE_FILTER_NONE)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "add_filter none"
+            Move (archive_filter_count (pArchive)) to iCount
+            Send AssertIAreEqual 0 iCount "add_filter none count"
+            Move (archive_write_free (pArchive)) to iResult
+
+            // program, rpm and unknown codes cannot be added this way
+            For iIndex from 1 to 3
+                Move (archive_write_new ()) to pArchive
+                Case Begin
+                    Case (iIndex = 1) Move ARCHIVE_FILTER_PROGRAM to iCode
+                    Case Break
+                    Case (iIndex = 2) Move ARCHIVE_FILTER_RPM to iCode
+                    Case Break
+                    Case (iIndex = 3) Move 99 to iCode
+                    Case Break
+                Case End
+                Move (archive_write_add_filter (pArchive, iCode)) to iResult
+                Send AssertIAreEqual ARCHIVE_FATAL iResult ("add_filter unsupported code" * String (iCode))
+                Move (archive_write_free (pArchive)) to iResult
+            Loop
+        End_Procedure
+    End_Object
+
+    Function FilterNameValue Integer iIndex Returns String
+        Case Begin
+            Case (iIndex = 1)  Function_Return "gzip"
+            Case (iIndex = 2)  Function_Return "bzip2"
+            Case (iIndex = 3)  Function_Return "xz"
+            Case (iIndex = 4)  Function_Return "lzma"
+            Case (iIndex = 5)  Function_Return "lzip"
+            Case (iIndex = 6)  Function_Return "zstd"
+            Case (iIndex = 7)  Function_Return "lz4"
+            Case (iIndex = 8)  Function_Return "compress"
+            Case (iIndex = 9)  Function_Return "uuencode"
+            Case (iIndex = 10) Function_Return "none"
+            Case (iIndex = 11) Function_Return "b64encode"
+        Case End
+        Function_Return ""
+    End_Function
+
+    Object oFilterByNameTest is a cTest
+        Procedure Test
+            Integer iIndex iResult iFilter iExpected
+            Pointer pArchive
+            UChar[] ucArchive
+            String sName sText
+
+            For iIndex from 1 to 11
+                Delegate Get FilterNameValue iIndex to sName
+                Delegate Get FilterReadCode iIndex to iExpected
+                Delegate Get NewTarWriter to pArchive
+                Move (archive_write_add_filter_by_name (pArchive, AddressOf (sName))) to iResult
+                If (sName = "none") Begin
+                    // there is no filter named none; use archive_write_add_filter_none
+                    Send AssertIAreEqual ARCHIVE_FATAL iResult "add_filter_by_name none"
+                    Move (archive_write_free (pArchive)) to iResult
+                    Move -1 to iExpected
+                    Move ARCHIVE_FATAL to iResult
+                End
+                Else Begin
+                    Send AssertIAreEqual ARCHIVE_OK iResult ("add_filter_by_name" * sName)
+                    Delegate Get BuildMemory pArchive 2 (&ucArchive) to iResult
+                    Send AssertIAreEqual ARCHIVE_OK iResult ("write" * sName)
+                End
+                If (iExpected >= 0) Begin
+                    Delegate Get ReadBackMemory ucArchive to iResult
+                    Delegate Get piRbFilterCode to iFilter
+                    Send AssertIAreEqual iExpected iFilter ("read filter code" * sName)
+                    Delegate Send AssertStandardFiles ("by name" * sName)
+                End
+            Loop
+
+            Move "nosuchfilter" to sName
+            Move (archive_write_new ()) to pArchive
+            Move (archive_write_add_filter_by_name (pArchive, AddressOf (sName))) to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "add_filter_by_name unknown"
+            Delegate Get ErrorText pArchive to sText
+            Send Assert (sText <> "") "unknown filter name has an error text"
+            Move (archive_write_free (pArchive)) to iResult
+        End_Procedure
+    End_Object
+
+    // Filters that need an external program: lzop, lrzip and grzip report ARCHIVE_WARN when added. The programs are
+    // not installed on a normal Windows machine, so opening the archive fails when the process cannot be launched.
+    Object oExternalProgramFilterTest is a cTest
+        Procedure Test
+            Integer iIndex iResult iCount iCode iExpectedCode
+            Pointer pArchive
+            UChar[] ucWork
+            BigInt iUsed
+            String sLabel sText sCommand
+
+            For iIndex from 1 to 3
+                Move (archive_write_new ()) to pArchive
+                Case Begin
+                    Case (iIndex = 1)
+                        Move "lzop" to sLabel
+                        Move ARCHIVE_FILTER_LZOP to iExpectedCode
+                        Move (archive_write_add_filter_lzop (pArchive)) to iResult
+                        Case Break
+                    Case (iIndex = 2)
+                        Move "lrzip" to sLabel
+                        Move ARCHIVE_FILTER_LRZIP to iExpectedCode
+                        Move (archive_write_add_filter_lrzip (pArchive)) to iResult
+                        Case Break
+                    Case (iIndex = 3)
+                        Move "grzip" to sLabel
+                        Move ARCHIVE_FILTER_GRZIP to iExpectedCode
+                        Move (archive_write_add_filter_grzip (pArchive)) to iResult
+                Case End
+                Send AssertIAreEqual ARCHIVE_WARN iResult (sLabel * "add filter warns about the external program")
+                Move (archive_filter_count (pArchive)) to iCount
+                Send AssertIAreEqual 1 iCount (sLabel * "filter count")
+                Move (archive_filter_code (pArchive, 0)) to iCode
+                Send AssertIAreEqual iExpectedCode iCode (sLabel * "filter code")
+                Move (archive_write_set_format_ustar (pArchive)) to iResult
+                Move (ResizeArray (ucWork, 65536)) to ucWork
+                Move (archive_write_open_memory (pArchive, AddressOf (ucWork), 65536, AddressOf (iUsed))) to iResult
+                If (iResult <> ARCHIVE_OK) Begin
+                    Send AssertIAreEqual ARCHIVE_FATAL iResult (sLabel * "open fails without the program")
+                    Delegate Get ErrorText pArchive to sText
+                    Send Assert (Pos ("Can't launch external program", sText) > 0) (sLabel * "error text:" * sText)
+                End
+                Move (archive_write_free (pArchive)) to iResult
+            Loop
+
+            // an arbitrary external program as filter; a missing program fails when the archive is opened
+            Move "no_such_program_xyz" to sCommand
+            For iIndex from 1 to 2
+                Move (archive_write_new ()) to pArchive
+                If (iIndex = 1) Begin
+                    Move (archive_write_add_filter_program (pArchive, AddressOf (sCommand))) to iResult
+                End
+                Else Begin
+                    Move (archive_write_set_compression_program (pArchive, AddressOf (sCommand))) to iResult
+                End
+                Send AssertIAreEqual ARCHIVE_OK iResult ("add program filter variant" * String (iIndex))
+                Move (archive_filter_code (pArchive, 0)) to iCode
+                Send AssertIAreEqual ARCHIVE_FILTER_PROGRAM iCode "program filter code"
+                Move (archive_write_set_format_ustar (pArchive)) to iResult
+                Move (archive_write_open_memory (pArchive, AddressOf (ucWork), 65536, AddressOf (iUsed))) to iResult
+                Send AssertIAreEqual ARCHIVE_FATAL iResult "open fails for a missing program"
+                Delegate Get ErrorText pArchive to sText
+                Send Assert (Pos ("Can't launch external program: no_such_program_xyz", sText) > 0) ("program error text:" * sText)
+                Move (archive_write_free (pArchive)) to iResult
+            Loop
+        End_Procedure
+    End_Object
+
+    // ---- zip compression, block sizes, skip file ---------------------------------------------------------------
+
+    Function BigContent Returns String
+        Function_Return (Repeat ("0123456789ABCDEF", 6400))
+    End_Function
+
+    // Writes a zip with one big repetitive file. iMode: 0 default, 1 deflate, 2 store (functions), 3 store via
+    // archive_write_set_format_option, 4 store via archive_write_set_options, 5 store via archive_write_set_option.
+    Function BuildBigZip Integer iMode UChar[] ByRef ucOut Returns Integer
+        Pointer pArchive
+        Integer iResult iFree
+        BigInt iUsed
+        UChar[] ucWork
+        String sName sContent sModule sOption sValue
+
+        Move (ResizeArray (ucWork, 1048576)) to ucWork
+        Move (archive_write_new ()) to pArchive
+        Move (archive_write_set_format_zip (pArchive)) to iResult
+        Move "zip" to sModule
+        Move "compression" to sOption
+        Move "store" to sValue
+        Case Begin
+            Case (iMode = 1) Move (archive_write_zip_set_compression_deflate (pArchive)) to iResult
+            Case Break
+            Case (iMode = 2) Move (archive_write_zip_set_compression_store (pArchive)) to iResult
+            Case Break
+            Case (iMode = 3) Move (archive_write_set_format_option (pArchive, AddressOf (sModule), AddressOf (sOption), AddressOf (sValue))) to iResult
+            Case Break
+            Case (iMode = 4)
+                Move "zip:compression=store" to sValue
+                Move (archive_write_set_options (pArchive, AddressOf (sValue))) to iResult
+                Case Break
+            Case (iMode = 5) Move (archive_write_set_option (pArchive, AddressOf (sModule), AddressOf (sOption), AddressOf (sValue))) to iResult
+            Case Break
+        Case End
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_write_open_memory (pArchive, AddressOf (ucWork), 1048576, AddressOf (iUsed))) to iResult
+        End
+        If (iResult = ARCHIVE_OK) Begin
+            Move "big.txt" to sName
+            Get BigContent to sContent
+            Get AddFile pArchive sName sContent to iResult
+        End
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_write_close (pArchive)) to iResult
+        End
+        Move (archive_write_free (pArchive)) to iFree
+        Move (ResizeArray (ucWork, iUsed)) to ucOut
+        Function_Return iResult
+    End_Function
+
+    Object oZipCompressionTest is a cTest
+        Procedure Test
+            Integer iMode iResult
+            UChar[] ucArchive
+            BigInt iSizeDeflate iSizeStore iSize
+            String sContent sRead
+            Pointer pArchive
+
+            Delegate Get BigContent to sContent
+            Delegate Get BuildBigZip 0 (&ucArchive) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "default zip"
+            Move (SizeOfArray (ucArchive)) to iSizeDeflate
+            Delegate Get ReadBackMemory ucArchive to iResult
+            Delegate Get RbContent 0 to sRead
+            Send Assert (sRead = sContent) "default zip content"
+
+            Delegate Get BuildBigZip 1 (&ucArchive) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "deflate zip"
+            Move (SizeOfArray (ucArchive)) to iSize
+            Send AssertBIAreEqual iSizeDeflate iSize "deflate is the default"
+            Send Assert (iSize < 5000) "deflate shrinks 100 KB of repetitive data below 5000 bytes"
+            Delegate Get ReadBackMemory ucArchive to iResult
+            Delegate Get RbContent 0 to sRead
+            Send Assert (sRead = sContent) "deflate zip content"
+
+            Delegate Get BuildBigZip 2 (&ucArchive) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "store zip"
+            Move (SizeOfArray (ucArchive)) to iSizeStore
+            Send Assert (iSizeStore > 102400) "stored zip is larger than the 102400 content bytes"
+            Send Assert (iSizeStore > iSizeDeflate) "store is larger than deflate"
+            Delegate Get ReadBackMemory ucArchive to iResult
+            Delegate Get RbContent 0 to sRead
+            Send Assert (sRead = sContent) "store zip content"
+
+            // the same through the option functions
+            For iMode from 3 to 5
+                Delegate Get BuildBigZip iMode (&ucArchive) to iResult
+                Send AssertIAreEqual ARCHIVE_OK iResult ("store by option variant" * String (iMode))
+                Move (SizeOfArray (ucArchive)) to iSize
+                Send AssertBIAreEqual iSizeStore iSize ("store by option variant" * String (iMode) * "size")
+            Loop
+
+            // the zip compression functions only work with the zip format
+            Move (archive_write_new ()) to pArchive
+            Move (archive_write_set_format_ustar (pArchive)) to iResult
+            Move (archive_write_zip_set_compression_store (pArchive)) to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "store needs the zip format"
+            Move (archive_write_zip_set_compression_deflate (pArchive)) to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "deflate needs the zip format"
+            Move (archive_write_free (pArchive)) to iResult
+        End_Procedure
+    End_Object
+
+    Function UstarSize Integer iBlock Integer iLastBlock Returns BigInt
+        Pointer pArchive
+        Integer iResult
+        UChar[] ucArchive
+
+        Get NewTarWriter to pArchive
+        If (iBlock > 0) Begin
+            Move (archive_write_set_bytes_per_block (pArchive, iBlock)) to iResult
+        End
+        If (iLastBlock <> 0) Begin
+            Move (archive_write_set_bytes_in_last_block (pArchive, iLastBlock)) to iResult
+        End
+        Get BuildMemory pArchive 2 (&ucArchive) to iResult
+        Function_Return (SizeOfArray (ucArchive))
+    End_Function
+
+    Object oBlockSizeTest is a cTest
+        Procedure Test
+            Pointer pArchive
+            Integer iResult iValue
+            BigInt iSize
+
+            Move (archive_write_new ()) to pArchive
+            Move (archive_write_get_bytes_per_block (pArchive)) to iValue
+            Send AssertIAreEqual 10240 iValue "default bytes per block"
+            Move (archive_write_get_bytes_in_last_block (pArchive)) to iValue
+            Send AssertIAreEqual -1 iValue "default bytes in last block (not set)"
+            Move (archive_write_set_bytes_per_block (pArchive, 4096)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "set_bytes_per_block"
+            Move (archive_write_get_bytes_per_block (pArchive)) to iValue
+            Send AssertIAreEqual 4096 iValue "get_bytes_per_block"
+            Move (archive_write_set_bytes_in_last_block (pArchive, 512)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "set_bytes_in_last_block"
+            Move (archive_write_get_bytes_in_last_block (pArchive)) to iValue
+            Send AssertIAreEqual 512 iValue "get_bytes_in_last_block"
+            Move (archive_write_free (pArchive)) to iResult
+
+            // two ustar entries are 2 * (512 header + 512 data) + 1024 end of archive = 3072 bytes
+            Delegate Get UstarSize 0 0 to iSize
+            Send AssertBIAreEqual 3072 iSize "ustar archive without padding"
+            Delegate Get UstarSize 512 512 to iSize
+            Send AssertBIAreEqual 3072 iSize "last block of 512 bytes"
+            // the last block is padded to the requested size
+            Delegate Get UstarSize 4096 4096 to iSize
+            Send AssertBIAreEqual 4096 iSize "last block padded to 4096"
+            Delegate Get UstarSize 10240 10240 to iSize
+            Send AssertBIAreEqual 10240 iSize "last block padded to 10240"
+            Delegate Get UstarSize 1024 1024 to iSize
+            Send AssertBIAreEqual 3072 iSize "multiple of the block size needs no padding"
+        End_Procedure
+    End_Object
+
+    Object oSkipFileTest is a cTest
+        Procedure Test
+            Pointer pArchive pEntry
+            Integer iResult
+            UChar[] ucWork
+            BigInt iUsed
+            Void_Type iVoid
+            String sName
+
+            Move (ResizeArray (ucWork, 65536)) to ucWork
+            Move (archive_write_new ()) to pArchive
+            Move (archive_write_set_format_ustar (pArchive)) to iResult
+            Move (archive_write_set_skip_file (pArchive, 42, 4711)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "archive_write_set_skip_file"
+            Move (archive_write_open_memory (pArchive, AddressOf (ucWork), 65536, AddressOf (iUsed))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open"
+
+            Move "archive.tar" to sName
+            Move (archive_entry_new ()) to pEntry
+            Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sName))) to iVoid
+            Move (archive_entry_set_filetype (pEntry, AE_IFREG)) to iVoid
+            Move (archive_entry_set_perm (pEntry, 420)) to iVoid
+            Move (archive_entry_set_size (pEntry, 0)) to iVoid
+            Move (archive_entry_set_dev (pEntry, 42)) to iVoid
+            Move (archive_entry_set_ino64 (pEntry, 4711)) to iVoid
+            Move (archive_write_header (pArchive, pEntry)) to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "the skip file is refused"
+
+            // a different inode is written
+            Move (archive_entry_set_ino64 (pEntry, 4712)) to iVoid
+            Move (archive_write_header (pArchive, pEntry)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "another file is written"
+            Move (archive_entry_free (pEntry)) to iVoid
+            Move (archive_write_close (pArchive)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "close"
+            Move (archive_write_free (pArchive)) to iResult
+        End_Procedure
+    End_Object
+
+    // Like BuildMemory for a single file with a given name and content. Returns the result of writing the entry,
+    // or of the close.
+    Function BuildMemoryNamed Pointer pArchive String sName String sContent UChar[] ByRef ucOut Returns Integer
+        Integer iResult iFree
+        BigInt iUsed
+        UChar[] ucWork
+
+        Move (ResizeArray (ucWork, 1048576)) to ucWork
+        Move 0 to iUsed
+        Move (archive_write_open_memory (pArchive, AddressOf (ucWork), 1048576, AddressOf (iUsed))) to iResult
+        If (iResult = ARCHIVE_OK) Begin
+            Get AddFile pArchive sName sContent to iResult
+        End
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_write_close (pArchive)) to iResult
+        End
+        Move (archive_write_free (pArchive)) to iFree
+        Move (ResizeArray (ucWork, iUsed)) to ucOut
+        Function_Return iResult
+    End_Function
+
+    Object oLongAndUnicodeNameTest is a cTest
+        Procedure Test
+            Integer iKind iResult iFormat iIndex
+            Pointer pArchive
+            UChar[] ucArchive
+            String sLongName sName sRead
+
+            Move ("a-directory/" + Repeat ("long-name-", 40) + "end.txt") to sLongName
+            // pax writes an extended header, gnutar a long name record, ustar refuses
+            For iIndex from 1 to 3
+                Case Begin
+                    Case (iIndex = 1) Move 13 to iKind
+                    Case Break
+                    Case (iIndex = 2) Move 9 to iKind
+                    Case Break
+                    Case (iIndex = 3) Move 18 to iKind
+                Case End
+                Move (archive_write_new ()) to pArchive
+                Delegate Get SetFormatByKind pArchive iKind to iResult
+                Delegate Get BuildMemoryNamed pArchive sLongName "long" (&ucArchive) to iResult
+                If (iKind = 18) Begin
+                    Send AssertIAreEqual ARCHIVE_FAILED iResult "ustar refuses a path longer than 256 characters"
+                End
+                Else Begin
+                    Send AssertIAreEqual ARCHIVE_OK iResult ("long name write kind" * String (iKind))
+                    Delegate Get ReadBackMemory ucArchive to iResult
+                    Delegate Get RbName 0 to sRead
+                    Send AssertSAreEqual sLongName sRead ("long name read back kind" * String (iKind))
+                    Delegate Get piRbFormat to iFormat
+                    If (iKind = 13) Begin
+                        Send AssertIAreEqual ARCHIVE_FORMAT_TAR_PAX_INTERCHANGE iFormat "pax with extended header"
+                    End
+                    Else Begin
+                        Send AssertIAreEqual ARCHIVE_FORMAT_TAR_GNUTAR iFormat "gnutar with long name"
+                    End
+                End
+            Loop
+
+            // unicode names survive in the formats that store UTF-8
+            Move "héllo-ünï.txt" to sName
+            For iIndex from 1 to 3
+                Case Begin
+                    Case (iIndex = 1) Move 22 to iKind
+                    Case Break
+                    Case (iIndex = 2) Move 13 to iKind
+                    Case Break
+                    Case (iIndex = 3) Move 9 to iKind
+                Case End
+                Move (archive_write_new ()) to pArchive
+                Delegate Get SetFormatByKind pArchive iKind to iResult
+                Delegate Get BuildMemoryNamed pArchive sName "unicode" (&ucArchive) to iResult
+                Send AssertIAreEqual ARCHIVE_OK iResult ("unicode name write kind" * String (iKind))
+                Delegate Get ReadBackMemory ucArchive to iResult
+                Delegate Get RbName 0 to sRead
+                Send AssertSAreEqual sName sRead ("unicode name read back kind" * String (iKind))
+                Delegate Get RbContent 0 to sRead
+                Send AssertSAreEqual "unicode" sRead ("unicode content kind" * String (iKind))
+            Loop
+        End_Procedure
+    End_Object
+
+    // ---- open variants -------------------------------------------------------------------------------------------
+
+    Object oOpenFilenameTest is a cTest
+        Procedure Test
+            Pointer pArchive pFile
+            Integer iResult iFd iIndex iClose
+            String sFile sLabel
+            WString wsFile wsMode
+            BigInt iSize
+
+            // 1 archive_write_open_filename, 2 deprecated archive_write_open_file, 3 archive_write_open_filename_w with a
+            // unicode name, 4 archive_write_open_fd, 5 archive_write_open_FILE
+            For iIndex from 1 to 5
+                Case Begin
+                    Case (iIndex = 1)
+                        Move "open_filename" to sLabel
+                        Delegate Get TempFile "open_filename.tar" to sFile
+                        Case Break
+                    Case (iIndex = 2)
+                        Move "open_file" to sLabel
+                        Delegate Get TempFile "open_file.tar" to sFile
+                        Case Break
+                    Case (iIndex = 3)
+                        Move "open_filename_w" to sLabel
+                        Delegate Get TempFile "ünï-€ archive.tar" to sFile
+                        Case Break
+                    Case (iIndex = 4)
+                        Move "open_fd" to sLabel
+                        Delegate Get TempFile "open_fd.tar" to sFile
+                        Case Break
+                    Case (iIndex = 5)
+                        Move "open_FILE" to sLabel
+                        Delegate Get TempFile "open_FILE.tar" to sFile
+                Case End
+                Move sFile to wsFile
+                Delegate Get NewTarWriter to pArchive
+                Move 0 to iFd
+                Move 0 to pFile
+                Case Begin
+                    Case (iIndex = 1) Move (archive_write_open_filename (pArchive, AddressOf (sFile))) to iResult
+                    Case Break
+                    Case (iIndex = 2) Move (archive_write_open_file (pArchive, AddressOf (sFile))) to iResult
+                    Case Break
+                    Case (iIndex = 3) Move (archive_write_open_filename_w (pArchive, AddressOf (wsFile))) to iResult
+                    Case Break
+                    Case (iIndex = 4)
+                        // _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY, _S_IREAD | _S_IWRITE
+                        Move (tw_crt_open (AddressOf (sFile), 33537, 384)) to iFd
+                        Send Assert (iFd >= 0) "_open returned a file descriptor"
+                        Move (archive_write_open_fd (pArchive, iFd)) to iResult
+                        Case Break
+                    Case (iIndex = 5)
+                        Move "wb" to wsMode
+                        Move (tw_crt_wfopen (AddressOf (wsFile), AddressOf (wsMode))) to pFile
+                        Send Assert (pFile <> 0) "_wfopen returned a FILE pointer"
+                        Move (archive_write_open_FILE_Ptr (pArchive, pFile)) to iResult
+                Case End
+                Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "open")
+                Delegate Get FinishOpened pArchive 2 to iResult
+                Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "write and close")
+                // the archive does not close descriptors and FILE pointers it was handed
+                If (iIndex = 4) Begin
+                    Move (tw_crt_close (iFd)) to iClose
+                    Send AssertIAreEqual 0 iClose "_close of the descriptor that libarchive left open"
+                End
+                If (iIndex = 5) Begin
+                    Move (tw_crt_fclose (pFile)) to iClose
+                    Send AssertIAreEqual 0 iClose "fclose of the FILE that libarchive left open"
+                End
+                Delegate Get FileSize sFile to iSize
+                If (iIndex = 5) Begin
+                    // a FILE pointer gets the default padding of the last block to 10240 bytes
+                    Send AssertBIAreEqual 10240 iSize (sLabel * "file size")
+                End
+                Else Begin
+                    Send AssertBIAreEqual 3072 iSize (sLabel * "file size")
+                End
+                Delegate Get ReadBackFile sFile to iResult
+                Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "read back open")
+                Delegate Send AssertStandardFiles sLabel
+                EraseFile sFile
+            Loop
+        End_Procedure
+    End_Object
+
+    Object oOpenMemoryTest is a cTest
+        Procedure Test
+            Pointer pArchive
+            Integer iResult
+            UChar[] ucArchive ucWork
+            BigInt iUsed iBuilt
+
+            // the used size is the exact archive size
+            Delegate Get NewTarWriter to pArchive
+            Delegate Get BuildMemory pArchive 2 (&ucArchive) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "write to memory"
+            Delegate Get pbiBuildUsed to iBuilt
+            Send AssertBIAreEqual 3072 iBuilt "memory used size"
+            Send AssertIAreEqual 3072 (SizeOfArray (ucArchive)) "memory archive array size"
+
+            // a buffer that is too small makes writing fail
+            Move (ResizeArray (ucWork, 1024)) to ucWork
+            Move 0 to iUsed
+            Delegate Get NewTarWriter to pArchive
+            Move (archive_write_open_memory (pArchive, AddressOf (ucWork), 1024, AddressOf (iUsed))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open small buffer"
+            Delegate Get WriteFiles pArchive 2 to iResult
+            If (iResult = ARCHIVE_OK) Begin
+                Move (archive_write_close (pArchive)) to iResult
+            End
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "a full buffer is a fatal error"
+            Move (archive_write_free (pArchive)) to iResult
+        End_Procedure
+    End_Object
+
+    // Callbacks are function pointers DataFlex cannot create; opening with NULL callbacks is accepted by libarchive
+    // and the archive can then only be failed and freed.
+    Object oOpenCallbackTest is a cTest
+        Procedure Test
+            Pointer pArchive
+            Integer iResult iIndex
+
+            For iIndex from 1 to 2
+                Delegate Get NewTarWriter to pArchive
+                If (iIndex = 1) Begin
+                    Move (archive_write_open (pArchive, 0, 0, 0, 0)) to iResult
+                End
+                Else Begin
+                    Move (archive_write_open2 (pArchive, 0, 0, 0, 0, 0)) to iResult
+                End
+                Send AssertIAreEqual ARCHIVE_OK iResult ("open with NULL callbacks variant" * String (iIndex))
+                Move (archive_write_fail (pArchive)) to iResult
+                Send AssertIAreEqual 32768 iResult "archive_write_fail returns the fatal state"
+                Move (archive_write_free (pArchive)) to iResult
+                Send AssertIAreEqual ARCHIVE_OK iResult "free after fail"
+            Loop
+        End_Procedure
+    End_Object
+
+    // ---- header, data, finish_entry, close, fail -----------------------------------------------------------------
+
+    Object oHeaderDataFinishTest is a cTest
+        Procedure Test
+            Pointer pArchive pEntry
+            Integer iResult
+            BigInt iWritten iSize
+            UChar[] ucWork
+            BigInt iUsed
+            Void_Type iVoid
+            String sName sData
+
+            Move (ResizeArray (ucWork, 65536)) to ucWork
+            Delegate Get NewTarWriter to pArchive
+
+            // a header before the archive is opened is refused
+            Move (archive_entry_new ()) to pEntry
+            Move "early.txt" to sName
+            Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sName))) to iVoid
+            Move (archive_entry_set_filetype (pEntry, AE_IFREG)) to iVoid
+            Move (archive_entry_set_perm (pEntry, 420)) to iVoid
+            Move (archive_entry_set_size (pEntry, 10)) to iVoid
+            Move (archive_write_header (pArchive, pEntry)) to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "header before open"
+            Move (archive_write_free (pArchive)) to iResult
+
+            Delegate Get NewTarWriter to pArchive
+            Move (archive_write_open_memory (pArchive, AddressOf (ucWork), 65536, AddressOf (iUsed))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open"
+
+            // declared 10 bytes, only 4 written: finish_entry pads with zeros
+            Move (archive_write_header (pArchive, pEntry)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "header"
+            Move "abcd" to sData
+            Move (archive_write_data (pArchive, AddressOf (sData), 4)) to iWritten
+            Send AssertBIAreEqual 4 iWritten "archive_write_data returns the written size"
+            Move (archive_write_finish_entry (pArchive)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "finish_entry"
+
+            // declared 5 bytes, 8 offered: only 5 are accepted
+            Move "second.txt" to sName
+            Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sName))) to iVoid
+            Move (archive_entry_set_size (pEntry, 5)) to iVoid
+            Move (archive_write_header (pArchive, pEntry)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "second header"
+            Move "12345678" to sData
+            Move (archive_write_data (pArchive, AddressOf (sData), 8)) to iWritten
+            Send AssertBIAreEqual 5 iWritten "data beyond the declared size is cut off"
+            Move (archive_write_finish_entry (pArchive)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "finish_entry second"
+
+            // directory without data
+            Move "folder/" to sName
+            Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sName))) to iVoid
+            Move (archive_entry_set_filetype (pEntry, AE_IFDIR)) to iVoid
+            Move (archive_entry_set_perm (pEntry, 493)) to iVoid
+            Move (archive_entry_set_size (pEntry, 0)) to iVoid
+            Move (archive_write_header (pArchive, pEntry)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "directory header"
+            Move (archive_write_close (pArchive)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "close"
+            Move (archive_write_free (pArchive)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "free"
+            Move (archive_entry_free (pEntry)) to iVoid
+
+            Move (ResizeArray (ucWork, iUsed)) to ucWork
+            Delegate Get ReadBackMemory ucWork to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "read back open"
+            Delegate Get piRbCount to iResult
+            Send AssertIAreEqual 3 iResult "entry count"
+            Delegate Get RbName 0 to sName
+            Send AssertSAreEqual "early.txt" sName "name 0"
+            Delegate Get RbSize 0 to iSize
+            Send AssertBIAreEqual 10 iSize "size 0"
+            Delegate Get RbRead 0 to iSize
+            Send AssertBIAreEqual 10 iSize "10 bytes can be read although only 4 were written"
+            Delegate Get RbContent 0 to sData
+            Send AssertSAreEqual "abcd" sData "content 0 starts with the written data"
+            Delegate Get RbSize 1 to iSize
+            Send AssertBIAreEqual 5 iSize "size 1"
+            Delegate Get RbContent 1 to sData
+            Send AssertSAreEqual "12345" sData "content 1"
+            Delegate Get RbName 2 to sName
+            Send AssertSAreEqual "folder/" sName "name 2"
+        End_Procedure
+    End_Object
+
+    Object oFailTest is a cTest
+        Procedure Test
+            Pointer pArchive
+            Integer iResult
+            UChar[] ucWork
+            BigInt iUsed
+            String sName
+
+            Move (ResizeArray (ucWork, 65536)) to ucWork
+            Delegate Get NewTarWriter to pArchive
+            Move (archive_write_open_memory (pArchive, AddressOf (ucWork), 65536, AddressOf (iUsed))) to iResult
+            Delegate Get AddFile pArchive "first.txt" "first" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "first entry"
+            Move (archive_write_fail (pArchive)) to iResult
+            Send AssertIAreEqual 32768 iResult "archive_write_fail returns the fatal state"
+            Delegate Get AddFile pArchive "second.txt" "second" to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "writing after fail is fatal"
+            Move (archive_write_free (pArchive)) to iResult
+        End_Procedure
+    End_Object
+
+    // ---- options and passphrase ----------------------------------------------------------------------------------
+
+    Function BuildTarGz Integer iLevel Returns BigInt
+        Pointer pArchive
+        Integer iResult iIndex
+        UChar[] ucArchive
+        String sContent sModule sOption sValue
+
+        Move "" to sContent
+        For iIndex from 1 to 3000
+            Move (sContent + "Line " + String (Mod (iIndex * 7919, 10007)) + " of the text" + (Character (10))) to sContent
+        Loop
+        Get NewTarWriter to pArchive
+        Move (archive_write_add_filter_gzip (pArchive)) to iResult
+        Move "gzip" to sModule
+        Move "compression-level" to sOption
+        Move (String (iLevel)) to sValue
+        Move (archive_write_set_filter_option (pArchive, AddressOf (sModule), AddressOf (sOption), AddressOf (sValue))) to iResult
+        If (iResult <> ARCHIVE_OK) Begin
+            Move (archive_write_free (pArchive)) to iIndex
+            Function_Return iResult
+        End
+        Get BuildMemoryNamed pArchive "text.txt" sContent (&ucArchive) to iResult
+        If (iResult <> ARCHIVE_OK) Begin
+            Function_Return iResult
+        End
+        Function_Return (SizeOfArray (ucArchive))
+    End_Function
+
+    Object oOptionsTest is a cTest
+        Procedure Test
+            Pointer pArchive
+            Integer iResult
+            BigInt iSize1 iSize9 iBad
+            String sModule sOption sValue
+
+            // filter option: gzip compression level
+            Delegate Get BuildTarGz 1 to iSize1
+            Delegate Get BuildTarGz 9 to iSize9
+            Send Assert (iSize1 > 1000) "gzip level 1 archive written"
+            Send Assert (iSize9 > 1000) "gzip level 9 archive written"
+            Send Assert (iSize9 <= iSize1) "level 9 does not produce a bigger archive than level 1"
+            Delegate Get BuildTarGz 42 to iBad
+            Send AssertBIAreEqual ARCHIVE_FAILED iBad "an invalid compression level is refused"
+
+            // a filter option for a module that is not in the pipeline is refused
+            Delegate Get NewTarWriter to pArchive
+            Move (archive_write_add_filter_gzip (pArchive)) to iResult
+            Move "bzip2" to sModule
+            Move "compression-level" to sOption
+            Move "9" to sValue
+            Move (archive_write_set_filter_option (pArchive, AddressOf (sModule), AddressOf (sOption), AddressOf (sValue))) to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "filter option of another module"
+            Move (archive_write_free (pArchive)) to iResult
+
+            // format option errors
+            Move (archive_write_new ()) to pArchive
+            Move (archive_write_set_format_zip (pArchive)) to iResult
+            Move "nomodule" to sModule
+            Move "compression" to sOption
+            Move "store" to sValue
+            Move (archive_write_set_format_option (pArchive, AddressOf (sModule), AddressOf (sOption), AddressOf (sValue))) to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "format option of another module"
+            Move "nooption" to sOption
+            Move (archive_write_set_format_option (pArchive, 0, AddressOf (sOption), AddressOf (sValue))) to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "unknown format option"
+            Move "zip:compression=store,zip:nooption=1" to sOption
+            Move (archive_write_set_options (pArchive, AddressOf (sOption))) to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "options string with an unknown option"
+            // no filter was added, so a filter option has no module to take it
+            Move "compression" to sOption
+            Move (archive_write_set_filter_option (pArchive, 0, AddressOf (sOption), AddressOf (sValue))) to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "filter option without filter"
+            // accepted by the zip format writer although the module is not given
+            Move (archive_write_set_option (pArchive, 0, AddressOf (sOption), AddressOf (sValue))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "set_option without module"
+            Move (archive_write_free (pArchive)) to iResult
+        End_Procedure
+    End_Object
+
+    // Writes a zip with the two standard files; sEncryption is the zip:encryption option value ("" for none),
+    // sPassphrase the passphrase ("" does not set one).
+    Function BuildEncryptedZip String sEncryption String sPassphrase UChar[] ByRef ucOut Returns Integer
+        Pointer pArchive
+        Integer iResult
+        String sModule sOption
+
+        Move (archive_write_new ()) to pArchive
+        Move (archive_write_set_format_zip (pArchive)) to iResult
+        If (sEncryption <> "") Begin
+            Move "zip" to sModule
+            Move "encryption" to sOption
+            Move (archive_write_set_option (pArchive, AddressOf (sModule), AddressOf (sOption), AddressOf (sEncryption))) to iResult
+            If (iResult <> ARCHIVE_OK) Begin
+                Function_Return iResult
+            End
+        End
+        If (sPassphrase <> "") Begin
+            Move (archive_write_set_passphrase (pArchive, AddressOf (sPassphrase))) to iResult
+            If (iResult <> ARCHIVE_OK) Begin
+                Function_Return iResult
+            End
+        End
+        Get BuildMemory pArchive 2 (&ucOut) to iResult
+        Function_Return iResult
+    End_Function
+
+    Object oEncryptionTest is a cTest
+        Procedure Test
+            Integer iIndex iResult iEncrypted
+            Pointer pArchive
+            UChar[] ucArchive
+            String sMethod sText
+
+            // plain zip is not encrypted
+            Delegate Get BuildEncryptedZip "" "" (&ucArchive) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "plain zip"
+            Delegate Get ReadBackMemory ucArchive to iResult
+            Delegate Get piRbEncrypted to iEncrypted
+            Send AssertIAreEqual 0 iEncrypted "plain zip has no encrypted entries"
+            Delegate Send AssertStandardFiles "plain zip"
+
+            For iIndex from 1 to 3
+                Case Begin
+                    Case (iIndex = 1) Move "aes256" to sMethod
+                    Case Break
+                    Case (iIndex = 2) Move "aes128" to sMethod
+                    Case Break
+                    Case (iIndex = 3) Move "zipcrypt" to sMethod
+                Case End
+                Delegate Get BuildEncryptedZip sMethod "s3cret-pässword" (&ucArchive) to iResult
+                Send AssertIAreEqual ARCHIVE_OK iResult (sMethod * "write")
+
+                // with the passphrase the content is readable and the archive reports encryption
+                Delegate Set psRbPassphrase to "s3cret-pässword"
+                Delegate Get ReadBackMemory ucArchive to iResult
+                Delegate Get piRbEncrypted to iEncrypted
+                Send AssertIAreEqual 1 iEncrypted (sMethod * "has_encrypted_entries")
+                Delegate Send AssertStandardFiles (sMethod * "with passphrase")
+
+                // with a wrong passphrase the data cannot be read
+                Delegate Set psRbPassphrase to "wrong"
+                Delegate Get ReadBackMemory ucArchive to iResult
+                Delegate Get piRbEncrypted to iEncrypted
+                Send AssertIAreEqual 1 iEncrypted (sMethod * "has_encrypted_entries with wrong passphrase")
+                Delegate Get RbContent 0 to sText
+                Send Assert (sText <> "Hello Archive") (sMethod * "wrong passphrase does not decrypt")
+
+                // without a passphrase either
+                Delegate Set psRbPassphrase to ""
+                Delegate Get ReadBackMemory ucArchive to iResult
+                Delegate Get RbContent 0 to sText
+                Send Assert (sText <> "Hello Archive") (sMethod * "no passphrase does not decrypt")
+            Loop
+
+            // an empty or missing passphrase is refused, the callback can only be reset with NULL
+            Move (archive_write_new ()) to pArchive
+            Move (archive_write_set_format_zip (pArchive)) to iResult
+            Move (archive_write_set_passphrase (pArchive, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "NULL passphrase"
+            Move "" to sText
+            Move (archive_write_set_passphrase (pArchive, AddressOf (sText))) to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "empty passphrase"
+            Move (archive_write_set_passphrase_callback (pArchive, 0, 0)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "passphrase callback NULL"
+            Move (archive_write_free (pArchive)) to iResult
+        End_Procedure
+    End_Object
+
+    // A name with a character that is not part of the ANSI code page needs the hdrcharset=UTF-8 option: cpio refuses
+    // the name, and the zip writer of this libarchive build crashes on it without the option.
+    Object oUtf8HeaderCharsetTest is a cTest
+        Procedure Test
+            Pointer pArchive
+            Integer iResult iKind iIndex
+            UChar[] ucArchive
+            String sName sOptions sRead
+
+            Move "a-€-b.txt" to sName
+            Move "hdrcharset=UTF-8" to sOptions
+            For iIndex from 1 to 2
+                Case Begin
+                    Case (iIndex = 1) Move 22 to iKind
+                    Case Break
+                    Case (iIndex = 2) Move 13 to iKind
+                Case End
+                Move (archive_write_new ()) to pArchive
+                Delegate Get SetFormatByKind pArchive iKind to iResult
+                Move (archive_write_set_options (pArchive, AddressOf (sOptions))) to iResult
+                Send AssertIAreEqual ARCHIVE_OK iResult ("hdrcharset option kind" * String (iKind))
+                Delegate Get BuildMemoryNamed pArchive sName "euro" (&ucArchive) to iResult
+                Send AssertIAreEqual ARCHIVE_OK iResult ("write kind" * String (iKind))
+                Delegate Get ReadBackMemory ucArchive to iResult
+                Delegate Get RbName 0 to sRead
+                Send AssertSAreEqual sName sRead ("read back name kind" * String (iKind))
+                Delegate Get RbContent 0 to sRead
+                Send AssertSAreEqual "euro" sRead ("read back content kind" * String (iKind))
+            Loop
+
+            Move (archive_write_new ()) to pArchive
+            Move (archive_write_set_format_cpio (pArchive)) to iResult
+            Delegate Get BuildMemoryNamed pArchive sName "euro" (&ucArchive) to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "cpio cannot translate the name to the locale"
+        End_Procedure
+    End_Object
+End_Object

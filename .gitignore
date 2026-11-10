@@ -12,5 +12,9 @@ Demo/AppHtml/DfEngine
 Demo/AppHtml/web.config
 Demo/AppHtml/global.asa
 **.err
-Demo/Programs/TestTemp/
+unittests/Programs/TestTemp/
 Demo/Data/*.xml
+
+# Native DLLs are tracked once in Library/Programs and installed by df-cli (workspace override)
+Demo/Programs/*.dll
+unittests/Programs/*.dll

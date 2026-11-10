@@ -1,34 +1,11 @@
 ﻿Use cArchiveBase.pkg
 Use cArchiveEntry.pkg
-Use cWorkspace.pkg
+Use seq_chnl.pkg
+Use ArchivePath.pkg
 
 // Constants of the zip writer compression (peZipCompression).
 Define ARCHIVE_ZIP_COMPRESSION_DEFLATE for 0
 Define ARCHIVE_ZIP_COMPRESSION_STORE   for 1
-
-// Windows helpers the class needs for AddFile (last write time and size of a file) and for the default time stamp.
-External_Function archivewriter_GetSystemTimeAsFileTime "GetSystemTimeAsFileTime" kernel32.dll ;
-    Pointer pFileTime ;
-    Returns Void_Type
-
-External_Function archivewriter_GetFileAttributesExW "GetFileAttributesExW" kernel32.dll ;
-    WString wsFileName ;
-    Integer iInfoLevel ;
-    Pointer pFileInformation ;
-    Returns Integer
-
-// WIN32_FILE_ATTRIBUTE_DATA
-Struct tArchiveWriterFileInfo
-    UInteger dwFileAttributes
-    UInteger dwCreationLow
-    UInteger dwCreationHigh
-    UInteger dwAccessLow
-    UInteger dwAccessHigh
-    UInteger dwWriteLow
-    UInteger dwWriteHigh
-    UInteger dwSizeHigh
-    UInteger dwSizeLow
-End_Struct
 
 // Wrapper around the archive writer of libarchive (archive_write_*): creates archives in a file, in memory, on a
 // file descriptor or on a C runtime FILE pointer. All archive_write_* functions are available except
@@ -36,7 +13,7 @@ End_Struct
 //    cannot create native callback function pointers, so they are not exposed. Use OpenFile, OpenMemory, OpenFd
 //    or OpenFilePtr instead and SetPassphrase for encryption;
 //  - the deprecated synonyms archive_write_finish, archive_write_open_file and archive_write_set_compression_*
-//    (use FreeWriter, OpenFile / OpenFileAnsi and the AddFilter... methods);
+//    (use FreeWriter, OpenFile and the AddFilter... methods);
 //  - the archive_write_disk_* functions, which belong to cArchiveDiskWriter.
 //
 // Typical use:
@@ -211,7 +188,10 @@ Class cArchiveWriter is a cArchiveBase
     // selected (SetFormatZip) before it is set. Without a writer the value is only remembered.
     { MethodType = Property }
     Function peZipCompression Returns Integer
-        Function_Return (piZipCompressionValue (Self))
+        Integer iZipCompressionValue
+
+        Get piZipCompressionValue to iZipCompressionValue
+        Function_Return iZipCompressionValue
     End_Function
 
     { MethodType = Property }
@@ -284,12 +264,14 @@ Class cArchiveWriter is a cArchiveBase
     // the option (7zip, ar, iso9660, ...) answer with a failure that is ignored. SetOption "" "hdrcharset" ... overrides it.
     { Visibility = Private }
     Procedure ApplyFormatDefaults
+        Boolean bUtf8HeaderCharset
         Pointer pArchive
         Integer iResult
         String sOption sValue
 
         Get ppArchive to pArchive
-        If (pArchive = 0 or not (pbUtf8HeaderCharset (Self))) Begin
+        Get pbUtf8HeaderCharset to bUtf8HeaderCharset
+        If (pArchive = 0 or not (bUtf8HeaderCharset)) Begin
             Procedure_Return
         End
         Move "hdrcharset" to sOption
@@ -1044,21 +1026,6 @@ Class cArchiveWriter is a cArchiveBase
         Function_Return iResult
     End_Function
 
-    // Creates the archive file with the narrow function archive_write_open_filename. The name is interpreted in the
-    // ANSI code page of the system, so use OpenFile for names with characters outside of it.
-    Function OpenFileAnsi String sFileName Returns Integer
-        Pointer pArchive
-        Integer iResult
-
-        Get RequireHandle to pArchive
-        If (pArchive = 0) Begin
-            Function_Return ARCHIVE_FATAL
-        End
-        Move (archive_write_open_filename (pArchive, AddressOf (sFileName))) to iResult
-        Get CheckResult iResult "archive_write_open_filename" to iResult
-        Function_Return iResult
-    End_Function
-
     // Writes the archive into a memory buffer of iBufferSize bytes (archive_write_open_memory); writing fails with
     // ARCHIVE_FATAL when the archive gets larger. The buffer is native memory (Alloc) owned by this object, so the size
     // of libarchive's size_t counter is not limited by DataFlex array handling. After CloseWriter the archive is
@@ -1332,33 +1299,27 @@ Class cArchiveWriter is a cArchiveBase
         Function_Return ARCHIVE_FAILED
     End_Function
 
-    // Current time as seconds since 1970-01-01 UTC.
+    // Current time as seconds since 1970-01-01 UTC (see cArchivePath.CurrentUnixTime).
     { Visibility = Private }
     Function CurrentUnixTime Returns BigInt
-        BigInt iTicks
-        Void_Type iVoid
+        Handle hoPathTools
+        BigInt biCurrentUnixTime
 
-        Move (archivewriter_GetSystemTimeAsFileTime (AddressOf (iTicks))) to iVoid
-        Function_Return (iTicks / 10000000 - 11644473600)
+        Get PathTools to hoPathTools
+        Get CurrentUnixTime of hoPathTools to biCurrentUnixTime
+        Function_Return biCurrentUnixTime
     End_Function
 
-    // Size and last write time of a file. Returns False when the file does not exist.
+    // Size and last write time of a file (a symbolic link is followed). Returns False when there is no such regular file.
     { Visibility = Private }
     Function ReadFileInfo String sFileName BigInt ByRef iSize BigInt ByRef iMTime Integer ByRef iMTimeNano Returns Boolean
-        tArchiveWriterFileInfo Info
-        BigInt iTicks iHigh
-        Integer iOk iVoid
+        Handle hoPathTools
+        UShort eFileType
+        Boolean bOk
 
-        Move (archivewriter_GetFileAttributesExW (sFileName, 0, AddressOf (Info))) to iOk
-        If (iOk = 0) Begin
-            Function_Return False
-        End
-        Move (MemCopy (AddressOf (iTicks), AddressOf (Info) + 20, 8)) to iVoid
-        Move Info.dwSizeHigh to iHigh
-        Move (iHigh * 4294967296 + Info.dwSizeLow) to iSize
-        Move (iTicks / 10000000 - 11644473600) to iMTime
-        Move (Mod (iTicks, 10000000) * 100) to iMTimeNano
-        Function_Return True
+        Get PathTools to hoPathTools
+        Get ReadDiskFileInfo of hoPathTools sFileName True (&eFileType) (&iSize) (&iMTime) (&iMTimeNano) to bOk
+        Function_Return (bOk and eFileType = AE_IFREG)
     End_Function
 
     // Archive path names use "/" as separator.
@@ -1480,12 +1441,15 @@ Class cArchiveWriter is a cArchiveBase
     // piFilePermission and type regular file; the content is read in chunks of 1 MB. An empty sArchivePathName uses
     // the file name without path.
     Function AddFile String sDiskFileName String sArchivePathName Returns Integer
+        Handle hoPathTools
+        String sNativePath
         Pointer pArchive
         Integer iResult iPermission iNano iChannel iRead
         Boolean bOk
         BigInt iSize iMTime iTotal iWritten
         UChar[] ucBuffer
 
+        Get PathTools to hoPathTools
         Get RequireHandle to pArchive
         If (pArchive = 0) Begin
             Function_Return ARCHIVE_FATAL
@@ -1496,7 +1460,8 @@ Class cArchiveWriter is a cArchiveBase
             Function_Return iResult
         End
         If (sArchivePathName = "") Begin
-            Move (ExtractFileName (sDiskFileName)) to sArchivePathName
+            Get NativePath of hoPathTools sDiskFileName to sNativePath
+            Get FileNamePart of hoPathTools sNativePath to sArchivePathName
         End
         Move (Seq_New_Channel ()) to iChannel
         If (iChannel = DF_SEQ_CHANNEL_NOT_AVAILABLE) Begin
@@ -1539,17 +1504,21 @@ Class cArchiveWriter is a cArchiveBase
     // of sFolder is added at the top level of the archive. When sPrefix is not empty a directory entry for it is added
     // first. Directory symbolic links and junctions are not followed. Stops at the first failure and returns its result.
     Function AddFolderTree String sFolder String sPrefix Returns Integer
+        Handle hoPathTools
         Pointer pArchive
         Integer iResult
+        String sSeparator
 
         Get RequireHandle to pArchive
         If (pArchive = 0) Begin
             Function_Return ARCHIVE_FATAL
         End
         Move ARCHIVE_OK to iResult
-        Move (Replace ("/", sFolder, "\")) to sFolder
-        If (Right (sFolder, 1) <> "\") Begin
-            Move (sFolder + "\") to sFolder
+        Move (SysConf (SYSCONF_DIR_SEPARATOR)) to sSeparator
+        Get PathTools to hoPathTools
+        Get NativePath of hoPathTools sFolder to sFolder
+        If (Right (sFolder, 1) <> sSeparator) Begin
+            Move (sFolder + sSeparator) to sFolder
         End
         Get ArchivePath sPrefix to sPrefix
         If (Right (sPrefix, 1) = "/") Begin
@@ -1564,54 +1533,39 @@ Class cArchiveWriter is a cArchiveBase
         Function_Return iResult
     End_Function
 
-    // sFolder ends with "\", sPrefix has no trailing "/".
+    // sFolder ends with the native path separator, sPrefix has no trailing "/".
     { Visibility = Private }
     Function AddFolderContent String sFolder String sPrefix Returns Integer
-        tWin32FindDataW FindData
-        Handle hFind
-        Pointer pName
-        Integer iResult iIndex iCount iVoid iNext
-        Boolean bFolder
-        String sName sArchiveName
-        String[] sNames
-        Boolean[] bFolders
+        Handle hoPathTools
+        Integer iResult iIndex iCount
+        Boolean bListed
+        String sName sArchiveName sSeparator
+        String[] asNames
+        Boolean[] abFolders
 
         Move ARCHIVE_OK to iResult
-        // Collect the entries first so that the find handle is closed before the recursion.
-        Move (winFindFirstFileW (sFolder + "*", AddressOf (FindData))) to hFind
-        If (hFind <> INVALID_HANDLE_VALUE) Begin
-            Repeat
-                Move (AddressOf (FindData) + 44) to pName
-                Move (PointerToWString (pName)) to sName
-                If (sName <> "." and sName <> "..") Begin
-                    Move (IsFlagIn (FILE_ATTRIBUTE_DIRECTORY, FindData.dwFileAttributes)) to bFolder
-                    // Do not follow directory symbolic links and junctions (reparse points).
-                    If (not (bFolder and IsFlagIn (FILE_ATTRIBUTE_REPARSE_POINT, FindData.dwFileAttributes))) Begin
-                        Move sName to sNames[-1]
-                        Move bFolder to bFolders[-1]
-                    End
-                End
-                Move (winFindNextFileW (hFind, AddressOf (FindData))) to iNext
-            Until (iNext = 0)
-            Move (winFindClose (hFind)) to iVoid
-        End
+        Move (SysConf (SYSCONF_DIR_SEPARATOR)) to sSeparator
+        // The complete listing is read before the recursion starts (cArchivePath.ListFolderContent), so only one channel is in use at a time.
+        // Directory symbolic links and junctions are not in the list.
+        Get PathTools to hoPathTools
+        Get ListFolderContent of hoPathTools sFolder (&asNames) (&abFolders) to bListed
 
-        Move (SizeOfArray (sNames)) to iCount
+        Move (SizeOfArray (asNames)) to iCount
         For iIndex from 0 to (iCount - 1)
             If (iResult < ARCHIVE_WARN) Begin
                 Function_Return iResult
             End
-            Move sNames[iIndex] to sName
+            Move asNames[iIndex] to sName
             If (sPrefix <> "") Begin
                 Move (sPrefix + "/" + sName) to sArchiveName
             End
             Else Begin
                 Move sName to sArchiveName
             End
-            If (bFolders[iIndex]) Begin
+            If (abFolders[iIndex]) Begin
                 Get AddDirectory sArchiveName to iResult
                 If (iResult >= ARCHIVE_WARN) Begin
-                    Get AddFolderContent (sFolder + sName + "\") sArchiveName to iResult
+                    Get AddFolderContent (sFolder + sName + sSeparator) sArchiveName to iResult
                 End
             End
             Else Begin
@@ -1627,9 +1581,12 @@ Class cArchiveWriter is a cArchiveBase
     // under its file name, a folder with its content (AddFolderTree) under the folder name. Returns ARCHIVE_OK or the
     // first failing result; the writer of this object is replaced by the one of the call and is freed at the end.
     Function CreateArchive String sArchiveFile String[] sFiles Integer eFormat Integer eFilter Returns Integer
-        Integer iResult iIndex iCount iAttributes
-        String sFile sFolderName
+        Handle hoPathTools
+        Boolean bIsFolder
+        Integer iResult iIndex iCount
+        String sFile sFolderName sSeparator
 
+        Get PathTools to hoPathTools
         Send CreateWriter
         Get SetFormat eFormat to iResult
         If (iResult > ARCHIVE_FAILED and eFilter <> ARCHIVE_FILTER_NONE) Begin
@@ -1642,13 +1599,14 @@ Class cArchiveWriter is a cArchiveBase
             Move (SizeOfArray (sFiles)) to iCount
             For iIndex from 0 to (iCount - 1)
                 Move (Trim (sFiles[iIndex])) to sFile
-                Move (GetFileAttributes (sFile)) to iAttributes
-                If (iAttributes <> INVALID_FILE_ATTRIBUTES and IsFlagIn (FILE_ATTRIBUTE_DIRECTORY, iAttributes)) Begin
-                    Move (sFile) to sFolderName
-                    If (Right (sFolderName, 1) = "\" or Right (sFolderName, 1) = "/") Begin
+                Get IsFolder of hoPathTools sFile to bIsFolder
+                If bIsFolder Begin
+                    Move (SysConf (SYSCONF_DIR_SEPARATOR)) to sSeparator
+                    Get NativePath of hoPathTools sFile to sFolderName
+                    If (Right (sFolderName, 1) = sSeparator) Begin
                         Move (Left (sFolderName, Length (sFolderName) - 1)) to sFolderName
                     End
-                    Move (ExtractFileName (sFolderName)) to sFolderName
+                    Get FileNamePart of hoPathTools sFolderName to sFolderName
                     Get AddFolderTree sFile sFolderName to iResult
                 End
                 Else Begin

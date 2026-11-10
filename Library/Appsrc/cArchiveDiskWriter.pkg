@@ -94,7 +94,10 @@ Class cArchiveDiskWriter is a cArchiveBase
     // ARCHIVE_EXTRACT_SECURE_SYMLINKS.
     { MethodType = Property }
     Function piOptions Returns Integer
-        Function_Return (piOptionsValue (Self))
+        Integer iOptionsValue
+
+        Get piOptionsValue to iOptionsValue
+        Function_Return iOptionsValue
     End_Function
 
     { MethodType = Property }

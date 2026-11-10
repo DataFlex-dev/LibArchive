@@ -1,0 +1,50 @@
+﻿// Template for a fixture package: it is included inside the test application object (see LibArchiveTests.src) and
+// defines a fixture object (class cArchiveTestFixture) with its tests as child objects of class cTest.
+// Tests reach the fixture helpers with Delegate Get / Delegate Send.
+Object oSmokeTests is a cArchiveTestFixture
+    Set psTestFixtureName to "Smoke"
+
+    Object oVersionTest is a cTest
+        Procedure Test
+            Send AssertIAreEqual 3007007 (archive_version_number ())
+            Send AssertSAreEqual "libarchive 3.7.7" (PointerToString (archive_version_string ()))
+        End_Procedure
+    End_Object
+
+    Object oSampleArchiveRoundTripTest is a cTest
+        Procedure Test
+            Pointer pArchive pEntry
+            Integer iResult iIndex iCount
+            BigInt iRead
+            UChar[] ucArchive ucData
+            String sName sExpected
+
+            Delegate Get BuildSampleArchiveMemory ARCHIVE_FORMAT_ZIP (&ucArchive) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "build sample zip"
+            Send Assert (SizeOfArray (ucArchive) > 0) "sample zip has bytes"
+
+            Move (archive_read_new ()) to pArchive
+            Move (archive_read_support_format_all (pArchive)) to iResult
+            Move (archive_read_support_filter_all (pArchive)) to iResult
+            Move (archive_read_open_memory (pArchive, AddressOf (ucArchive), SizeOfArray (ucArchive))) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open memory"
+            Delegate Get SampleEntryCount to iCount
+            For iIndex from 0 to (iCount - 1)
+                Move (archive_read_next_header (pArchive, AddressOf (pEntry))) to iResult
+                Send AssertIAreEqual ARCHIVE_OK iResult "next header"
+                Move (PointerToString (archive_entry_pathname_utf8 (pEntry))) to sName
+                Delegate Get SampleEntryName iIndex to sExpected
+                Send AssertSAreEqual sExpected sName "entry name"
+                Delegate Get SampleEntryContent iIndex to sExpected
+                If (SizeOfString (sExpected) > 0) Begin
+                    Move (ResizeArray (ucData, 100)) to ucData
+                    Move (archive_read_data (pArchive, AddressOf (ucData), 100)) to iRead
+                    Send AssertBIAreEqual (SizeOfString (sExpected)) iRead "data size"
+                End
+            Loop
+            Move (archive_read_next_header (pArchive, AddressOf (pEntry))) to iResult
+            Send AssertIAreEqual ARCHIVE_EOF iResult "end of archive"
+            Move (archive_read_free (pArchive)) to iResult
+        End_Procedure
+    End_Object
+End_Object

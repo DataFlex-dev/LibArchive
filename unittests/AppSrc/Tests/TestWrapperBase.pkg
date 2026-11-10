@@ -1,0 +1,192 @@
+﻿// Tests for cArchiveBase (error handling, archive information and version properties), through a cArchiveReader.
+Object oWrapperBaseTests is a cArchiveTestFixture
+    Set psTestFixtureName to "WrapperBase"
+
+    Object oReader is a cArchiveReader
+        Set pbRaiseErrors to False
+    End_Object
+
+    Object oOtherReader is a cArchiveReader
+        Set pbRaiseErrors to False
+    End_Object
+
+    Object oVersionPropertiesTest is a cTest
+        Procedure Test
+            Integer iVersionNumber
+            String sVersionString sVersionDetails sZlibVersion sLibLzmaVersion sBzlibVersion sLibLz4Version sLibZstdVersion
+
+            Get piVersionNumber of oReader to iVersionNumber
+            Send AssertIAreEqual 3007007 iVersionNumber "piVersionNumber"
+            Get psVersionString of oReader to sVersionString
+            Send AssertSAreEqual "libarchive 3.7.7" sVersionString "psVersionString"
+            Get psVersionDetails of oReader to sVersionDetails
+            Send Assert (Pos ("libarchive 3.7.7", sVersionDetails) = 1) "psVersionDetails starts with the version"
+            Get psZlibVersion of oReader to sZlibVersion
+            Send Assert (sZlibVersion <> "") "zlib is linked"
+            Get psLibLzmaVersion of oReader to sLibLzmaVersion
+            Send Assert (sLibLzmaVersion <> "") "liblzma is linked"
+            Get psBzlibVersion of oReader to sBzlibVersion
+            Send Assert (sBzlibVersion <> "") "bzlib is linked"
+            Get psLibLz4Version of oReader to sLibLz4Version
+            Send Assert (sLibLz4Version <> "") "liblz4 is linked"
+            Get psLibZstdVersion of oReader to sLibZstdVersion
+            Send Assert (sLibZstdVersion <> "") "libzstd is linked"
+        End_Procedure
+    End_Object
+
+    Object oHandleTest is a cTest
+        Procedure Test
+            Integer iErrorNumber iFileCount iFilterCount
+            String sErrorString sFormatName
+            Boolean bHasHandle
+            String sFilterName
+
+            Send FreeHandle of oReader
+            Get HasHandle of oReader to bHasHandle
+            Send Assert (not (bHasHandle)) "no handle after FreeHandle"
+            Get piErrorNumber of oReader to iErrorNumber
+            Send AssertIAreEqual 0 iErrorNumber "errno without handle"
+            Get psErrorString of oReader to sErrorString
+            Send AssertSAreEqual "" sErrorString "error text without handle"
+            Get piFileCount of oReader to iFileCount
+            Send AssertIAreEqual 0 iFileCount "file count without handle"
+            Get piFilterCount of oReader to iFilterCount
+            Send AssertIAreEqual 0 iFilterCount "filter count without handle"
+            Get psFormatName of oReader to sFormatName
+            Send AssertSAreEqual "" sFormatName "format name without handle"
+            Get FilterName of oReader 0 to sFilterName
+            Send AssertSAreEqual "" sFilterName "filter name without handle"
+            Send FreeHandle of oReader // safe without a handle
+
+            Send CreateReader of oReader
+            Get HasHandle of oReader to bHasHandle
+            Send Assert bHasHandle "handle after CreateReader"
+            Get piErrorNumber of oReader to iErrorNumber
+            Send AssertIAreEqual 0 iErrorNumber "fresh handle has no error"
+            Send FreeHandle of oReader
+            Get HasHandle of oReader to bHasHandle
+            Send Assert (not (bHasHandle)) "handle freed"
+        End_Procedure
+    End_Object
+
+    Object oSetClearCopyErrorTest is a cTest
+        Procedure Test
+            Integer iErrorNumber
+            String sErrorString
+
+            Send CreateReader of oReader
+            Send CreateReader of oOtherReader
+
+            Send SetError of oReader 42 "custom error message"
+            Get piErrorNumber of oReader to iErrorNumber
+            Send AssertIAreEqual 42 iErrorNumber "errno after SetError"
+            Get psErrorString of oReader to sErrorString
+            Send AssertSAreEqual "custom error message" sErrorString "error text after SetError"
+
+            Send CopyError of oOtherReader oReader
+            Get piErrorNumber of oOtherReader to iErrorNumber
+            Send AssertIAreEqual 42 iErrorNumber "errno copied"
+            Get psErrorString of oOtherReader to sErrorString
+            Send AssertSAreEqual "custom error message" sErrorString "error text copied"
+
+            Send ClearError of oReader
+            Get piErrorNumber of oReader to iErrorNumber
+            Send AssertIAreEqual 0 iErrorNumber "errno after ClearError"
+            Get psErrorString of oReader to sErrorString
+            Send AssertSAreEqual "" sErrorString "error text after ClearError"
+            Get piErrorNumber of oOtherReader to iErrorNumber
+            Send AssertIAreEqual 42 iErrorNumber "the copy keeps its error"
+
+            // A text with a percent sign is passed unchanged (it is the argument of %s, not the format).
+            Send SetError of oReader 5 "100% done %d"
+            Get psErrorString of oReader to sErrorString
+            Send AssertSAreEqual "100% done %d" sErrorString "percent signs are not interpreted"
+
+            Send FreeHandle of oReader
+            Send FreeHandle of oOtherReader
+        End_Procedure
+    End_Object
+
+    Object oCheckResultTest is a cTest
+        Procedure Test
+            Integer iLastResult
+            String sLastError
+            Integer iResult
+
+            Send CreateReader of oReader
+            Send ClearLastResult of oReader
+
+            // Results better than ARCHIVE_FAILED are passed through without being recorded.
+            Get CheckResult of oReader ARCHIVE_WARN "warn operation" to iResult
+            Send AssertIAreEqual ARCHIVE_WARN iResult "ARCHIVE_WARN is returned unchanged"
+            Get piLastResult of oReader to iLastResult
+            Send AssertIAreEqual ARCHIVE_OK iLastResult "warning is not recorded"
+
+            // ARCHIVE_FAILED is recorded; pbRaiseErrors is False so there is no DataFlex error.
+            Send SetError of oReader 7 "something failed"
+            Get CheckResult of oReader ARCHIVE_FAILED "failing operation" to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "result is returned unchanged"
+            Get piLastResult of oReader to iLastResult
+            Send AssertIAreEqual ARCHIVE_FAILED iLastResult "piLastResult"
+            Get psLastError of oReader to sLastError
+            Send AssertSAreEqual "something failed" sLastError "psLastError"
+
+            Send ClearLastResult of oReader
+            Get piLastResult of oReader to iLastResult
+            Send AssertIAreEqual ARCHIVE_OK iLastResult "piLastResult cleared"
+            Get psLastError of oReader to sLastError
+            Send AssertSAreEqual "" sLastError "psLastError cleared"
+
+            // pbRaiseErrors True raises a DataFlex error (DFERR_PROGRAM) containing operation and text.
+            Set pbRaiseErrors of oReader to True
+            Send ExpectError DFERR_PROGRAM
+            Get CheckResult of oReader ARCHIVE_FATAL "fatal operation" to iResult
+            Send UnExpectError DFERR_PROGRAM
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "fatal result is returned"
+            Get piLastResult of oReader to iLastResult
+            Send AssertIAreEqual ARCHIVE_FATAL iLastResult "piLastResult after fatal"
+            Set pbRaiseErrors of oReader to False
+
+            Send FreeHandle of oReader
+        End_Procedure
+    End_Object
+
+    Object oArchiveInformationTest is a cTest
+        Procedure Test
+            Integer eFormat iFileCount iFilterCount
+            String sFormatName
+            Integer iFilterCode
+            String sFilterName
+            BigInt biFilterBytes
+            UChar[] ucArchive
+            Integer iResult iIndex
+            Handle hoFixture
+
+            Delegate Get BuildSampleArchiveMemory ARCHIVE_FORMAT_ZIP (&ucArchive) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "build sample"
+
+            Send CreateReader of oReader
+            Get SupportFormatAll of oReader to iResult
+            Get SupportFilterAll of oReader to iResult
+            Get OpenMemory of oReader ucArchive to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open memory"
+            Get NextHeader of oReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "next header"
+            Get peFormat of oReader to eFormat
+            Send AssertIAreEqual ARCHIVE_FORMAT_ZIP (eFormat iand ARCHIVE_FORMAT_BASE_MASK) "peFormat is zip"
+            Get psFormatName of oReader to sFormatName
+            Send AssertSAreEqual "ZIP 2.0 (deflation)" sFormatName "psFormatName"
+            Get piFileCount of oReader to iFileCount
+            Send AssertIAreEqual 1 iFileCount "one header read"
+            Get piFilterCount of oReader to iFilterCount
+            Send Assert (iFilterCount >= 1) "at least one filter"
+            Get FilterCode of oReader 0 to iFilterCode
+            Send AssertIAreEqual ARCHIVE_FILTER_NONE iFilterCode "filter 0 code"
+            Get FilterName of oReader 0 to sFilterName
+            Send AssertSAreEqual "none" sFilterName "filter 0 name"
+            Get FilterBytes of oReader -1 to biFilterBytes
+            Send Assert (biFilterBytes > 0) "bytes read from the last filter"
+            Send FreeHandle of oReader
+        End_Procedure
+    End_Object
+End_Object

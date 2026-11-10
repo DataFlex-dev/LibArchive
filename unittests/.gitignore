@@ -1,0 +1,9 @@
+DfPkg
+*.dbg
+*.exe
+*.prn
+*.dep
+*.prp
+*.mtd
+*.dsk
+workspace.loc

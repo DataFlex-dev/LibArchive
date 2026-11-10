@@ -1,0 +1,2600 @@
+﻿// Tests of cArchiveReader (Library\AppSrc\cArchiveReader.pkg). Included inside the test application object.
+Use cArchiveReader.pkg
+
+// Windows and C runtime functions the tests use to create and inspect files (names are prefixed to avoid clashes).
+External_Function WrapTestCreateFile "CreateFileW" kernel32.dll ;
+    WString wsFileName ;
+    UInteger iAccess ;
+    UInteger iShareMode ;
+    Pointer pSecurity ;
+    UInteger iDisposition ;
+    UInteger iFlags ;
+    Handle hTemplate ;
+    Returns Handle
+
+External_Function WrapTestWriteFile "WriteFile" kernel32.dll ;
+    Handle hFile ;
+    Pointer pBuffer ;
+    UInteger iBytes ;
+    Pointer pBytesWritten ;
+    Pointer pOverlapped ;
+    Returns Integer
+
+External_Function WrapTestReadFile "ReadFile" kernel32.dll ;
+    Handle hFile ;
+    Pointer pBuffer ;
+    UInteger iBytes ;
+    Pointer pBytesRead ;
+    Pointer pOverlapped ;
+    Returns Integer
+
+External_Function WrapTestGetFileSize "GetFileSizeEx" kernel32.dll ;
+    Handle hFile ;
+    Pointer pSize ;
+    Returns Integer
+
+External_Function WrapTestCloseHandle "CloseHandle" kernel32.dll ;
+    Handle hObject ;
+    Returns Integer
+
+External_Function WrapTestRemoveDirectory "RemoveDirectoryW" kernel32.dll ;
+    WString wsPath ;
+    Returns Integer
+
+External_Function WrapTestOpenFd "_wopen" ucrtbase.dll ;
+    WString wsFileName ;
+    Integer iFlags ;
+    Integer iMode ;
+    Returns Integer
+
+External_Function WrapTestCloseFd "_close" ucrtbase.dll ;
+    Integer iFd ;
+    Returns Integer
+
+External_Function WrapTestOpenFile "_wfopen" ucrtbase.dll ;
+    WString wsFileName ;
+    WString wsMode ;
+    Returns Pointer
+
+External_Function WrapTestCloseFile "fclose" ucrtbase.dll ;
+    Pointer pFile ;
+    Returns Integer
+
+Object oWrapperReaderTests is a cArchiveTestFixture
+    Set psTestFixtureName to "WrapperReader"
+
+    // True: VerifySampleEntry does not compare the entry size (zip streamable reports 0 before the data was read).
+    Property Boolean pbSkipSizeCheck False
+
+    // Stand-in for a cArchiveDiskWriter / cArchiveMatch object: the readers only need ppArchive of it.
+    Object oFakeDiskWriter is a cObject
+        Property Pointer ppArchive 0
+    End_Object
+
+    // ---- helpers: files -----------------------------------------------------------------------------------------
+
+    Function TextToBytes String sText Returns UChar[]
+        UChar[] ucBuffer
+        Integer iBytes iVoid
+
+        Move (SizeOfString (sText)) to iBytes
+        If (iBytes > 0) Begin
+            Move (ResizeArray (ucBuffer, iBytes)) to ucBuffer
+            Move (CopyMemory (AddressOf (ucBuffer), AddressOf (sText), iBytes)) to iVoid
+        End
+        Function_Return ucBuffer
+    End_Function
+
+    Function HexToBytes String sHex Returns UChar[]
+        UChar[] ucData
+        Integer iCount iIndex iHigh iLow
+
+        Move (Length (sHex) / 2) to iCount
+        Move (ResizeArray (ucData, iCount)) to ucData
+        For iIndex from 0 to (iCount - 1)
+            Move (Pos (Mid (sHex, 1, iIndex * 2 + 1), "0123456789abcdef") - 1) to iHigh
+            Move (Pos (Mid (sHex, 1, iIndex * 2 + 2), "0123456789abcdef") - 1) to iLow
+            Move (iHigh * 16 + iLow) to ucData[iIndex]
+        Loop
+        Function_Return ucData
+    End_Function
+
+    Function BytesToString UChar[] ByRef ucBuffer Returns String
+        Integer iBytes iVoid
+        String sText
+
+        Move (SizeOfArray (ucBuffer)) to iBytes
+        If (iBytes = 0) Begin
+            Function_Return ""
+        End
+        Move (Repeat (Character (0), iBytes)) to sText
+        Move (CopyMemory (AddressOf (sText), AddressOf (ucBuffer), iBytes)) to iVoid
+        Function_Return sText
+    End_Function
+
+    // Writes iCount bytes of ucData starting at iOffset to a new file. Returns True on success.
+    Function WriteBytes String sFileName UChar[] ByRef ucData Integer iOffset Integer iCount Returns Boolean
+        Handle hFile
+        WString wsFileName
+        Integer iWritten iOk iVoid
+        Boolean bOk
+
+        Move sFileName to wsFileName
+        Move (WrapTestCreateFile (wsFileName, 1073741824, 1, 0, 2, 128, 0)) to hFile
+        If (hFile = -1) Begin
+            Function_Return False
+        End
+        Move True to bOk
+        If (iCount > 0) Begin
+            Move (WrapTestWriteFile (hFile, AddressOf (ucData) + iOffset, iCount, AddressOf (iWritten), 0)) to iOk
+            Move (iOk <> 0 and iWritten = iCount) to bOk
+        End
+        Move (WrapTestCloseHandle (hFile)) to iVoid
+        Function_Return bOk
+    End_Function
+
+    Function WriteText String sFileName String sText Returns Boolean
+        UChar[] ucData
+        Boolean bOk
+
+        Get TextToBytes sText to ucData
+        Get WriteBytes sFileName (&ucData) 0 (SizeOfArray (ucData)) to bOk
+        Function_Return bOk
+    End_Function
+
+    // Reads a whole file. bFound is False when the file cannot be opened.
+    Function ReadFileBytes String sFileName Boolean ByRef bFound Returns UChar[]
+        Handle hFile
+        WString wsFileName
+        BigInt iSize
+        Integer iRead iOk iVoid
+        UChar[] ucData ucEmpty
+
+        Move False to bFound
+        Move sFileName to wsFileName
+        // GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL
+        Move (WrapTestCreateFile (wsFileName, 2147483648, 1, 0, 3, 128, 0)) to hFile
+        If (hFile = -1) Begin
+            Function_Return ucEmpty
+        End
+        Move True to bFound
+        Move 0 to iSize
+        Move (WrapTestGetFileSize (hFile, AddressOf (iSize))) to iOk
+        If (iSize > 0) Begin
+            Move (ResizeArray (ucData, iSize)) to ucData
+            Move 0 to iRead
+            Move (WrapTestReadFile (hFile, AddressOf (ucData), iSize, AddressOf (iRead), 0)) to iOk
+            If (iRead <> iSize) Begin
+                Move False to bFound
+            End
+        End
+        Move (WrapTestCloseHandle (hFile)) to iVoid
+        Function_Return ucData
+    End_Function
+
+    // Whole file as a string, "" when it does not exist.
+    Function ReadFileText String sFileName Returns String
+        UChar[] ucData
+        Boolean bFound
+        String sText
+
+        Get ReadFileBytes sFileName (&bFound) to ucData
+        Get BytesToString (&ucData) to sText
+        Function_Return sText
+    End_Function
+
+    Function FileExists String sFileName Returns Boolean
+        Function_Return (GetFileAttributes (sFileName) <> INVALID_FILE_ATTRIBUTES)
+    End_Function
+
+    // Modification time and device/inode of a file as libarchive's disk reader sees them (raw externals).
+    Function FileFacts String sFileName BigInt ByRef iMtime BigInt ByRef iDevice BigInt ByRef iInode Returns Integer
+        Pointer pDisk pEntry
+        Integer iResult
+        Void_Type iVoid
+        WString wsFileName
+
+        Move sFileName to wsFileName
+        Move (archive_read_disk_new ()) to pDisk
+        Move (archive_entry_new ()) to pEntry
+        Move (archive_entry_update_pathname_utf8 (pEntry, AddressOf (sFileName))) to iResult
+        Move (archive_entry_copy_sourcepath_w (pEntry, AddressOf (wsFileName))) to iVoid
+        Move (archive_read_disk_entry_from_file (pDisk, pEntry, -1, 0)) to iResult
+        Move (archive_entry_mtime (pEntry)) to iMtime
+        Move (archive_entry_dev (pEntry)) to iDevice
+        Move (archive_entry_ino64 (pEntry)) to iInode
+        Move (archive_entry_free (pEntry)) to iVoid
+        Move (archive_read_free (pDisk)) to iVoid
+        Function_Return iResult
+    End_Function
+
+    Procedure RemoveFolder String sFolder
+        WString wsFolder
+        Integer iOk
+
+        Move sFolder to wsFolder
+        Move (WrapTestRemoveDirectory (wsFolder)) to iOk
+    End_Procedure
+
+    // ---- helpers: archive builders (raw externals) --------------------------------------------------------------
+
+    // Writes an archive with one regular file per name, all with the same content.
+    Function BuildArchiveWithEntries String sFileName Integer eFormat Integer eFilter String[] asNames UChar[] ByRef ucContent Returns Integer
+        BigInt biSampleMTime
+        Pointer pArchive pEntry
+        Integer iResult iIndex iCount
+        BigInt iSize iWritten
+        WString wsFileName
+        String sName
+        Void_Type iVoid
+
+        Move sFileName to wsFileName
+        Move (SizeOfArray (ucContent)) to iSize
+        Move (SizeOfArray (asNames)) to iCount
+        Move (archive_write_new ()) to pArchive
+        If (eFormat = ARCHIVE_FORMAT_AR_BSD) Begin
+            // archive_write_set_format does not know the ar variants
+            Move (archive_write_set_format_ar_bsd (pArchive)) to iResult
+        End
+        Else Begin
+            Move (archive_write_set_format (pArchive, eFormat)) to iResult
+        End
+        If (iResult = ARCHIVE_OK and eFilter <> ARCHIVE_FILTER_NONE) Begin
+            Move (archive_write_add_filter (pArchive, eFilter)) to iResult
+        End
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_write_open_filename_w (pArchive, AddressOf (wsFileName))) to iResult
+        End
+        For iIndex from 0 to (iCount - 1)
+            If (iResult = ARCHIVE_OK) Begin
+                Move asNames[iIndex] to sName
+                Move (archive_entry_new ()) to pEntry
+                Move (archive_entry_set_pathname_utf8 (pEntry, AddressOf (sName))) to iVoid
+                Get SampleMTime to biSampleMTime
+                Move (archive_entry_set_mtime (pEntry, biSampleMTime, 0)) to iVoid
+                Move (archive_entry_set_filetype (pEntry, AE_IFREG)) to iVoid
+                Move (archive_entry_set_perm (pEntry, 420)) to iVoid
+                Move (archive_entry_set_size (pEntry, iSize)) to iVoid
+                Move (archive_write_header (pArchive, pEntry)) to iResult
+                If (iResult = ARCHIVE_OK and iSize > 0) Begin
+                    Move (archive_write_data (pArchive, AddressOf (ucContent), iSize)) to iWritten
+                    If (iWritten <> iSize) Begin
+                        Move ARCHIVE_FATAL to iResult
+                    End
+                End
+                Move (archive_entry_free (pEntry)) to iVoid
+            End
+        Loop
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_write_close (pArchive)) to iResult
+        End
+        Move (archive_write_free (pArchive)) to iVoid
+        Function_Return iResult
+    End_Function
+
+    // Writes the sample entries as zip with AES256 encrypted file data.
+    Function BuildEncryptedZip String sFileName String sPassphrase Returns Integer
+        Pointer pArchive
+        Integer iResult
+        WString wsFileName
+        String sOptions
+        Void_Type iVoid
+
+        Move sFileName to wsFileName
+        Move "zip:encryption=aes256" to sOptions
+        Move (archive_write_new ()) to pArchive
+        Move (archive_write_set_format_zip (pArchive)) to iResult
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_write_set_options (pArchive, AddressOf (sOptions))) to iResult
+        End
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_write_set_passphrase (pArchive, AddressOf (sPassphrase))) to iResult
+        End
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_write_open_filename_w (pArchive, AddressOf (wsFileName))) to iResult
+        End
+        If (iResult = ARCHIVE_OK) Begin
+            Get WriteSampleEntries pArchive to iResult
+        End
+        If (iResult = ARCHIVE_OK) Begin
+            Move (archive_write_close (pArchive)) to iResult
+        End
+        Move (archive_write_free (pArchive)) to iVoid
+        Function_Return iResult
+    End_Function
+
+    // ---- helpers: readers ---------------------------------------------------------------------------------------
+
+    // A reader that supports all formats and filters.
+    Function NewReader Returns Handle
+        Handle hoReader
+        Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+        Send CreateReaderAll of hoReader
+        Function_Return hoReader
+    End_Function
+
+    Procedure DropReader Handle hoReader
+        Send Destroy_Object of hoReader
+    End_Procedure
+
+    // Checks the current entry of a reader against sample entry iIndex: type, size, time and data (and the name when
+    // bCheckName).
+    Procedure VerifySampleEntry Handle hoReader Integer iIndex String sLabel Boolean bCheckName
+        Boolean bSkipSizeCheck
+        BigInt biSampleMTime
+        Boolean bSampleEntryIsDirectory
+        Integer iResult
+        String sName sExpected sData
+        Handle hoEntry
+        Pointer pEntry
+
+        Get phoEntry of hoReader to hoEntry
+        Get ppEntry of hoEntry to pEntry
+        Send Assert (pEntry <> 0) (sLabel * "entry is attached" * String (iIndex))
+        If (pEntry <> 0) Begin
+            If (bCheckName) Begin
+                Get psPathname of hoEntry to sName
+                Get SampleEntryName iIndex to sExpected
+                Send AssertSAreEqual sExpected sName (sLabel * "name" * String (iIndex))
+            End
+            Get SampleMTime to biSampleMTime
+            Send AssertBIAreEqual biSampleMTime (archive_entry_mtime (pEntry)) (sLabel * "mtime" * String (iIndex))
+            Get SampleEntryIsDirectory iIndex to bSampleEntryIsDirectory
+            If bSampleEntryIsDirectory Begin
+                Send AssertIAreEqual AE_IFDIR (archive_entry_filetype (pEntry)) (sLabel * "directory type" * String (iIndex))
+            End
+            Else Begin
+                Send AssertIAreEqual AE_IFREG (archive_entry_filetype (pEntry)) (sLabel * "file type" * String (iIndex))
+                Get SampleEntryContent iIndex to sExpected
+                Get pbSkipSizeCheck to bSkipSizeCheck
+                If (not (bSkipSizeCheck)) Begin
+                    Send AssertBIAreEqual (SizeOfString (sExpected)) (archive_entry_size (pEntry)) (sLabel * "size" * String (iIndex))
+                End
+                Get ReadDataToString of hoReader to sData
+                Send AssertSAreEqual sExpected sData (sLabel * "content" * String (iIndex))
+            End
+        End
+    End_Procedure
+
+    // Reads the whole sample archive from a reader that was opened and checks names, types, sizes, times and data in
+    // the order of the sample. bCheckUnicode False skips the name check of the entry with the non ASCII name (formats
+    // that cannot store it).
+    Procedure VerifySampleArchive Handle hoReader String sLabel Boolean bCheckUnicode
+        Integer iFileCount
+        Integer iIndex iCount iResult
+
+        Get SampleEntryCount to iCount
+        For iIndex from 0 to (iCount - 1)
+            Get NextHeader of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "next header" * String (iIndex))
+            Send VerifySampleEntry hoReader iIndex sLabel (iIndex <> 3 or bCheckUnicode)
+        Loop
+        Get NextHeader of hoReader to iResult
+        Send AssertIAreEqual ARCHIVE_EOF iResult (sLabel * "end of archive")
+        Get piFileCount of hoReader to iFileCount
+        Send AssertIAreEqual iCount iFileCount (sLabel * "file count")
+    End_Procedure
+
+    // Like VerifySampleArchive for formats that store the entries in another order (7zip puts folders last): every entry
+    // is looked up by its name. libarchive's 7zip writer stores non ASCII names wrongly when the process uses the "C"
+    // locale (as DataFlex programs do), so a name that matches no sample entry is taken for the Unicode sample entry
+    // (checked by content only); the reader itself is tested with a prebuilt 7zip file (oSevenZipUnicodeNameTest).
+    Procedure VerifySampleArchiveAnyOrder Handle hoReader String sLabel
+        Integer iIndex iCount iResult iFound iSeen
+        String sName sExpected
+        Handle hoEntry
+        Boolean bUnicodeSeen bCheckName
+
+        Get SampleEntryCount to iCount
+        Get phoEntry of hoReader to hoEntry
+        Move 0 to iSeen
+        Move False to bUnicodeSeen
+        Get NextHeader of hoReader to iResult
+        While (iResult = ARCHIVE_OK)
+            Get psPathname of hoEntry to sName
+            Move -1 to iFound
+            For iIndex from 0 to (iCount - 1)
+                Get SampleEntryName iIndex to sExpected
+                If (sExpected = sName) Begin
+                    Move iIndex to iFound
+                End
+            Loop
+            Move True to bCheckName
+            If (iFound < 0 and not (bUnicodeSeen)) Begin
+                Move 3 to iFound
+                Move True to bUnicodeSeen
+                Move False to bCheckName
+            End
+            Send Assert (iFound >= 0) (sLabel * "unknown entry")
+            If (iFound >= 0) Begin
+                Send VerifySampleEntry hoReader iFound sLabel bCheckName
+                Increment iSeen
+            End
+            Get NextHeader of hoReader to iResult
+        Loop
+        Send AssertIAreEqual ARCHIVE_EOF iResult (sLabel * "end of archive")
+        Send AssertIAreEqual iCount iSeen (sLabel * "entries found")
+    End_Procedure
+
+    // Builds a sample archive file, opens it with OpenFile and verifies it. eBaseFormat is the expected format family.
+    Procedure CheckFileFormat String sName Integer eFormat Integer eFilter Integer eBaseFormat Boolean bAnyOrder
+        Integer eFormat2
+        String sFormatName
+        Integer iFilterCode
+        String sFilterName
+        String sFile
+        Integer iResult iIndex iCount
+        Handle hoReader
+        Boolean bFilterFound
+
+        Get TempFile sName to sFile
+        Get BuildSampleArchiveFile sFile eFormat eFilter to iResult
+        Send AssertIAreEqual ARCHIVE_OK iResult (sName * "build")
+        Get NewReader to hoReader
+        Get OpenFile of hoReader sFile 0 to iResult
+        Send AssertIAreEqual ARCHIVE_OK iResult (sName * "open")
+        If (bAnyOrder) Begin
+            Send VerifySampleArchiveAnyOrder hoReader sName
+        End
+        Else Begin
+            Send VerifySampleArchive hoReader sName True
+        End
+        Get peFormat of hoReader to eFormat2
+        Send AssertIAreEqual eBaseFormat ((eFormat2) iand ARCHIVE_FORMAT_BASE_MASK) (sName * "format code")
+        Get psFormatName of hoReader to sFormatName
+        Send Assert (sFormatName <> "") (sName * "format name")
+        If (eFilter <> ARCHIVE_FILTER_NONE) Begin
+            Move False to bFilterFound
+            Get piFilterCount of hoReader to iCount
+            For iIndex from 0 to (iCount - 1)
+                Get FilterCode of hoReader iIndex to iFilterCode
+                If (iFilterCode = eFilter) Begin
+                    Move True to bFilterFound
+                    Get FilterName of hoReader iIndex to sFilterName
+                    Send Assert (sFilterName <> "") (sName * "filter name")
+                End
+            Loop
+            Send Assert bFilterFound (sName * "filter is in the pipeline")
+        End
+        Send DropReader hoReader
+        EraseFile sFile
+    End_Procedure
+
+    // Enables one filter with its specific SupportFilterXxx method.
+    Function EnableFilter Handle hoReader Integer eFilter Returns Integer
+        Integer iResult
+
+        Move -1 to iResult
+        If (eFilter = ARCHIVE_FILTER_GZIP) Begin
+            Get SupportFilterGzip of hoReader to iResult
+        End
+        If (eFilter = ARCHIVE_FILTER_BZIP2) Begin
+            Get SupportFilterBzip2 of hoReader to iResult
+        End
+        If (eFilter = ARCHIVE_FILTER_COMPRESS) Begin
+            Get SupportFilterCompress of hoReader to iResult
+        End
+        If (eFilter = ARCHIVE_FILTER_LZMA) Begin
+            Get SupportFilterLzma of hoReader to iResult
+        End
+        If (eFilter = ARCHIVE_FILTER_XZ) Begin
+            Get SupportFilterXz of hoReader to iResult
+        End
+        If (eFilter = ARCHIVE_FILTER_UU) Begin
+            Get SupportFilterUu of hoReader to iResult
+        End
+        If (eFilter = ARCHIVE_FILTER_LZIP) Begin
+            Get SupportFilterLzip of hoReader to iResult
+        End
+        If (eFilter = ARCHIVE_FILTER_LZ4) Begin
+            Get SupportFilterLz4 of hoReader to iResult
+        End
+        If (eFilter = ARCHIVE_FILTER_ZSTD) Begin
+            Get SupportFilterZstd of hoReader to iResult
+        End
+        Function_Return iResult
+    End_Function
+
+    // Builds a tar with the filter, opens it with only the tar format and that one filter enabled and verifies it.
+    Procedure CheckSpecificFilter Integer eFilter String sName
+        String sFile
+        Integer iResult
+        Handle hoReader
+
+        Get TempFile ("filter." + sName) to sFile
+        Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_TAR eFilter to iResult
+        Send AssertIAreEqual ARCHIVE_OK iResult (sName * "build")
+        Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+        Send CreateReader of hoReader
+        Get SupportFormatTar of hoReader to iResult
+        Send AssertIAreEqual ARCHIVE_OK iResult (sName * "support tar")
+        Get EnableFilter hoReader eFilter to iResult
+        Send AssertIAreEqual ARCHIVE_OK iResult (sName * "support filter")
+        Get OpenFile of hoReader sFile 0 to iResult
+        Send AssertIAreEqual ARCHIVE_OK iResult (sName * "open")
+        Send VerifySampleArchive hoReader sName True
+        Send DropReader hoReader
+        EraseFile sFile
+    End_Procedure
+
+    // ---- handle lifecycle -----------------------------------------------------------------------------------------
+
+    Object oLifecycleTest is a cTest
+        Procedure Test
+            Integer iLastResult iFileCount
+            String sVersionString
+            Boolean bHasHandle
+            Handle hoReader
+            Pointer pFirst
+            Integer iResult
+
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Get HasHandle of hoReader to bHasHandle
+            Send AssertFalse bHasHandle "no handle before CreateReader"
+            Send CreateReader of hoReader
+            Get HasHandle of hoReader to bHasHandle
+            Send Assert bHasHandle "CreateReader creates a handle"
+            Get ppArchive of hoReader to pFirst
+            Send Assert (pFirst <> 0) "handle pointer"
+            Get piLastResult of hoReader to iLastResult
+            Send AssertIAreEqual ARCHIVE_OK iLastResult "no error yet"
+            Get psVersionString of hoReader to sVersionString
+            Send AssertSAreEqual "libarchive 3.7.7" sVersionString "version string from the base class"
+            Send CreateReader of hoReader
+            Get HasHandle of hoReader to bHasHandle
+            Send Assert bHasHandle "CreateReader again replaces the handle"
+            Send CloseReader of hoReader
+            Get HasHandle of hoReader to bHasHandle
+            Send Assert bHasHandle "CloseReader keeps the handle"
+            Send FreeReader of hoReader
+            Get HasHandle of hoReader to bHasHandle
+            Send AssertFalse bHasHandle "FreeReader frees the handle"
+            Send FreeReader of hoReader
+            Send FreeHandle of hoReader
+            Send CreateReaderAll of hoReader
+            Get HasHandle of hoReader to bHasHandle
+            Send Assert bHasHandle "CreateReaderAll"
+            Get piFileCount of hoReader to iFileCount
+            Send AssertIAreEqual 0 iFileCount "no entries read yet"
+            Delegate Send DropReader hoReader
+        End_Procedure
+    End_Object
+
+    // ---- opening files in every format ----------------------------------------------------------------------------
+
+    Object oZipFileTest is a cTest
+        Procedure Test
+            Delegate Send CheckFileFormat "wr_sample.zip" ARCHIVE_FORMAT_ZIP ARCHIVE_FILTER_NONE ARCHIVE_FORMAT_ZIP False
+        End_Procedure
+    End_Object
+
+    Object oTarFileTest is a cTest
+        Procedure Test
+            Delegate Send CheckFileFormat "wr_sample.tar" ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_NONE ARCHIVE_FORMAT_TAR False
+        End_Procedure
+    End_Object
+
+    Object oTarGzFileTest is a cTest
+        Procedure Test
+            Delegate Send CheckFileFormat "wr_sample.tar.gz" ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_GZIP ARCHIVE_FORMAT_TAR False
+        End_Procedure
+    End_Object
+
+    Object o7zipFileTest is a cTest
+        Procedure Test
+            Delegate Send CheckFileFormat "wr_sample.7z" ARCHIVE_FORMAT_7ZIP ARCHIVE_FILTER_NONE ARCHIVE_FORMAT_7ZIP True
+        End_Procedure
+    End_Object
+
+    Object oCpioFileTest is a cTest
+        Procedure Test
+            Delegate Send CheckFileFormat "wr_sample.cpio" ARCHIVE_FORMAT_CPIO ARCHIVE_FILTER_NONE ARCHIVE_FORMAT_CPIO False
+        End_Procedure
+    End_Object
+
+    // A file name with non ASCII characters is opened through the wide string function.
+    Object oUnicodeFileNameTest is a cTest
+        Procedure Test
+            Delegate Send CheckFileFormat "wr_ärchive-ü€.zip" ARCHIVE_FORMAT_ZIP ARCHIVE_FILTER_NONE ARCHIVE_FORMAT_ZIP False
+        End_Procedure
+    End_Object
+
+    // Every filter with its own SupportFilterXxx method.
+    Object oSpecificFilterTest is a cTest
+        Procedure Test
+            Delegate Send CheckSpecificFilter ARCHIVE_FILTER_GZIP "gzip"
+            Delegate Send CheckSpecificFilter ARCHIVE_FILTER_BZIP2 "bzip2"
+            Delegate Send CheckSpecificFilter ARCHIVE_FILTER_COMPRESS "compress"
+            Delegate Send CheckSpecificFilter ARCHIVE_FILTER_LZMA "lzma"
+            Delegate Send CheckSpecificFilter ARCHIVE_FILTER_XZ "xz"
+            Delegate Send CheckSpecificFilter ARCHIVE_FILTER_UU "uu"
+            Delegate Send CheckSpecificFilter ARCHIVE_FILTER_LZIP "lzip"
+            Delegate Send CheckSpecificFilter ARCHIVE_FILTER_LZ4 "lz4"
+            Delegate Send CheckSpecificFilter ARCHIVE_FILTER_ZSTD "zstd"
+        End_Procedure
+    End_Object
+
+    // ---- support methods ------------------------------------------------------------------------------------------
+
+    // Every SupportFormatXxx / SupportFilterXxx method is reachable and accepted by libarchive (each on a fresh handle).
+    Object oSupportMethodsTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult
+
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Send CreateReader of hoReader
+            Get SupportFormat7zip of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "7zip"
+            Send CreateReader of hoReader
+            Get SupportFormatAr of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "ar"
+            Send CreateReader of hoReader
+            Get SupportFormatCab of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "cab"
+            Send CreateReader of hoReader
+            Get SupportFormatCpio of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "cpio"
+            Send CreateReader of hoReader
+            Get SupportFormatEmpty of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "empty"
+            Send CreateReader of hoReader
+            Get SupportFormatGnutar of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "gnutar"
+            Send CreateReader of hoReader
+            Get SupportFormatIso9660 of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "iso9660"
+            Send CreateReader of hoReader
+            Get SupportFormatLha of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "lha"
+            Send CreateReader of hoReader
+            Get SupportFormatMtree of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "mtree"
+            Send CreateReader of hoReader
+            Get SupportFormatRar of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "rar"
+            Send CreateReader of hoReader
+            Get SupportFormatRar5 of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "rar5"
+            Send CreateReader of hoReader
+            Get SupportFormatRaw of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "raw"
+            Send CreateReader of hoReader
+            Get SupportFormatTar of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "tar"
+            Send CreateReader of hoReader
+            Get SupportFormatWarc of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "warc"
+            // the xar reader needs an XML library; without one libarchive accepts it with a warning
+            Send CreateReader of hoReader
+            Get SupportFormatXar of hoReader to iResult
+            Send Assert (iResult = ARCHIVE_OK or iResult = ARCHIVE_WARN) "xar"
+            Send CreateReader of hoReader
+            Get SupportFormatZip of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "zip"
+            Send CreateReader of hoReader
+            Get SupportFormatZipStreamable of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "zip_streamable"
+            Send CreateReader of hoReader
+            Get SupportFormatZipSeekable of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "zip_seekable"
+            Send CreateReader of hoReader
+            Get SupportFormatAll of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "all"
+            Send CreateReader of hoReader
+            Get SupportFormatByCode of hoReader ARCHIVE_FORMAT_ZIP to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "format by code"
+            Send CreateReader of hoReader
+            Get SupportFilterAll of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "all"
+            Send CreateReader of hoReader
+            Get SupportFilterBzip2 of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "bzip2"
+            Send CreateReader of hoReader
+            Get SupportFilterCompress of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "compress"
+            Send CreateReader of hoReader
+            Get SupportFilterGzip of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "gzip"
+            // needs an external program, libarchive accepts it with a warning
+            Send CreateReader of hoReader
+            Get SupportFilterGrzip of hoReader to iResult
+            Send Assert (iResult = ARCHIVE_OK or iResult = ARCHIVE_WARN) "grzip"
+            // needs an external program, libarchive accepts it with a warning
+            Send CreateReader of hoReader
+            Get SupportFilterLrzip of hoReader to iResult
+            Send Assert (iResult = ARCHIVE_OK or iResult = ARCHIVE_WARN) "lrzip"
+            Send CreateReader of hoReader
+            Get SupportFilterLz4 of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "lz4"
+            Send CreateReader of hoReader
+            Get SupportFilterLzip of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "lzip"
+            Send CreateReader of hoReader
+            Get SupportFilterLzma of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "lzma"
+            // needs an external program, libarchive accepts it with a warning
+            Send CreateReader of hoReader
+            Get SupportFilterLzop of hoReader to iResult
+            Send Assert (iResult = ARCHIVE_OK or iResult = ARCHIVE_WARN) "lzop"
+            Send CreateReader of hoReader
+            Get SupportFilterNone of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "none"
+            Send CreateReader of hoReader
+            Get SupportFilterRpm of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "rpm"
+            Send CreateReader of hoReader
+            Get SupportFilterUu of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "uu"
+            Send CreateReader of hoReader
+            Get SupportFilterXz of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "xz"
+            Send CreateReader of hoReader
+            Get SupportFilterZstd of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "zstd"
+            Send CreateReader of hoReader
+            Get SupportFilterByCode of hoReader ARCHIVE_FILTER_GZIP to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "filter by code"
+            Delegate Send DropReader hoReader
+        End_Procedure
+    End_Object
+
+    // libarchive 3.7.7 crashes when the rar5 reader is registered twice: the wrapper makes repeated registration harmless.
+    Object oRepeatedFormatSupportTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult
+            String sFile
+            tArchiveEntryInfo[] aEntries
+
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Send CreateReaderAll of hoReader
+            Get SupportFormatAll of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "All after CreateReaderAll"
+            Get SupportFormatRar5 of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "Rar5 after All"
+            Get SupportFormatByCode of hoReader ARCHIVE_FORMAT_RAR_V5 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "Rar5 by code after All"
+            Get SupportFilterAll of hoReader to iResult
+            Get SupportFilterAll of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "filters twice"
+
+            Send CreateReader of hoReader
+            Get SupportFormatRar5 of hoReader to iResult
+            Get SupportFormatRar5 of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "Rar5 twice"
+            Get SupportFormatAll of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "All after Rar5"
+            Get SupportFormatAll of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "All twice"
+            // the handle still reads (All enabled the other formats one by one)
+            Delegate Get TempFile "wr_repeat.zip" to sFile
+            Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_ZIP ARCHIVE_FILTER_NONE to iResult
+            Get OpenFile of hoReader sFile 0 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open"
+            Delegate Send VerifySampleArchive hoReader "repeat" True
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    // The methods that call libarchive without a handle report ARCHIVE_FATAL instead of crashing.
+    Object oNoHandleTest is a cTest
+        Procedure Test
+            Integer iLastResult
+            String sLastError
+            Handle hoReader
+            Integer iResult
+            UChar[] ucData
+
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Set pbRaiseErrors of hoReader to False
+            Get SupportFormatZip of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "support without handle"
+            Get piLastResult of hoReader to iLastResult
+            Send AssertIAreEqual ARCHIVE_FATAL iLastResult "last result remembered"
+            Get psLastError of hoReader to sLastError
+            Send Assert (sLastError <> "") "last error text"
+            Get NextHeader of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "next header without handle"
+            Get OpenFile of hoReader "x.zip" 0 to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "open without handle"
+            Get ReadAllData of hoReader (&ucData) to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "read without handle"
+            Send AssertIAreEqual 0 (SizeOfArray (ucData)) "no data"
+            Send ClearLastResult of hoReader
+            Get piLastResult of hoReader to iLastResult
+            Send AssertIAreEqual ARCHIVE_OK iLastResult "ClearLastResult"
+            Set pbRaiseErrors of hoReader to True
+            Send ExpectError DFERR_PROGRAM
+            Get NextHeader of hoReader to iResult
+            Send UnExpectError DFERR_PROGRAM
+            Delegate Send DropReader hoReader
+        End_Procedure
+    End_Object
+
+    // ---- errors ---------------------------------------------------------------------------------------------------
+
+    Object oOpenErrorTest is a cTest
+        Procedure Test
+            Integer iLastResult iErrorNumber
+            String sLastError sErrorString
+            Handle hoReader
+            Integer iResult
+            String sFile
+
+            Delegate Get TempFile "wr_missing.zip" to sFile
+            Delegate Get NewReader to hoReader
+            Set pbRaiseErrors of hoReader to False
+            Get OpenFile of hoReader sFile 0 to iResult
+            Send Assert (iResult <= ARCHIVE_FAILED) "opening a missing file fails"
+            Get piLastResult of hoReader to iLastResult
+            Send AssertIAreEqual iResult iLastResult "piLastResult"
+            Get psLastError of hoReader to sLastError
+            Send Assert (sLastError <> "") "psLastError"
+            Get piErrorNumber of hoReader to iErrorNumber
+            Send Assert (iErrorNumber <> 0) "errno"
+            Send ClearError of hoReader
+            Get piLastResult of hoReader to iLastResult
+            Send AssertIAreEqual ARCHIVE_OK iLastResult "ClearError result"
+            Get psErrorString of hoReader to sErrorString
+            Send AssertSAreEqual "" sErrorString "ClearError text"
+            Delegate Send DropReader hoReader
+
+            // an empty name would read stdin, which is not supported
+            Delegate Get NewReader to hoReader
+            Set pbRaiseErrors of hoReader to False
+            Get OpenFile of hoReader "" 0 to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "empty name (stdin) is refused"
+            Delegate Send DropReader hoReader
+
+            // errors are raised when pbRaiseErrors is on
+            Delegate Get NewReader to hoReader
+            Send ExpectError DFERR_PROGRAM
+            Get OpenFile of hoReader sFile 0 to iResult
+            Send UnExpectError DFERR_PROGRAM
+            Delegate Send DropReader hoReader
+        End_Procedure
+    End_Object
+
+    // A handle opens one archive only: opening again (also after a failed open) is refused instead of corrupting memory.
+    Object oOpenTwiceTest is a cTest
+        Procedure Test
+            String sLastError
+            Handle hoReader
+            Integer iResult
+            String sFile
+
+            Delegate Get TempFile "wr_twice.zip" to sFile
+            Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_ZIP ARCHIVE_FILTER_NONE to iResult
+            Delegate Get NewReader to hoReader
+            Set pbRaiseErrors of hoReader to False
+            Get OpenFile of hoReader (sFile + ".missing") 0 to iResult
+            Send Assert (iResult <= ARCHIVE_FAILED) "first open fails"
+            Get OpenFile of hoReader sFile 0 to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "second open is refused"
+            Get psLastError of hoReader to sLastError
+            Send Assert (sLastError <> "") "reason"
+            // a new handle works
+            Send CreateReaderAll of hoReader
+            Get OpenFile of hoReader sFile 0 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open after CreateReader"
+            Get OpenFile of hoReader sFile 0 to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "open again"
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    // archive_read_append_filter crashes for the compress filter in libarchive 3.7.7: AppendFilter enables detection instead.
+    Object oAppendCompressFilterTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult
+            String sFile
+
+            Delegate Get TempFile "wr_append.tar.Z" to sFile
+            Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_COMPRESS to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "build tar.Z"
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Send CreateReader of hoReader
+            Get SetFormat of hoReader ARCHIVE_FORMAT_TAR to iResult
+            Get AppendFilter of hoReader ARCHIVE_FILTER_COMPRESS to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "AppendFilter compress"
+            Get OpenFile of hoReader sFile 0 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open"
+            Delegate Send VerifySampleArchive hoReader "tar.Z" True
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    // pbUtf8HeaderCharset sets hdrcharset=UTF-8 before opening; libarchive 3.7.7 then reports ARCHIVE_WARN for the entry with
+    // the non ASCII name and returns no name for it. The default (False) reads the names correctly.
+    Object oHeaderCharsetTest is a cTest
+        Procedure Test
+            Boolean bUtf8HeaderCharset
+            Handle hoEntry
+            String sPathname
+            Handle hoReader
+            Integer iResult
+            String sFile
+
+            Delegate Get TempFile "wr_charset.zip" to sFile
+            Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_ZIP ARCHIVE_FILTER_NONE to iResult
+            Delegate Get NewReader to hoReader
+            Get pbUtf8HeaderCharset of hoReader to bUtf8HeaderCharset
+            Send AssertFalse bUtf8HeaderCharset "default"
+            Send DropReader hoReader
+
+            Delegate Get NewReader to hoReader
+            Set pbUtf8HeaderCharset of hoReader to True
+            Get OpenFile of hoReader sFile 0 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open"
+            Get NextHeader of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "ASCII name"
+            Get phoEntry of hoReader to hoEntry
+            Get psPathname of hoEntry to sPathname
+            Send AssertSAreEqual "hello.txt" sPathname "ASCII name text"
+            Get NextHeader of hoReader to iResult
+            Get NextHeader of hoReader to iResult
+            Get NextHeader of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_WARN iResult "non ASCII name gives a warning, no error is raised"
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    // An archive that no enabled format recognizes.
+    Object oUnrecognizedFormatTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult
+            String sFile
+
+            Delegate Get TempFile "wr_unrec.tar" to sFile
+            Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_NONE to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "build"
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Set pbRaiseErrors of hoReader to False
+            Send CreateReader of hoReader
+            Get SupportFormatRar of hoReader to iResult
+            Get SupportFormatRar5 of hoReader to iResult
+            Get OpenFile of hoReader sFile 0 to iResult
+            Send Assert (iResult <= ARCHIVE_FAILED) "a tar is not recognized by the rar readers"
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    // ---- manual format / filter selection ---------------------------------------------------------------------------
+
+    Object oManualFormatAndFilterTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult
+            String sFile
+
+            // SetFormat + AppendFilter skip the detection
+            Delegate Get TempFile "wr_manual.tar.gz" to sFile
+            Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_GZIP to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "build tar.gz"
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Send CreateReader of hoReader
+            Get SetFormat of hoReader ARCHIVE_FORMAT_TAR to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "SetFormat"
+            Get AppendFilter of hoReader ARCHIVE_FILTER_GZIP to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "AppendFilter"
+            Get OpenFile of hoReader sFile 0 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open"
+            Delegate Send VerifySampleArchive hoReader "manual" True
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+
+            // by code
+            Delegate Get TempFile "wr_bycode.zip" to sFile
+            Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_ZIP ARCHIVE_FILTER_NONE to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "build zip"
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Send CreateReader of hoReader
+            Get SupportFormatByCode of hoReader ARCHIVE_FORMAT_ZIP to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "SupportFormatByCode"
+            Get SupportFilterByCode of hoReader ARCHIVE_FILTER_GZIP to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "SupportFilterByCode"
+            Get OpenFile of hoReader sFile 4096 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open with block size"
+            Delegate Send VerifySampleArchive hoReader "by code" True
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    // The external program filters can be registered. AppendFilterProgram(Signature) starts the program at once: with a
+    // process that cannot launch programs (see CanLaunchPrograms) libarchive reports ARCHIVE_FATAL instead of ARCHIVE_OK.
+    Object oProgramFilterRegistrationTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult iExpected
+            Boolean bCanLaunch
+            UChar[] ucSignature
+
+            Delegate Get CanLaunchPrograms to bCanLaunch
+            If (bCanLaunch) Begin
+                Move ARCHIVE_OK to iExpected
+            End
+            Else Begin
+                Move ARCHIVE_FATAL to iExpected
+            End
+            Delegate Get TextToBytes "BZh" to ucSignature
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Set pbRaiseErrors of hoReader to False
+            Send CreateReader of hoReader
+            Get SupportFilterProgram of hoReader "findstr x" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "SupportFilterProgram"
+            Get SupportFilterProgramSignature of hoReader "findstr x" ucSignature to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "SupportFilterProgramSignature"
+            Delegate Send DropReader hoReader
+
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Set pbRaiseErrors of hoReader to False
+            Send CreateReader of hoReader
+            Get AppendFilterProgram of hoReader "findstr x" to iResult
+            Send AssertIAreEqual iExpected iResult "AppendFilterProgram"
+            Delegate Send DropReader hoReader
+
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Set pbRaiseErrors of hoReader to False
+            Send CreateReader of hoReader
+            Get AppendFilterProgramSignature of hoReader "findstr x" ucSignature to iResult
+            Send AssertIAreEqual iExpected iResult "AppendFilterProgramSignature"
+            Delegate Send DropReader hoReader
+        End_Procedure
+    End_Object
+
+    // ---- opening from memory ----------------------------------------------------------------------------------------
+
+    Object oMemoryOpenTest is a cTest
+        Procedure Test
+            Integer iMemorySize
+            Pointer pMemory
+            Handle hoReader
+            Integer iResult iSize
+            UChar[] ucArchive ucEmpty
+
+            Delegate Get BuildSampleArchiveMemory ARCHIVE_FORMAT_ZIP (&ucArchive) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "build zip"
+            Move (SizeOfArray (ucArchive)) to iSize
+            Delegate Get NewReader to hoReader
+            Get OpenMemory of hoReader (&ucArchive) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open memory"
+            Get piMemorySize of hoReader to iMemorySize
+            Send AssertIAreEqual iSize iMemorySize "memory size"
+            Get ppMemory of hoReader to pMemory
+            Send Assert (pMemory <> 0) "memory copy"
+            // the reader works on its own copy
+            Move ucEmpty to ucArchive
+            Delegate Send VerifySampleArchive hoReader "zip memory" True
+            Send FreeReader of hoReader
+            Get ppMemory of hoReader to pMemory
+            Send Assert (pMemory = 0) "memory released"
+            Get piMemorySize of hoReader to iMemorySize
+            Send AssertIAreEqual 0 iMemorySize "memory size reset"
+            Delegate Send DropReader hoReader
+        End_Procedure
+    End_Object
+
+    Object oMemoryTarAnd7zipTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult
+            UChar[] ucArchive
+
+            Delegate Get BuildSampleArchiveMemory ARCHIVE_FORMAT_TAR (&ucArchive) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "build tar"
+            Delegate Get NewReader to hoReader
+            Get OpenMemory of hoReader (&ucArchive) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open tar memory"
+            Delegate Send VerifySampleArchive hoReader "tar memory" True
+            Delegate Send DropReader hoReader
+
+            Delegate Get BuildSampleArchiveMemory ARCHIVE_FORMAT_7ZIP (&ucArchive) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "build 7zip"
+            Delegate Get NewReader to hoReader
+            Get OpenMemory of hoReader (&ucArchive) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open 7zip memory"
+            Delegate Send VerifySampleArchiveAnyOrder hoReader "7zip memory"
+            Delegate Send DropReader hoReader
+        End_Procedure
+    End_Object
+
+    // The data arrives in chunks of 7 bytes.
+    Object oMemoryChunkedTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult
+            UChar[] ucArchive
+
+            Delegate Get BuildSampleArchiveMemory ARCHIVE_FORMAT_TAR (&ucArchive) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "build tar"
+            Delegate Get NewReader to hoReader
+            Set pbRaiseErrors of hoReader to False
+            Get OpenMemoryChunked of hoReader (&ucArchive) 0 to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "a read size of 0 is refused"
+            Get OpenMemoryChunked of hoReader (&ucArchive) 7 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open chunked"
+            Delegate Send VerifySampleArchive hoReader "chunked" True
+            Delegate Send DropReader hoReader
+        End_Procedure
+    End_Object
+
+    // ---- multi volume -----------------------------------------------------------------------------------------------
+
+    Object oMultiVolumeTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult iSize iSplit
+            UChar[] ucArchive
+            String sPart1 sPart2
+            String[] asVolumes
+            Boolean bOk
+
+            Delegate Get BuildSampleArchiveMemory ARCHIVE_FORMAT_TAR (&ucArchive) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "build tar"
+            Move (SizeOfArray (ucArchive)) to iSize
+            Move 1500 to iSplit
+            Send Assert (iSize > iSplit) "the tar is larger than the first volume"
+            Delegate Get TempFile "wr_volume.tar.001" to sPart1
+            Delegate Get TempFile "wr_volume.tar.002" to sPart2
+            Delegate Get WriteBytes sPart1 (&ucArchive) 0 iSplit to bOk
+            Send Assert bOk "write volume 1"
+            Delegate Get WriteBytes sPart2 (&ucArchive) iSplit (iSize - iSplit) to bOk
+            Send Assert bOk "write volume 2"
+
+            Move sPart1 to asVolumes[0]
+            Move sPart2 to asVolumes[1]
+            Delegate Get NewReader to hoReader
+            Get OpenFiles of hoReader asVolumes 0 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open volumes"
+            Delegate Send VerifySampleArchive hoReader "volumes" True
+            Delegate Send DropReader hoReader
+
+            // the first volume alone is a truncated archive
+            Delegate Get NewReader to hoReader
+            Set pbRaiseErrors of hoReader to False
+            Get OpenFile of hoReader sPart1 0 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open first volume alone"
+            Delegate Send DropReader hoReader
+
+            // no names
+            Delegate Get NewReader to hoReader
+            Set pbRaiseErrors of hoReader to False
+            Move (ResizeArray (asVolumes, 0)) to asVolumes
+            Get OpenFiles of hoReader asVolumes 0 to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "no volumes"
+            Delegate Send DropReader hoReader
+            EraseFile sPart1
+            EraseFile sPart2
+        End_Procedure
+    End_Object
+
+    // ---- file descriptor / FILE pointer ---------------------------------------------------------------------------------
+
+    Object oOpenFdTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult iFd
+            String sFile
+            WString wsFile
+
+            Delegate Get TempFile "wr_fd.tar" to sFile
+            Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_NONE to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "build tar"
+            Move sFile to wsFile
+            // _O_RDONLY | _O_BINARY
+            Move (WrapTestOpenFd (wsFile, 32768, 0)) to iFd
+            Send Assert (iFd >= 0) "open the file descriptor"
+            If (iFd >= 0) Begin
+                Delegate Get NewReader to hoReader
+                Get OpenFd of hoReader iFd 0 to iResult
+                Send AssertIAreEqual ARCHIVE_OK iResult "OpenFd"
+                Delegate Send VerifySampleArchive hoReader "fd" True
+                Delegate Send DropReader hoReader
+                Move (WrapTestCloseFd (iFd)) to iResult
+            End
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    Object oOpenFilePtrTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult
+            Pointer pFile
+            String sFile
+            WString wsFile wsMode
+
+            Delegate Get TempFile "wr_fileptr.zip" to sFile
+            Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_GZIP to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "build tar.gz"
+            Move sFile to wsFile
+            Move "rb" to wsMode
+            Move (WrapTestOpenFile (wsFile, wsMode)) to pFile
+            Send Assert (pFile <> 0) "open the FILE"
+            If (pFile <> 0) Begin
+                Delegate Get NewReader to hoReader
+                Get OpenFilePtr of hoReader pFile to iResult
+                Send AssertIAreEqual ARCHIVE_OK iResult "OpenFilePtr"
+                Delegate Send VerifySampleArchive hoReader "FILE" True
+                Delegate Send DropReader hoReader
+                Move (WrapTestCloseFile (pFile)) to iResult
+            End
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    // Open1 needs callbacks that cannot be set from DataFlex.
+    Object oOpen1Test is a cTest
+        Procedure Test
+            String sLastError
+            Handle hoReader
+            Integer iResult
+
+            Delegate Get NewReader to hoReader
+            Set pbRaiseErrors of hoReader to False
+            Get Open1 of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "Open1 without callbacks"
+            Get psLastError of hoReader to sLastError
+            Send Assert (sLastError <> "") "error text"
+            Delegate Send DropReader hoReader
+        End_Procedure
+    End_Object
+
+    // ---- iteration ------------------------------------------------------------------------------------------------
+
+    // Number of entries a reader returns until ARCHIVE_EOF.
+    Function CountEntries Handle hoReader Returns Integer
+        Integer iResult iCount
+
+        Move 0 to iCount
+        Get NextHeader of hoReader to iResult
+        While (iResult = ARCHIVE_OK or iResult = ARCHIVE_WARN)
+            Increment iCount
+            Get NextHeader of hoReader to iResult
+        Loop
+        Function_Return iCount
+    End_Function
+
+    Object oNextHeaderIntoTest is a cTest
+        Procedure Test
+            Boolean bOwnsEntry bHasEntry2
+            String sPathname
+            Handle hoEntry
+            Boolean bHasEntry
+            Handle hoReader hoEntryA hoEntryB
+            Integer iResult
+            UChar[] ucArchive
+            String sData
+
+            Delegate Get BuildSampleArchiveMemory ARCHIVE_FORMAT_TAR (&ucArchive) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "build tar"
+            Delegate Get NewReader to hoReader
+            Get OpenMemory of hoReader (&ucArchive) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open"
+            Get CreateNamed (RefClass (cArchiveEntry)) "oArchiveEntryA" to hoEntryA
+            Get CreateNamed (RefClass (cArchiveEntry)) "oArchiveEntryB" to hoEntryB
+            Get HasEntry of hoEntryA to bHasEntry
+            Send AssertFalse bHasEntry "entry A starts empty"
+
+            Get NextHeaderInto of hoReader hoEntryA to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "header 0"
+            Get pbOwnsEntry of hoEntryA to bOwnsEntry
+            Send Assert bOwnsEntry "NextHeaderInto fills an owned entry"
+            Get NextHeaderInto of hoReader hoEntryB to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "header 1"
+            // entry A is still valid after the next header was read
+            Get psPathname of hoEntryA to sPathname
+            Send AssertSAreEqual "hello.txt" sPathname "entry A keeps its name"
+            Get psPathname of hoEntryB to sPathname
+            Send AssertSAreEqual "docs/" sPathname "entry B"
+            Get phoEntry of hoReader to hoEntry
+            Get HasEntry of hoEntry to bHasEntry2
+            Send AssertFalse bHasEntry2 "NextHeaderInto does not touch phoEntry"
+
+            Get NextHeaderInto of hoReader hoEntryA to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "header 2 into entry A"
+            Get psPathname of hoEntryA to sPathname
+            Send AssertSAreEqual "docs/nested.txt" sPathname "entry A reused"
+            Get ReadDataToString of hoReader to sData
+            Send AssertSAreEqual "Nested content" sData "data of the entry that NextHeaderInto returned"
+            Get NextHeaderInto of hoReader hoEntryB to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "header 3"
+            Get psPathname of hoEntryB to sPathname
+            Send AssertSAreEqual "héllo-ünï.txt" sPathname "unicode name"
+            Get NextHeaderInto of hoReader hoEntryB to iResult
+            Send AssertIAreEqual ARCHIVE_EOF iResult "end"
+            Send Destroy_Object of hoEntryA
+            Send Destroy_Object of hoEntryB
+            Delegate Send DropReader hoReader
+        End_Procedure
+    End_Object
+
+    // NextHeader attaches the entry to phoEntry and detaches it at the end and when the handle is freed.
+    Object oPhoEntryTest is a cTest
+        Procedure Test
+            Boolean bOwnsEntry
+            String sPathname
+            Pointer pEntry
+            Boolean bHasEntry
+            Handle hoReader hoEntry
+            Integer iResult iCount
+            UChar[] ucArchive
+
+            Delegate Get BuildSampleArchiveMemory ARCHIVE_FORMAT_ZIP (&ucArchive) to iResult
+            Delegate Get NewReader to hoReader
+            Get OpenMemory of hoReader (&ucArchive) to iResult
+            Get phoEntry of hoReader to hoEntry
+            Send Assert (hoEntry <> 0) "phoEntry object exists"
+            Get HasEntry of hoEntry to bHasEntry
+            Send AssertFalse bHasEntry "no entry before the first header"
+            Get NextHeader of hoReader to iResult
+            Get HasEntry of hoEntry to bHasEntry
+            Send Assert bHasEntry "entry after the first header"
+            Get pbOwnsEntry of hoEntry to bOwnsEntry
+            Send AssertFalse bOwnsEntry "the entry is borrowed"
+            Get psPathname of hoEntry to sPathname
+            Send AssertSAreEqual "hello.txt" sPathname "name"
+            Get ppEntry of hoEntry to pEntry
+            Send AssertIAreEqual 13 (archive_entry_size (pEntry)) "size"
+            Get ppEntry of hoEntry to pEntry
+            Send AssertIAreEqual 420 (archive_entry_perm (pEntry)) "permission"
+            Delegate Get CountEntries hoReader to iCount
+            Send AssertIAreEqual 3 iCount "remaining entries"
+            Get HasEntry of hoEntry to bHasEntry
+            Send AssertFalse bHasEntry "no entry after the end"
+            Delegate Send DropReader hoReader
+        End_Procedure
+    End_Object
+
+    Object oEntryDetachedOnFreeTest is a cTest
+        Procedure Test
+            Boolean bHasEntry
+            Handle hoReader hoEntry
+            Integer iResult
+            UChar[] ucArchive
+
+            Delegate Get BuildSampleArchiveMemory ARCHIVE_FORMAT_TAR (&ucArchive) to iResult
+            Delegate Get NewReader to hoReader
+            Get OpenMemory of hoReader (&ucArchive) to iResult
+            Get NextHeader of hoReader to iResult
+            Get phoEntry of hoReader to hoEntry
+            Get HasEntry of hoEntry to bHasEntry
+            Send Assert bHasEntry "entry"
+            Send FreeReader of hoReader
+            Get HasEntry of hoEntry to bHasEntry
+            Send AssertFalse bHasEntry "the entry is forgotten when the handle is freed"
+            Delegate Send DropReader hoReader
+        End_Procedure
+    End_Object
+
+    Object oHeaderPositionTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult
+            BigInt iPos0 iPos1 iPos2
+            UChar[] ucArchive
+
+            Delegate Get BuildSampleArchiveMemory ARCHIVE_FORMAT_TAR (&ucArchive) to iResult
+            Delegate Get NewReader to hoReader
+            Get OpenMemory of hoReader (&ucArchive) to iResult
+            Get NextHeader of hoReader to iResult
+            Get HeaderPosition of hoReader to iPos0
+            Get NextHeader of hoReader to iResult
+            Get HeaderPosition of hoReader to iPos1
+            Get NextHeader of hoReader to iResult
+            Get HeaderPosition of hoReader to iPos2
+            Send AssertBIAreEqual 0 iPos0 "first header position"
+            // hello.txt: 512 byte header + 512 bytes of padded data
+            Send AssertBIAreEqual 1024 iPos1 "second header position"
+            Send AssertBIAreEqual 1536 iPos2 "third header position"
+            Delegate Send DropReader hoReader
+        End_Procedure
+    End_Object
+
+    // ---- reading data ---------------------------------------------------------------------------------------------
+
+    Object oReadDataChunksTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult iChunks
+            UChar[] ucArchive ucChunk
+            String sData sPart
+
+            Delegate Get BuildSampleArchiveMemory ARCHIVE_FORMAT_TAR (&ucArchive) to iResult
+            Delegate Get NewReader to hoReader
+            Get OpenMemory of hoReader (&ucArchive) to iResult
+            Get NextHeader of hoReader to iResult
+            Move 0 to iChunks
+            Move "" to sData
+            Get ReadData of hoReader 4 to ucChunk
+            While (SizeOfArray (ucChunk) > 0)
+                Increment iChunks
+                Delegate Get BytesToString (&ucChunk) to sPart
+                Move (sData + sPart) to sData
+                Get ReadData of hoReader 4 to ucChunk
+            Loop
+            Send AssertIAreEqual 4 iChunks "13 bytes in chunks of 4"
+            Send AssertSAreEqual "Hello Archive" sData "data"
+            Get ReadData of hoReader 4 to ucChunk
+            Send AssertIAreEqual 0 (SizeOfArray (ucChunk)) "empty at the end of the entry"
+            Get ReadData of hoReader 0 to ucChunk
+            Send AssertIAreEqual 0 (SizeOfArray (ucChunk)) "a size of 0 reads nothing"
+
+            Get NextHeader of hoReader to iResult
+            Get ReadData of hoReader 100 to ucChunk
+            Send AssertIAreEqual 0 (SizeOfArray (ucChunk)) "directory has no data"
+            Get NextHeader of hoReader to iResult
+            Get ReadData of hoReader 100 to ucChunk
+            Send AssertIAreEqual 14 (SizeOfArray (ucChunk)) "a larger buffer is shrunk to the data read"
+            Delegate Get BytesToString (&ucChunk) to sPart
+            Send AssertSAreEqual "Nested content" sPart "nested data"
+            Delegate Send DropReader hoReader
+        End_Procedure
+    End_Object
+
+    Object oReadAllDataTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult
+            String sFile sData
+            UChar[] ucData
+
+            Delegate Get TempFile "wr_readall.zip" to sFile
+            Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_ZIP ARCHIVE_FILTER_NONE to iResult
+            Delegate Get NewReader to hoReader
+            Get OpenFile of hoReader sFile 0 to iResult
+            Get NextHeader of hoReader to iResult
+            Get ReadAllData of hoReader (&ucData) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "ReadAllData"
+            Send AssertIAreEqual 13 (SizeOfArray (ucData)) "size"
+            Send AssertIAreEqual 72 ucData[0] "first byte is H"
+            Send AssertIAreEqual 101 ucData[12] "last byte is e"
+            Get ReadAllData of hoReader (&ucData) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "ReadAllData again"
+            Send AssertIAreEqual 0 (SizeOfArray (ucData)) "nothing left"
+            Get NextHeader of hoReader to iResult
+            Get ReadAllData of hoReader (&ucData) to iResult
+            Send AssertIAreEqual 0 (SizeOfArray (ucData)) "directory"
+            Get NextHeader of hoReader to iResult
+            Get ReadDataToString of hoReader to sData
+            Send AssertSAreEqual "Nested content" sData "ReadDataToString"
+            Get NextHeader of hoReader to iResult
+            Get ReadDataToString of hoReader to sData
+            Send AssertSAreEqual "Unicode name" sData "unicode entry"
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    // Binary data with zero bytes and all byte values.
+    Object oBinaryDataTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult iIndex iBad
+            String sFile sData sOutFile
+            String[] asNames
+            UChar[] ucContent ucData ucFile
+            Boolean bFound
+
+            Move (ResizeArray (ucContent, 1024)) to ucContent
+            For iIndex from 0 to 1023
+                Move (Mod (iIndex, 256)) to ucContent[iIndex]
+            Loop
+            Move "binary.bin" to asNames[0]
+            Delegate Get TempFile "wr_binary.tar" to sFile
+            Delegate Get BuildArchiveWithEntries sFile ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_NONE asNames (&ucContent) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "build"
+
+            Delegate Get NewReader to hoReader
+            Get OpenFile of hoReader sFile 0 to iResult
+            Get NextHeader of hoReader to iResult
+            Get ReadAllData of hoReader (&ucData) to iResult
+            Send AssertIAreEqual 1024 (SizeOfArray (ucData)) "binary size"
+            Move 0 to iBad
+            For iIndex from 0 to 1023
+                If (ucData[iIndex] <> (Mod (iIndex, 256))) Begin
+                    Increment iBad
+                End
+            Loop
+            Send AssertIAreEqual 0 iBad "number of wrong bytes"
+            Delegate Send DropReader hoReader
+
+            // as string
+            Delegate Get NewReader to hoReader
+            Get OpenFile of hoReader sFile 0 to iResult
+            Get NextHeader of hoReader to iResult
+            Get ReadDataToString of hoReader to sData
+            Send AssertIAreEqual 1024 (SizeOfString (sData)) "binary string size"
+            Delegate Send DropReader hoReader
+
+            // to a file
+            Delegate Get TempFile "wr_binary.out" to sOutFile
+            Delegate Get NewReader to hoReader
+            Get OpenFile of hoReader sFile 0 to iResult
+            Get NextHeader of hoReader to iResult
+            Get DataToFile of hoReader sOutFile to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "DataToFile"
+            Delegate Get ReadFileBytes sOutFile (&bFound) to ucFile
+            Send Assert bFound "output file exists"
+            Send AssertIAreEqual 1024 (SizeOfArray (ucFile)) "output file size"
+            Move 0 to iBad
+            For iIndex from 0 to (SizeOfArray (ucFile) - 1)
+                If (ucFile[iIndex] <> (Mod (iIndex, 256))) Begin
+                    Increment iBad
+                End
+            Loop
+            Send AssertIAreEqual 0 iBad "number of wrong bytes in the file"
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+            EraseFile sOutFile
+        End_Procedure
+    End_Object
+
+    // The raw format has no entry size: ReadAllData has to grow its buffer (200000 bytes > the initial 65536).
+    Object oUnknownSizeDataTest is a cTest
+        Procedure Test
+            Integer eFormat
+            Handle hoEntry
+            String sPathname
+            Handle hoReader
+            Integer iResult iIndex iBad
+            String sFile sOutFile
+            String[] asNames
+            UChar[] ucContent ucData ucFile
+            Boolean bFound
+
+            Move (ResizeArray (ucContent, 200000)) to ucContent
+            For iIndex from 0 to 199999
+                Move (Mod (iIndex * 7, 251)) to ucContent[iIndex]
+            Loop
+            Move "ignored" to asNames[0]
+            Delegate Get TempFile "wr_raw.gz" to sFile
+            Delegate Get BuildArchiveWithEntries sFile ARCHIVE_FORMAT_RAW ARCHIVE_FILTER_GZIP asNames (&ucContent) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "build raw gzip"
+
+            Delegate Get NewReader to hoReader
+            Get SupportFormatRaw of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "SupportFormatRaw"
+            Get OpenFile of hoReader sFile 0 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open"
+            Get NextHeader of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "header"
+            Get peFormat of hoReader to eFormat
+            Send AssertIAreEqual ARCHIVE_FORMAT_RAW ((eFormat) iand ARCHIVE_FORMAT_BASE_MASK) "raw format"
+            Get phoEntry of hoReader to hoEntry
+            Get psPathname of hoEntry to sPathname
+            Send AssertSAreEqual "data" sPathname "raw entry name"
+            Get ReadAllData of hoReader (&ucData) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "ReadAllData"
+            Send AssertIAreEqual 200000 (SizeOfArray (ucData)) "size"
+            Move 0 to iBad
+            For iIndex from 0 to (SizeOfArray (ucData) - 1)
+                If (ucData[iIndex] <> (Mod (iIndex * 7, 251))) Begin
+                    Increment iBad
+                End
+            Loop
+            Send AssertIAreEqual 0 iBad "wrong bytes after growing the buffer"
+            Get NextHeader of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_EOF iResult "one entry"
+            Delegate Send DropReader hoReader
+
+            // the same through DataToFile (many blocks)
+            Delegate Get TempFile "wr_raw.out" to sOutFile
+            Delegate Get NewReader to hoReader
+            Get SupportFormatRaw of hoReader to iResult
+            Get OpenFile of hoReader sFile 0 to iResult
+            Get NextHeader of hoReader to iResult
+            Get DataToFile of hoReader sOutFile to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "DataToFile"
+            Delegate Get ReadFileBytes sOutFile (&bFound) to ucFile
+            Send AssertIAreEqual 200000 (SizeOfArray (ucFile)) "file size"
+            Move 0 to iBad
+            For iIndex from 0 to (SizeOfArray (ucFile) - 1)
+                If (ucFile[iIndex] <> (Mod (iIndex * 7, 251))) Begin
+                    Increment iBad
+                End
+            Loop
+            Send AssertIAreEqual 0 iBad "wrong bytes in the file"
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+            EraseFile sOutFile
+        End_Procedure
+    End_Object
+
+    Object oReadDataBlockTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult
+            BigInt iOffset
+            UChar[] ucArchive ucBlock
+            String sData
+
+            Delegate Get BuildSampleArchiveMemory ARCHIVE_FORMAT_TAR (&ucArchive) to iResult
+            Delegate Get NewReader to hoReader
+            Get OpenMemory of hoReader (&ucArchive) to iResult
+            Get NextHeader of hoReader to iResult
+            Move 99 to iOffset
+            Get ReadDataBlock of hoReader (&iOffset) (&ucBlock) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "first block"
+            Send AssertBIAreEqual 0 iOffset "block offset"
+            Delegate Get BytesToString (&ucBlock) to sData
+            Send AssertSAreEqual "Hello Archive" sData "block data"
+            Get ReadDataBlock of hoReader (&iOffset) (&ucBlock) to iResult
+            Send AssertIAreEqual ARCHIVE_EOF iResult "end of the entry"
+            Send AssertIAreEqual 0 (SizeOfArray (ucBlock)) "no block at the end"
+            Delegate Send DropReader hoReader
+        End_Procedure
+    End_Object
+
+    Object oSkipDataTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult
+            UChar[] ucArchive
+            String sData
+
+            Delegate Get BuildSampleArchiveMemory ARCHIVE_FORMAT_TAR (&ucArchive) to iResult
+            Delegate Get NewReader to hoReader
+            Get OpenMemory of hoReader (&ucArchive) to iResult
+            Get NextHeader of hoReader to iResult
+            Get SkipData of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "SkipData"
+            Get NextHeader of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "next header after SkipData"
+            Get NextHeader of hoReader to iResult
+            Get ReadDataToString of hoReader to sData
+            Send AssertSAreEqual "Nested content" sData "data after skipping"
+            Delegate Send DropReader hoReader
+        End_Procedure
+    End_Object
+
+    // libarchive 3.7.7 registers no seek function in any of the readers that can be tested here: SeekData reports
+    // ARCHIVE_FATAL ("No format_seek_data_block function registered").
+    Object oSeekDataTest is a cTest
+        Procedure Test
+            Integer iLastResult
+            String sLastError
+            Handle hoReader
+            Integer iResult
+            BigInt iPos
+            String sFile
+            UChar[] ucChunk
+
+            Delegate Get TempFile "wr_seek.tar" to sFile
+            Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_NONE to iResult
+            Delegate Get NewReader to hoReader
+            Set pbRaiseErrors of hoReader to False
+            Get OpenFile of hoReader sFile 0 to iResult
+            Get NextHeader of hoReader to iResult
+            Get ReadData of hoReader 5 to ucChunk
+            Send AssertIAreEqual 5 (SizeOfArray (ucChunk)) "5 bytes read"
+            Get SeekData of hoReader 0 ARCHIVE_SEEK_SET to iPos
+            Send AssertBIAreEqual ARCHIVE_FATAL iPos "seek is not supported by the tar reader"
+            Get piLastResult of hoReader to iLastResult
+            Send AssertIAreEqual ARCHIVE_FATAL iLastResult "last result"
+            Get psLastError of hoReader to sLastError
+            Send Assert (sLastError <> "") "error text"
+            Delegate Send DropReader hoReader
+
+            Delegate Get NewReader to hoReader
+            Set pbRaiseErrors of hoReader to False
+            Get SeekData of hoReader 0 ARCHIVE_SEEK_SET to iPos
+            Send AssertBIAreEqual ARCHIVE_FATAL iPos "no archive open"
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    Object oDataToFileTest is a cTest
+        Procedure Test
+            String sLastError
+            Handle hoReader
+            Integer iResult
+            String sZip sOut sUnicodeOut sText
+
+            Delegate Get TempFile "wr_tofile.zip" to sZip
+            Delegate Get BuildSampleArchiveFile sZip ARCHIVE_FORMAT_ZIP ARCHIVE_FILTER_NONE to iResult
+            Delegate Get TempFile "wr_tofile.txt" to sOut
+            Delegate Get TempFile "wr_ünï-€.txt" to sUnicodeOut
+            Delegate Get NewReader to hoReader
+            Get OpenFile of hoReader sZip 0 to iResult
+            Get NextHeader of hoReader to iResult
+            Get NextHeader of hoReader to iResult
+            Get NextHeader of hoReader to iResult
+            Get DataToFile of hoReader sOut to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "DataToFile"
+            Delegate Get ReadFileText sOut to sText
+            Send AssertSAreEqual "Nested content" sText "file content"
+            Get NextHeader of hoReader to iResult
+            Get DataToFile of hoReader sUnicodeOut to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "DataToFile with a Unicode file name"
+            Delegate Get ReadFileText sUnicodeOut to sText
+            Send AssertSAreEqual "Unicode name" sText "Unicode file content"
+            // a file in a folder that does not exist cannot be created
+            Set pbRaiseErrors of hoReader to False
+            Get DataToFile of hoReader (sOut + "\no\such\folder\x.txt") to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "DataToFile to a missing folder"
+            Get psLastError of hoReader to sLastError
+            Send Assert (sLastError <> "") "error text"
+            Delegate Send DropReader hoReader
+            EraseFile sZip
+            EraseFile sOut
+            EraseFile sUnicodeOut
+        End_Procedure
+    End_Object
+
+    // ---- options ----------------------------------------------------------------------------------------------------
+
+    Object oOptionsTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult iSize
+            UChar[] ucTar ucDouble
+
+            // two tar archives one after the other: libarchive reads only the first unless told to read concatenated archives
+            Delegate Get BuildSampleArchiveMemory ARCHIVE_FORMAT_TAR (&ucTar) to iResult
+            Move (SizeOfArray (ucTar)) to iSize
+            Move (ResizeArray (ucDouble, iSize * 2)) to ucDouble
+            Move (CopyMemory (AddressOf (ucDouble), AddressOf (ucTar), iSize)) to iResult
+            Move (CopyMemory (AddressOf (ucDouble) + iSize, AddressOf (ucTar), iSize)) to iResult
+
+            Delegate Get NewReader to hoReader
+            Get OpenMemory of hoReader (&ucDouble) to iResult
+            Delegate Get CountEntries hoReader to iResult
+            Send AssertIAreEqual 4 iResult "default: first archive only"
+            Delegate Send DropReader hoReader
+
+            Delegate Get NewReader to hoReader
+            Get SetFormatOption of hoReader "tar" "read_concatenated_archives" "1" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "SetFormatOption"
+            Get OpenMemory of hoReader (&ucDouble) to iResult
+            Delegate Get CountEntries hoReader to iResult
+            Send AssertIAreEqual 8 iResult "SetFormatOption: both archives"
+            Delegate Send DropReader hoReader
+
+            Delegate Get NewReader to hoReader
+            Get SetOption of hoReader "tar" "read_concatenated_archives" "1" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "SetOption with module"
+            Get OpenMemory of hoReader (&ucDouble) to iResult
+            Delegate Get CountEntries hoReader to iResult
+            Send AssertIAreEqual 8 iResult "SetOption with module: both archives"
+            Delegate Send DropReader hoReader
+
+            Delegate Get NewReader to hoReader
+            Get SetOption of hoReader "" "read_concatenated_archives" "1" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "SetOption without module"
+            Get OpenMemory of hoReader (&ucDouble) to iResult
+            Delegate Get CountEntries hoReader to iResult
+            Send AssertIAreEqual 8 iResult "SetOption without module: both archives"
+            Delegate Send DropReader hoReader
+
+            Delegate Get NewReader to hoReader
+            Get SetOptions of hoReader "tar:read_concatenated_archives=1" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "SetOptions"
+            Get OpenMemory of hoReader (&ucDouble) to iResult
+            Delegate Get CountEntries hoReader to iResult
+            Send AssertIAreEqual 8 iResult "SetOptions: both archives"
+            Delegate Send DropReader hoReader
+        End_Procedure
+    End_Object
+
+    Object oUnknownOptionsTest is a cTest
+        Procedure Test
+            Integer iLastResult
+            Handle hoReader
+            Integer iResult
+
+            Delegate Get NewReader to hoReader
+            Set pbRaiseErrors of hoReader to False
+            Get SetFormatOption of hoReader "zip" "hdrcharset" "UTF-8" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "known zip option"
+            Get SetFormatOption of hoReader "zip" "no-such-option" "1" to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "unknown format option"
+            Get SetFilterOption of hoReader "gzip" "no-such-option" "1" to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "unknown filter option"
+            Get SetOption of hoReader "no-such-module" "foo" "1" to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "unknown module"
+            Get SetOptions of hoReader "no-such-module:foo=1" to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "unknown option string"
+            Get piLastResult of hoReader to iLastResult
+            Send AssertIAreEqual ARCHIVE_FAILED iLastResult "last result"
+            Delegate Send DropReader hoReader
+
+            // with pbRaiseErrors an unknown option is an error
+            Delegate Get NewReader to hoReader
+            Send ExpectError DFERR_PROGRAM
+            Get SetOptions of hoReader "no-such-module:foo=1" to iResult
+            Send UnExpectError DFERR_PROGRAM
+            Delegate Send DropReader hoReader
+        End_Procedure
+    End_Object
+
+    // ---- encryption -------------------------------------------------------------------------------------------------
+
+    Object oEncryptedZipTest is a cTest
+        Procedure Test
+            Boolean bHasEncryptedEntries
+            Integer eFormatCapabilities iLastResult
+            Handle hoEntry
+            Pointer pEntry
+            String sLastError
+            Integer iEncryptedEntriesState
+            Handle hoReader
+            Integer iResult
+            String sFile sData
+            UChar[] ucData
+
+            Delegate Get TempFile "wr_secret.zip" to sFile
+            Delegate Get BuildEncryptedZip sFile "secret" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "build encrypted zip"
+
+            // without passphrase: the headers can be read, the data not
+            Delegate Get NewReader to hoReader
+            Set pbRaiseErrors of hoReader to False
+            Get OpenFile of hoReader sFile 0 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open"
+            Get NextHeader of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "header"
+            Get pbHasEncryptedEntries of hoReader to bHasEncryptedEntries
+            Send Assert bHasEncryptedEntries "encrypted entries found"
+            Get EncryptedEntriesState of hoReader to iEncryptedEntriesState
+            Send AssertIAreEqual 1 iEncryptedEntriesState "raw state"
+            Get peFormatCapabilities of hoReader to eFormatCapabilities
+            Send Assert (((eFormatCapabilities) iand ARCHIVE_READ_FORMAT_CAPS_ENCRYPT_DATA) <> 0) "zip detects encrypted data"
+            Get phoEntry of hoReader to hoEntry
+            Get ppEntry of hoEntry to pEntry
+            Send AssertIAreEqual 1 (archive_entry_is_encrypted (pEntry)) "entry is encrypted"
+            Get ReadAllData of hoReader (&ucData) to iResult
+            Send Assert (iResult <= ARCHIVE_FAILED) "reading without passphrase fails"
+            Get piLastResult of hoReader to iLastResult
+            Send AssertIAreEqual iResult iLastResult "last result"
+            Get psLastError of hoReader to sLastError
+            Send Assert (sLastError <> "") "last error text"
+            Send AssertIAreEqual 0 (SizeOfArray (ucData)) "no data"
+            Delegate Send DropReader hoReader
+
+            // the same raises an error when pbRaiseErrors is on
+            Delegate Get NewReader to hoReader
+            Get OpenFile of hoReader sFile 0 to iResult
+            Get NextHeader of hoReader to iResult
+            Send ExpectError DFERR_PROGRAM
+            Get ReadAllData of hoReader (&ucData) to iResult
+            Send UnExpectError DFERR_PROGRAM
+            Delegate Send DropReader hoReader
+
+            // a wrong passphrase only
+            Delegate Get NewReader to hoReader
+            Set pbRaiseErrors of hoReader to False
+            Get AddPassphrase of hoReader "wrong" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "AddPassphrase wrong"
+            Get OpenFile of hoReader sFile 0 to iResult
+            Get NextHeader of hoReader to iResult
+            Get ReadAllData of hoReader (&ucData) to iResult
+            Send Assert (iResult <= ARCHIVE_FAILED) "a wrong passphrase fails"
+            Delegate Send DropReader hoReader
+
+            // several passphrases, the right one is found
+            Delegate Get NewReader to hoReader
+            Get AddPassphrase of hoReader "wrong" to iResult
+            Get AddPassphrase of hoReader "secret" to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "AddPassphrase secret"
+            Get OpenFile of hoReader sFile 0 to iResult
+            Delegate Send VerifySampleArchive hoReader "encrypted" True
+            Get pbHasEncryptedEntries of hoReader to bHasEncryptedEntries
+            Send Assert bHasEncryptedEntries "encrypted entries"
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    Object oEncryptionStateTest is a cTest
+        Procedure Test
+            Boolean bHasEncryptedEntries
+            Handle hoEntry
+            Pointer pEntry
+            Integer eFormatCapabilities
+            Handle hoReader
+            Integer iResult
+            String sFile
+
+            // plain zip: no encrypted entries
+            Delegate Get TempFile "wr_plain.zip" to sFile
+            Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_ZIP ARCHIVE_FILTER_NONE to iResult
+            Delegate Get NewReader to hoReader
+            Get OpenFile of hoReader sFile 0 to iResult
+            Get NextHeader of hoReader to iResult
+            Get pbHasEncryptedEntries of hoReader to bHasEncryptedEntries
+            Send AssertFalse bHasEncryptedEntries "plain zip has no encrypted entries"
+            Get phoEntry of hoReader to hoEntry
+            Get ppEntry of hoEntry to pEntry
+            Send AssertIAreEqual 0 (archive_entry_is_encrypted (pEntry)) "entry is not encrypted"
+            Get peFormatCapabilities of hoReader to eFormatCapabilities
+            Send Assert (((eFormatCapabilities) iand ARCHIVE_READ_FORMAT_CAPS_ENCRYPT_DATA) <> 0) "zip can detect encryption"
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+
+            // tar cannot be encrypted
+            Delegate Get TempFile "wr_plain.tar" to sFile
+            Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_NONE to iResult
+            Delegate Get NewReader to hoReader
+            Get OpenFile of hoReader sFile 0 to iResult
+            Get NextHeader of hoReader to iResult
+            Get peFormatCapabilities of hoReader to eFormatCapabilities
+            Send AssertIAreEqual ARCHIVE_READ_FORMAT_CAPS_NONE eFormatCapabilities "tar has no encryption capabilities"
+            Get pbHasEncryptedEntries of hoReader to bHasEncryptedEntries
+            Send AssertFalse bHasEncryptedEntries "tar has no encrypted entries"
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+
+            // no handle
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Get pbHasEncryptedEntries of hoReader to bHasEncryptedEntries
+            Send AssertFalse bHasEncryptedEntries "no handle"
+            Get peFormatCapabilities of hoReader to eFormatCapabilities
+            Send AssertIAreEqual 0 eFormatCapabilities "no handle capabilities"
+            Delegate Send DropReader hoReader
+        End_Procedure
+    End_Object
+
+    // ---- other formats ----------------------------------------------------------------------------------------------
+
+    Object oFormatSpecificReadTest is a cTest
+        Procedure Test
+            Integer eFormat
+            Handle hoReader
+            Integer iResult
+            String sFile
+            UChar[] ucArchive
+
+            // zip seekable
+            Delegate Get TempFile "wr_zs.zip" to sFile
+            Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_ZIP ARCHIVE_FILTER_NONE to iResult
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Send CreateReader of hoReader
+            Get SupportFormatZipSeekable of hoReader to iResult
+            Get OpenFile of hoReader sFile 0 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open zip seekable"
+            Delegate Send VerifySampleArchive hoReader "zip seekable" True
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+
+            // zip streamable (a zip written to memory is a stream: sizes follow the data)
+            Delegate Get BuildSampleArchiveMemory ARCHIVE_FORMAT_ZIP (&ucArchive) to iResult
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Send CreateReader of hoReader
+            Get SupportFormatZipStreamable of hoReader to iResult
+            Get OpenMemory of hoReader (&ucArchive) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open zip streamable"
+            Delegate Set pbSkipSizeCheck to True
+            Delegate Send VerifySampleArchive hoReader "zip streamable" True
+            Delegate Set pbSkipSizeCheck to False
+            Delegate Send DropReader hoReader
+
+            // gnu tar
+            Delegate Get TempFile "wr_gnu.tar" to sFile
+            Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_TAR_GNUTAR ARCHIVE_FILTER_NONE to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "build gnu tar"
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Send CreateReader of hoReader
+            Get SupportFormatGnutar of hoReader to iResult
+            Get OpenFile of hoReader sFile 0 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open gnu tar"
+            Delegate Send VerifySampleArchive hoReader "gnutar" True
+            Get peFormat of hoReader to eFormat
+            Send AssertIAreEqual ARCHIVE_FORMAT_TAR_GNUTAR eFormat "gnu tar format code"
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+
+            // 7zip with only the 7zip reader
+            Delegate Get TempFile "wr_only.7z" to sFile
+            Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_7ZIP ARCHIVE_FILTER_NONE to iResult
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Send CreateReader of hoReader
+            Get SupportFormat7zip of hoReader to iResult
+            Get OpenFile of hoReader sFile 0 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open 7zip"
+            Delegate Send VerifySampleArchiveAnyOrder hoReader "7zip"
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    // A 7zip file written by a process with a UTF-8/ANSI locale (libarchive's 7zip writer garbles non ASCII names under the
+    // "C" locale, so the file is prebuilt): the reader returns the Unicode name.
+    Object oSevenZipUnicodeNameTest is a cTest
+        Procedure Test
+            Handle hoEntry
+            String sPathname
+            Handle hoReader
+            Integer iResult
+            String sFile sData
+            UChar[] ucArchive
+            Boolean bOk
+
+            Delegate Get HexToBytes "377abcaf271c00037f2b10ea0d000000000000005200000000000000050e46d700309888a44a8e9ffff66380000104060001090d00070b01000123030101055d000080000c0300080a01c2412435000005011121006800e9006c006c006f002d00fc006e00ef002d00ac202e007400780074000000150601002080a4810000" to ucArchive
+            Delegate Get TempFile "wr_unicode.7z" to sFile
+            Delegate Get WriteBytes sFile (&ucArchive) 0 (SizeOfArray (ucArchive)) to bOk
+            Send Assert bOk "write the 7zip file"
+            Delegate Get NewReader to hoReader
+            Get OpenFile of hoReader sFile 0 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open"
+            Get NextHeader of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "header"
+            Get phoEntry of hoReader to hoEntry
+            Get psPathname of hoEntry to sPathname
+            Send AssertSAreEqual "héllo-ünï-€.txt" sPathname "Unicode name"
+            Get ReadDataToString of hoReader to sData
+            Send AssertSAreEqual "abc" sData "data"
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    // A RAR 5 archive with one stored file (built by hand) is read by the rar5 reader.
+    Object oRar5FormatTest is a cTest
+        Procedure Test
+            Handle hoEntry
+            String sPathname
+            Integer eFormat
+            Handle hoReader
+            Integer iResult
+            String sFile sData
+            UChar[] ucArchive
+            Boolean bOk
+
+            Delegate Get HexToBytes "526172211a070100c51a333203010000bff8ac641702020d040da40300689f3400010968656c6c6f2e74787448656c6c6f204172636869766519b23a3503050000" to ucArchive
+            Delegate Get TempFile "wr_sample.rar" to sFile
+            Delegate Get WriteBytes sFile (&ucArchive) 0 (SizeOfArray (ucArchive)) to bOk
+            Send Assert bOk "write the rar file"
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Send CreateReader of hoReader
+            Get SupportFormatRar5 of hoReader to iResult
+            Get OpenFile of hoReader sFile 0 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open"
+            Get NextHeader of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "header"
+            Get phoEntry of hoReader to hoEntry
+            Get psPathname of hoEntry to sPathname
+            Send AssertSAreEqual "hello.txt" sPathname "name"
+            Get peFormat of hoReader to eFormat
+            Send AssertIAreEqual ARCHIVE_FORMAT_RAR_V5 ((eFormat) iand ARCHIVE_FORMAT_BASE_MASK) "rar5 format"
+            Get ReadDataToString of hoReader to sData
+            Send AssertSAreEqual "Hello Archive" sData "data"
+            Get NextHeader of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_EOF iResult "end"
+            Delegate Send DropReader hoReader
+
+            // the same through SupportFormatAll (and a repeated SupportFormatRar5)
+            Delegate Get NewReader to hoReader
+            Get SupportFormatRar5 of hoReader to iResult
+            Get OpenFile of hoReader sFile 0 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open with all formats"
+            Get NextHeader of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "header"
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    // ISO 9660 images: the root folder is the first entry, names come from Joliet / Rock Ridge.
+    Object oIso9660FormatTest is a cTest
+        Procedure Test
+            Handle hoEntry
+            Integer eFormat
+            Handle hoReader
+            Integer iResult iFound
+            String sFile sName sData
+            Boolean bHello bNested bUnicode
+
+            Delegate Get TempFile "wr_sample.iso" to sFile
+            Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_ISO9660 ARCHIVE_FILTER_NONE to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "build iso"
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Send CreateReader of hoReader
+            Get SupportFormatIso9660 of hoReader to iResult
+            Get OpenFile of hoReader sFile 0 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open iso"
+            Move False to bHello
+            Move False to bNested
+            Move False to bUnicode
+            Get NextHeader of hoReader to iResult
+            While (iResult = ARCHIVE_OK)
+                Get phoEntry of hoReader to hoEntry
+                Get psPathname of hoEntry to sName
+                If (sName = "hello.txt") Begin
+                    Get ReadDataToString of hoReader to sData
+                    Move (sData = "Hello Archive") to bHello
+                End
+                If (sName = "docs/nested.txt") Begin
+                    Get ReadDataToString of hoReader to sData
+                    Move (sData = "Nested content") to bNested
+                End
+                If (sName = "héllo-ünï.txt") Begin
+                    Get ReadDataToString of hoReader to sData
+                    Move (sData = "Unicode name") to bUnicode
+                End
+                Get NextHeader of hoReader to iResult
+            Loop
+            Send AssertIAreEqual ARCHIVE_EOF iResult "end"
+            Send Assert bHello "hello.txt"
+            Send Assert bNested "docs/nested.txt"
+            Send Assert bUnicode "unicode name"
+            Get peFormat of hoReader to eFormat
+            Send AssertIAreEqual ARCHIVE_FORMAT_ISO9660 ((eFormat) iand ARCHIVE_FORMAT_BASE_MASK) "iso format"
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    Object oArFormatTest is a cTest
+        Procedure Test
+            Handle hoEntry
+            String sPathname
+            Integer eFormat
+            Handle hoReader
+            Integer iResult
+            String sFile sData
+            String[] asNames
+            UChar[] ucContent
+
+            Delegate Get TextToBytes "Hello Archive" to ucContent
+            Move "hello.txt" to asNames[0]
+            Delegate Get TempFile "wr_sample.ar" to sFile
+            Delegate Get BuildArchiveWithEntries sFile ARCHIVE_FORMAT_AR_BSD ARCHIVE_FILTER_NONE asNames (&ucContent) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "build ar"
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Send CreateReader of hoReader
+            Get SupportFormatAr of hoReader to iResult
+            Get OpenFile of hoReader sFile 0 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open ar"
+            Get NextHeader of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "header"
+            Get phoEntry of hoReader to hoEntry
+            Get psPathname of hoEntry to sPathname
+            Send AssertSAreEqual "hello.txt" sPathname "name"
+            Get peFormat of hoReader to eFormat
+            Send AssertIAreEqual ARCHIVE_FORMAT_AR ((eFormat) iand ARCHIVE_FORMAT_BASE_MASK) "ar format"
+            Get ReadDataToString of hoReader to sData
+            Send AssertSAreEqual "Hello Archive" sData "data"
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    Object oMtreeFormatTest is a cTest
+        Procedure Test
+            Handle hoEntry
+            String sPathname
+            Integer eFormat
+            Handle hoReader
+            Integer iResult
+            String sFile sManifest
+            Pointer pEntry
+
+            Move "#mtree" to sManifest
+            Move (sManifest + Character (10) + "hello.txt type=file size=13 mode=644 time=1700000000.0") to sManifest
+            Move (sManifest + Character (10)) to sManifest
+            Delegate Get TempFile "wr_sample.mtree" to sFile
+            Delegate Get WriteText sFile sManifest to iResult
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Send CreateReader of hoReader
+            Get SupportFormatMtree of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "SupportFormatMtree"
+            Get OpenFile of hoReader sFile 0 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open mtree"
+            Get NextHeader of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "header"
+            Get phoEntry of hoReader to hoEntry
+            Get ppEntry of hoEntry to pEntry
+            Get phoEntry of hoReader to hoEntry
+            Get psPathname of hoEntry to sPathname
+            Send AssertSAreEqual "hello.txt" sPathname "name"
+            Send AssertBIAreEqual 13 (archive_entry_size (pEntry)) "size"
+            Send AssertIAreEqual 420 (archive_entry_perm (pEntry)) "permission"
+            Send AssertBIAreEqual 1700000000 (archive_entry_mtime (pEntry)) "mtime"
+            Send AssertIAreEqual AE_IFREG (archive_entry_filetype (pEntry)) "type"
+            Get peFormat of hoReader to eFormat
+            Send AssertIAreEqual ARCHIVE_FORMAT_MTREE ((eFormat) iand ARCHIVE_FORMAT_BASE_MASK) "mtree format"
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    Object oEmptyFormatTest is a cTest
+        Procedure Test
+            Integer eFormat
+            Handle hoReader
+            Integer iResult
+            String sFile
+
+            Delegate Get TempFile "wr_empty.bin" to sFile
+            Delegate Get WriteText sFile "" to iResult
+            Delegate Get FileExists sFile to iResult
+            Send AssertIAreEqual 1 iResult "empty file exists"
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Send CreateReader of hoReader
+            Get SupportFormatEmpty of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "SupportFormatEmpty"
+            Get OpenFile of hoReader sFile 0 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "open empty file"
+            Get NextHeader of hoReader to iResult
+            Send AssertIAreEqual ARCHIVE_EOF iResult "an empty archive has no entries"
+            Get peFormat of hoReader to eFormat
+            Send AssertIAreEqual ARCHIVE_FORMAT_EMPTY ((eFormat) iand ARCHIVE_FORMAT_BASE_MASK) "empty format"
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    // ---- convenience: ListEntries, ReadEntryData, ExtractAll -----------------------------------------------------
+
+    Procedure VerifyEntryInfo tArchiveEntryInfo tInfo Integer iIndex String sLabel
+        BigInt biSampleMTime
+        Boolean bSampleEntryIsDirectory
+        String sExpected
+
+        Get SampleEntryName iIndex to sExpected
+        Send AssertSAreEqual sExpected tInfo.sPathname (sLabel * "name" * String (iIndex))
+        Get SampleMTime to biSampleMTime
+        Send AssertBIAreEqual biSampleMTime tInfo.iMtime (sLabel * "mtime" * String (iIndex))
+        Send AssertFalse tInfo.bEncrypted (sLabel * "not encrypted" * String (iIndex))
+        Get SampleEntryIsDirectory iIndex to bSampleEntryIsDirectory
+        If bSampleEntryIsDirectory Begin
+            Send AssertIAreEqual AE_IFDIR tInfo.eFileType (sLabel * "type" * String (iIndex))
+            Send AssertIAreEqual 493 tInfo.iPerm (sLabel * "permission" * String (iIndex))
+            Send AssertBIAreEqual 0 tInfo.iSize (sLabel * "size" * String (iIndex))
+        End
+        Else Begin
+            Get SampleEntryContent iIndex to sExpected
+            Send AssertIAreEqual AE_IFREG tInfo.eFileType (sLabel * "type" * String (iIndex))
+            Send AssertIAreEqual 420 tInfo.iPerm (sLabel * "permission" * String (iIndex))
+            Send AssertBIAreEqual (SizeOfString (sExpected)) tInfo.iSize (sLabel * "size" * String (iIndex))
+        End
+    End_Procedure
+
+    Function FakeWriter Returns Handle
+        Function_Return (oFakeDiskWriter (Self))
+    End_Function
+
+    // Checks the files ExtractZipArchive creates for the sample archive below sFolder (with trailing backslash).
+    Procedure VerifyExtractedSample String sFolder String sLabel
+        String sReadFileText
+        BigInt iMtime iDevice iInode
+        Integer iResult
+
+        Get ReadFileText (sFolder + "hello.txt") to sReadFileText
+        Send AssertSAreEqual "Hello Archive" sReadFileText (sLabel * "hello.txt")
+        Get ReadFileText (sFolder + "docs\nested.txt") to sReadFileText
+        Send AssertSAreEqual "Nested content" sReadFileText (sLabel * "docs\nested.txt")
+        Get ReadFileText (sFolder + "héllo-ünï.txt") to sReadFileText
+        Send AssertSAreEqual "Unicode name" sReadFileText (sLabel * "unicode name")
+        Send Assert (IsDirectory (sFolder + "docs")) (sLabel * "directory")
+    End_Procedure
+
+    Procedure RemoveExtractedSample String sFolder
+        EraseFile (sFolder + "hello.txt")
+        EraseFile (sFolder + "docs\nested.txt")
+        EraseFile (sFolder + "héllo-ünï.txt")
+        Send RemoveFolder (sFolder + "docs")
+        Send RemoveFolder sFolder
+    End_Procedure
+
+    Object oListEntriesTest is a cTest
+        Procedure Test
+            Boolean bRaiseErrors
+            Integer iLastResult
+            Boolean bHasHandle
+            Handle hoReader
+            Integer iResult iIndex
+            String sFile
+            tArchiveEntryInfo[] aEntries
+            tArchiveOperationResult Result
+
+            Delegate Get TempFile "wr_list.zip" to sFile
+            Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_ZIP ARCHIVE_FILTER_NONE to iResult
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Get ListEntries of hoReader sFile (&aEntries) to Result
+            Send Assert Result.bSuccess ("zip listed: " + Result.sErrorMessage)
+            Send AssertIAreEqual 4 Result.iEntryCount "zip entry count in the result"
+            Send AssertIAreEqual 4 (SizeOfArray (aEntries)) "zip entry count"
+            If (SizeOfArray (aEntries) = 4) Begin
+                For iIndex from 0 to 3
+                    Delegate Send VerifyEntryInfo aEntries[iIndex] iIndex "zip"
+                Loop
+            End
+            Get HasHandle of hoReader to bHasHandle
+            Send AssertFalse bHasHandle "ListEntries frees the handle"
+            Delegate Get TempFile "wr_list.zip" to sFile
+            Delegate Get TempFile "wr_list.tar.gz" to sFile
+            Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_GZIP to iResult
+            Get ListEntries of hoReader sFile (&aEntries) to Result
+            Send Assert Result.bSuccess "tar.gz listed"
+            Send AssertIAreEqual 4 (SizeOfArray (aEntries)) "tar.gz entry count"
+            If (SizeOfArray (aEntries) = 4) Begin
+                For iIndex from 0 to 3
+                    Delegate Send VerifyEntryInfo aEntries[iIndex] iIndex "tar.gz"
+                Loop
+            End
+            // A missing file is returned as a failure and never raised, although pbRaiseErrors is True (default).
+            Get ListEntries of hoReader (sFile + ".missing") (&aEntries) to Result
+            Send AssertFalse Result.bSuccess "missing file fails"
+            Send AssertIAreEqual C_ARCHIVE_RESULT_OPEN_FAILED Result.iErrorCode "missing file code"
+            Send Assert (Result.sErrorMessage <> "") "the libarchive text is returned"
+            Send AssertIAreEqual 0 (SizeOfArray (aEntries)) "missing file gives an empty list"
+            Get pbRaiseErrors of hoReader to bRaiseErrors
+            Send Assert bRaiseErrors "pbRaiseErrors is restored"
+            Get piLastResult of hoReader to iLastResult
+            Send AssertIAreEqual ARCHIVE_OK iLastResult "the failure is not stored in piLastResult"
+            // An empty path is an invalid argument, also without a handle.
+            Get ListEntries of hoReader "" (&aEntries) to Result
+            Send AssertIAreEqual C_ARCHIVE_RESULT_INVALID_ARGUMENT Result.iErrorCode "empty path"
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    Object oListEncryptedEntriesTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult
+            String sFile
+            tArchiveEntryInfo[] aEntries
+            tArchiveOperationResult Result
+
+            Delegate Get TempFile "wr_list_secret.zip" to sFile
+            Delegate Get BuildEncryptedZip sFile "secret" to iResult
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Get ListEntries of hoReader sFile (&aEntries) to Result
+            Send Assert Result.bSuccess "listing needs no passphrase"
+            Send AssertIAreEqual 4 (SizeOfArray (aEntries)) "entry count"
+            If (SizeOfArray (aEntries) = 4) Begin
+                Send Assert aEntries[0].bEncrypted "hello.txt is encrypted"
+                Send AssertSAreEqual "hello.txt" aEntries[0].sPathname "name"
+                Send AssertBIAreEqual 13 aEntries[0].iSize "size"
+            End
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    Object oReadEntryDataTest is a cTest
+        Procedure Test
+            Boolean bRaiseErrors
+            Boolean bHasHandle
+            Handle hoReader
+            Integer iResult
+            String sFile sData
+            UChar[] ucData
+            tArchiveOperationResult Result
+
+            Delegate Get TempFile "wr_entry.tar" to sFile
+            Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_NONE to iResult
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Get ReadEntryData of hoReader sFile "docs/nested.txt" (&ucData) to Result
+            Send Assert Result.bSuccess ("entry found: " + Result.sErrorMessage)
+            Send AssertIAreEqual C_ARCHIVE_RESULT_OK Result.iErrorCode "result code"
+            Send AssertBIAreEqual 14 Result.biExtractedBytes "byte count"
+            Delegate Get BytesToString (&ucData) to sData
+            Send AssertSAreEqual "Nested content" sData "entry data"
+            Get HasHandle of hoReader to bHasHandle
+            Send AssertFalse bHasHandle "the handle is freed"
+            Get ReadEntryData of hoReader sFile "héllo-ünï.txt" (&ucData) to Result
+            Send Assert Result.bSuccess "unicode entry found"
+            Delegate Get BytesToString (&ucData) to sData
+            Send AssertSAreEqual "Unicode name" sData "unicode entry data"
+            Get ReadEntryData of hoReader sFile "docs/" (&ucData) to Result
+            Send Assert Result.bSuccess "directory found"
+            Send AssertIAreEqual 0 (SizeOfArray (ucData)) "directory has no data"
+            // Failures are returned, never raised, although pbRaiseErrors is True (default).
+            Get pbRaiseErrors of hoReader to bRaiseErrors
+            Send Assert bRaiseErrors "pbRaiseErrors is True and stays True"
+            Get ReadEntryData of hoReader sFile "no/such/entry" (&ucData) to Result
+            Send AssertFalse Result.bSuccess "missing entry"
+            Send AssertIAreEqual C_ARCHIVE_RESULT_ENTRY_NOT_FOUND Result.iErrorCode "missing entry code"
+            Send AssertIAreEqual 0 (SizeOfArray (ucData)) "no data for a missing entry"
+            Get ReadEntryData of hoReader (sFile + ".missing") "hello.txt" (&ucData) to Result
+            Send AssertFalse Result.bSuccess "missing archive"
+            Send AssertIAreEqual C_ARCHIVE_RESULT_OPEN_FAILED Result.iErrorCode "missing archive code"
+            Send Assert (Result.sErrorMessage <> "") "the libarchive text is returned"
+            Get ReadEntryData of hoReader sFile "" (&ucData) to Result
+            Send AssertIAreEqual C_ARCHIVE_RESULT_INVALID_ARGUMENT Result.iErrorCode "empty entry path"
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    // psPassphrase is added by the convenience methods.
+    Object oConveniencePassphraseTest is a cTest
+        Procedure Test
+            Handle hoReader
+            Integer iResult
+            String sFile sData
+            UChar[] ucData
+            tArchiveEntryInfo[] aEntries
+            tArchiveOperationResult Result
+
+            Delegate Get TempFile "wr_conv_secret.zip" to sFile
+            Delegate Get BuildEncryptedZip sFile "s3cret" to iResult
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Get ReadEntryData of hoReader sFile "hello.txt" (&ucData) to Result
+            Send AssertFalse Result.bSuccess "no passphrase: the data cannot be read"
+            Send AssertIAreEqual C_ARCHIVE_RESULT_ENCRYPTED Result.iErrorCode "the failure is reported as encrypted"
+            Send AssertIAreEqual 0 (SizeOfArray (ucData)) "no data without passphrase"
+            Set psPassphrase of hoReader to "s3cret"
+            Get ReadEntryData of hoReader sFile "hello.txt" (&ucData) to Result
+            Send Assert Result.bSuccess ("with passphrase: " + Result.sErrorMessage)
+            Delegate Get BytesToString (&ucData) to sData
+            Send AssertSAreEqual "Hello Archive" sData "decrypted data"
+            Get ListEntries of hoReader sFile (&aEntries) to Result
+            Send Assert Result.bSuccess "ListEntries with passphrase"
+            Send AssertIAreEqual 4 (SizeOfArray (aEntries)) "entries"
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    // ExtractZipArchive extracts the sample archive below a destination that does not exist yet and reports the counts.
+    Object oExtractZipArchiveSampleTest is a cTest
+        Procedure Test
+            Boolean bHasHandle
+            Handle hoReader
+            Integer iResult
+            String sFile sFolder
+            tArchiveOperationResult Result
+
+            Delegate Get TempFile "wr_extract.zip" to sFile
+            Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_ZIP ARCHIVE_FILTER_NONE to iResult
+            Delegate Get TempFolder to sFolder
+            Move (sFolder + "wr_extract_zip") to sFolder
+            Get CreateNamed (RefClass (cArchiveReader)) "oArchiveReader" to hoReader
+            Get ExtractZipArchive of hoReader sFile sFolder to Result
+            Send Assert Result.bSuccess ("ExtractZipArchive: " + Result.sErrorMessage)
+            Send AssertIAreEqual 4 Result.iEntryCount "entries"
+            Get HasHandle of hoReader to bHasHandle
+            Send AssertFalse bHasHandle "no handle is left"
+            Delegate Send VerifyExtractedSample (sFolder + "\") "zip"
+            Delegate Send RemoveExtractedSample (sFolder + "\")
+            Delegate Send DropReader hoReader
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    // ---- extract the current entry ----------------------------------------------------------------------------------
+
+    Object oExtractCurrentTest is a cTest
+        Procedure Test
+            Handle hoReader hoEntry
+            Integer iResult iFlags
+            String sFile sTarget sFolder
+            BigInt iMtime iDevice iInode
+
+            Delegate Get TempFile "wr_ec.zip" to sFile
+            Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_ZIP ARCHIVE_FILTER_NONE to iResult
+            Delegate Get TempFolder to sFolder
+            Move (sFolder + "wr_ec\") to sFolder
+            Move (ARCHIVE_EXTRACT_TIME ior ARCHIVE_EXTRACT_PERM) to iFlags
+            Delegate Get NewReader to hoReader
+            Set pbRaiseErrors of hoReader to False
+            Get ExtractCurrent of hoReader iFlags to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "no current entry"
+            Get OpenFile of hoReader sFile 0 to iResult
+            Get NextHeader of hoReader to iResult
+            Get phoEntry of hoReader to hoEntry
+            Move (sFolder + "hello.txt") to sTarget
+            Set psPathname of hoEntry to sTarget
+            Get ExtractCurrent of hoReader iFlags to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "ExtractCurrent"
+            Delegate Get ReadFileText sTarget to sFile
+            Send AssertSAreEqual "Hello Archive" sFile "extracted content"
+            Delegate Get FileFacts sTarget (&iMtime) (&iDevice) (&iInode) to iResult
+            Send AssertBIAreEqual 1700000000 iMtime "modification time"
+            // a nested entry creates its parent folder
+            Get NextHeader of hoReader to iResult
+            Get NextHeader of hoReader to iResult
+            Move (sFolder + "docs\nested.txt") to sTarget
+            Set psPathname of hoEntry to sTarget
+            Get ExtractCurrent of hoReader iFlags to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "ExtractCurrent nested"
+            Delegate Get ReadFileText sTarget to sFile
+            Send AssertSAreEqual "Nested content" sFile "nested content"
+            EraseFile sTarget
+            EraseFile (sFolder + "hello.txt")
+            Delegate Send RemoveFolder (sFolder + "docs")
+            Delegate Send RemoveFolder sFolder
+            Delegate Send DropReader hoReader
+            Delegate Get TempFile "wr_ec.zip" to sFile
+        End_Procedure
+    End_Object
+
+    Object oExtractCurrentToTest is a cTest
+        Procedure Test
+            Handle hoReader hoEntry hoWriter
+            Integer iResult
+            Pointer pDisk
+            String sFile sTarget sText
+            UChar[] ucArchive
+
+            Delegate Get BuildSampleArchiveMemory ARCHIVE_FORMAT_TAR (&ucArchive) to iResult
+            Delegate Get TempFile "wr_ect.txt" to sTarget
+            Delegate Get FakeWriter to hoWriter
+            Delegate Get NewReader to hoReader
+            Set pbRaiseErrors of hoReader to False
+            Get OpenMemory of hoReader (&ucArchive) to iResult
+            Get NextHeader of hoReader to iResult
+            Get phoEntry of hoReader to hoEntry
+            Set psPathname of hoEntry to sTarget
+            // the writer has no handle yet
+            Get ExtractCurrentTo of hoReader hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_FAILED iResult "writer without handle"
+            Move (archive_write_disk_new ()) to pDisk
+            Move (archive_write_disk_set_options (pDisk, ARCHIVE_EXTRACT_TIME)) to iResult
+            Set ppArchive of hoWriter to pDisk
+            Get ExtractCurrentTo of hoReader hoWriter to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "ExtractCurrentTo"
+            Delegate Get ReadFileText sTarget to sText
+            Send AssertSAreEqual "Hello Archive" sText "extracted content"
+            Move (archive_write_free (pDisk)) to iResult
+            Set ppArchive of hoWriter to 0
+            Delegate Send DropReader hoReader
+            EraseFile sTarget
+        End_Procedure
+    End_Object
+
+    // SetExtractSkipFile protects a file (normally the archive being read) from being overwritten.
+    Object oSetExtractSkipFileTest is a cTest
+        Procedure Test
+            String sErrorString
+            Handle hoReader hoEntry
+            Integer iResult
+            String sFile sTarget sText
+            BigInt iMtime iDevice iInode
+            UChar[] ucArchive
+            Boolean bOk
+
+            Delegate Get BuildSampleArchiveMemory ARCHIVE_FORMAT_TAR (&ucArchive) to iResult
+            Delegate Get TempFile "wr_skip.txt" to sTarget
+
+            // without the skip file the target is overwritten
+            Delegate Get WriteText sTarget "original" to bOk
+            Delegate Get NewReader to hoReader
+            Set pbRaiseErrors of hoReader to False
+            Get OpenMemory of hoReader (&ucArchive) to iResult
+            Get NextHeader of hoReader to iResult
+            Get phoEntry of hoReader to hoEntry
+            Set psPathname of hoEntry to sTarget
+            Get ExtractCurrent of hoReader 0 to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "overwrite"
+            Delegate Get ReadFileText sTarget to sText
+            Send AssertSAreEqual "Hello Archive" sText "overwritten"
+            Delegate Send DropReader hoReader
+
+            // with the skip file it is not
+            Delegate Get WriteText sTarget "original" to bOk
+            Delegate Get FileFacts sTarget (&iMtime) (&iDevice) (&iInode) to iResult
+            Delegate Get NewReader to hoReader
+            Set pbRaiseErrors of hoReader to False
+            Get OpenMemory of hoReader (&ucArchive) to iResult
+            Send SetExtractSkipFile of hoReader iDevice iInode
+            Get NextHeader of hoReader to iResult
+            Get phoEntry of hoReader to hoEntry
+            Set psPathname of hoEntry to sTarget
+            Get ExtractCurrent of hoReader 0 to iResult
+            Send AssertIAreEqual ARCHIVE_WARN iResult "extraction onto the skip file is refused"
+            Get psErrorString of hoReader to sErrorString
+            Send AssertSAreEqual "Refusing to overwrite archive" sErrorString "reason"
+            Delegate Get ReadFileText sTarget to sText
+            Send AssertSAreEqual "original" sText "the file is untouched"
+            Delegate Send DropReader hoReader
+            EraseFile sTarget
+        End_Procedure
+    End_Object
+End_Object

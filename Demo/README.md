@@ -20,7 +20,7 @@ The purpose of this demo workspace is to provide examples and usage scenarios fo
 3. Compile and run the demo application to see the library in action.
 
 ## DLLs
-The programs folder contains 7 64 bit DLL files. At this moment there is no plan to make 32 bit DLLs.
+The programs folder gets 7 64 bit DLL files when you build. Outside this repository they come with the `DataFlex-dev/LibArchive` package; in this repository the workspace overrides that dependency with `../Library/LibArchive.sws` (see `LibArchive Demo.sws`), so `df-cli` installs the DLLs of `Library\Programs` and git tracks only that one set. At this moment there is no plan to make 32 bit DLLs. After you replace the DLLs in `Library\Programs`, delete the copies in this folder: `df-cli` skips files that already exist.
 The archive.dll file is the main file, the others are used when needed.
 These files, when you use the library in your own environment, need to be present as well in your programs folder. The files are plain DLLs, it is not COM, no regsvr32 can and should be used.
 
@@ -35,4 +35,4 @@ For any issues or questions, please refer to the documentation in the `Library` 
 
 ## Unit tests
 
-`AppSrc/LibArchiveTests.src` is a DFUnit test application that tests every external function and every wrapper class. Build with `df-cli build -t LibArchiveTests.src "LibArchive Demo.sws"` and run `Programs\LibArchiveTests64.exe -c`. See `../Help/Tests.md`.
+The unit tests are in the separate `unittests` workspace at the same level as this directory. See `../unittests/README.md`.

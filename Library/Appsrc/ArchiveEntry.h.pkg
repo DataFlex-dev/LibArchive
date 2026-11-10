@@ -424,6 +424,7 @@ External_Function archive_entry_gid "archive_entry_gid" archive.dll ;
     Returns BigInt
 
 /* Pointer to the user name in the current locale (ANSI code page), or 0. */
+// OBSOLETE (ANSI code page): use archive_entry_uname_w or archive_entry_uname_utf8 instead. The wrapper classes do not call this function.
 External_Function archive_entry_uname "archive_entry_uname" archive.dll ;
     Pointer pEntry ;
     Returns Pointer
@@ -439,6 +440,7 @@ External_Function archive_entry_uname_w "archive_entry_uname_w" archive.dll ;
     Returns Pointer
 
 /* Pointer to the group name in the current locale (ANSI code page), or 0. */
+// OBSOLETE (ANSI code page): use archive_entry_gname_w or archive_entry_gname_utf8 instead. The wrapper classes do not call this function.
 External_Function archive_entry_gname "archive_entry_gname" archive.dll ;
     Pointer pEntry ;
     Returns Pointer
@@ -466,6 +468,7 @@ External_Function archive_entry_set_gid "archive_entry_set_gid" archive.dll ;
     Returns Void_Type
 
 /* Sets the user name (locale string). */
+// OBSOLETE (ANSI code page): use archive_entry_set_uname_utf8 instead. The wrapper classes do not call this function.
 External_Function archive_entry_set_uname "archive_entry_set_uname" archive.dll ;
     Pointer pEntry ;
     Pointer pName ;
@@ -478,6 +481,7 @@ External_Function archive_entry_set_uname_utf8 "archive_entry_set_uname_utf8" ar
     Returns Void_Type
 
 /* Copies the user name (locale string). Same as archive_entry_set_uname. */
+// OBSOLETE (ANSI code page): use archive_entry_copy_uname_w instead. The wrapper classes do not call this function.
 External_Function archive_entry_copy_uname "archive_entry_copy_uname" archive.dll ;
     Pointer pEntry ;
     Pointer pName ;
@@ -500,6 +504,7 @@ External_Function archive_entry_update_uname_utf8 "archive_entry_update_uname_ut
     Returns Integer
 
 /* Sets the group name (locale string). */
+// OBSOLETE (ANSI code page): use archive_entry_set_gname_utf8 instead. The wrapper classes do not call this function.
 External_Function archive_entry_set_gname "archive_entry_set_gname" archive.dll ;
     Pointer pEntry ;
     Pointer pName ;
@@ -512,6 +517,7 @@ External_Function archive_entry_set_gname_utf8 "archive_entry_set_gname_utf8" ar
     Returns Void_Type
 
 /* Copies the group name (locale string). Same as archive_entry_set_gname. */
+// OBSOLETE (ANSI code page): use archive_entry_copy_gname_w instead. The wrapper classes do not call this function.
 External_Function archive_entry_copy_gname "archive_entry_copy_gname" archive.dll ;
     Pointer pEntry ;
     Pointer pName ;
@@ -538,6 +544,7 @@ External_Function archive_entry_update_gname_utf8 "archive_entry_update_gname_ut
 // ====================================================================================================
 
 /* Pointer to the path name in the current locale (ANSI code page), or 0. */
+// OBSOLETE (ANSI code page): use archive_entry_pathname_w or archive_entry_pathname_utf8 instead. The wrapper classes do not call this function.
 External_Function archive_entry_pathname "archive_entry_pathname" archive.dll ;
     Pointer pEntry ;
     Returns Pointer
@@ -553,6 +560,7 @@ External_Function archive_entry_pathname_w "archive_entry_pathname_w" archive.dl
     Returns Pointer
 
 /* Pointer to the path of the file on disk the entry was created from (read disk), or 0. */
+// OBSOLETE (ANSI code page): use archive_entry_sourcepath_w instead. The wrapper classes do not call this function.
 External_Function archive_entry_sourcepath "archive_entry_sourcepath" archive.dll ;
     Pointer pEntry ;
     Returns Pointer
@@ -572,6 +580,7 @@ When you use archive_entry_set_pathname_utf8(), libarchive will store the pathna
 Return Value: archive_entry_set_pathname() does not return a value that you would typically use for error checking.
 Success/Failure: It's assumed to succeed in setting the pathname. Failures would likely manifest as more severe issues like crashes due to memory problems.
 */
+// OBSOLETE (ANSI code page): use archive_entry_set_pathname_utf8 instead. The wrapper classes do not call this function.
 External_Function archive_entry_set_pathname "archive_entry_set_pathname" archive.dll ;
     Pointer pEntry ;
     Pointer pPathName ;
@@ -599,6 +608,7 @@ External_Function archive_entry_set_pathname_utf8 "archive_entry_set_pathname_ut
     Returns Void_Type
 
 /* Copies the path name (locale string). Same as archive_entry_set_pathname. */
+// OBSOLETE (ANSI code page): use archive_entry_copy_pathname_w instead. The wrapper classes do not call this function.
 External_Function archive_entry_copy_pathname "archive_entry_copy_pathname" archive.dll ;
     Pointer pEntry ;
     Pointer pPathName ;
@@ -622,6 +632,7 @@ External_Function archive_entry_update_pathname_utf8 "archive_entry_update_pathn
     Returns Integer
 
 /* Sets the path of the file on disk (locale string) that archive_read_disk_entry_from_file reads from. */
+// OBSOLETE (ANSI code page): use archive_entry_copy_sourcepath_w instead. The wrapper classes do not call this function.
 External_Function archive_entry_copy_sourcepath "archive_entry_copy_sourcepath" archive.dll ;
     Pointer pEntry ;
     Pointer pPathName ;
@@ -638,6 +649,7 @@ External_Function archive_entry_copy_sourcepath_w "archive_entry_copy_sourcepath
 // ====================================================================================================
 
 /* Pointer to the hard link target in the current locale (ANSI code page), or 0. */
+// OBSOLETE (ANSI code page): use archive_entry_hardlink_w or archive_entry_hardlink_utf8 instead. The wrapper classes do not call this function.
 External_Function archive_entry_hardlink "archive_entry_hardlink" archive.dll ;
     Pointer pEntry ;
     Returns Pointer
@@ -658,6 +670,7 @@ External_Function archive_entry_hardlink_is_set "archive_entry_hardlink_is_set" 
     Returns Integer
 
 /* Pointer to the symbolic link target in the current locale (ANSI code page), or 0. */
+// OBSOLETE (ANSI code page): use archive_entry_symlink_w or archive_entry_symlink_utf8 instead. The wrapper classes do not call this function.
 External_Function archive_entry_symlink "archive_entry_symlink" archive.dll ;
     Pointer pEntry ;
     Returns Pointer
@@ -679,6 +692,7 @@ External_Function archive_entry_symlink_type "archive_entry_symlink_type" archiv
 
 /* Sets the hard link target (locale string). */
 /* Note: A hard link and a symbolic link share one storage in libarchive: an entry has one or the other. */
+// OBSOLETE (ANSI code page): use archive_entry_set_hardlink_utf8 instead. The wrapper classes do not call this function.
 External_Function archive_entry_set_hardlink "archive_entry_set_hardlink" archive.dll ;
     Pointer pEntry ;
     Pointer pTarget ;
@@ -691,6 +705,7 @@ External_Function archive_entry_set_hardlink_utf8 "archive_entry_set_hardlink_ut
     Returns Void_Type
 
 /* Copies the hard link target (locale string). Same as archive_entry_set_hardlink. */
+// OBSOLETE (ANSI code page): use archive_entry_copy_hardlink_w instead. The wrapper classes do not call this function.
 External_Function archive_entry_copy_hardlink "archive_entry_copy_hardlink" archive.dll ;
     Pointer pEntry ;
     Pointer pTarget ;
@@ -714,6 +729,7 @@ External_Function archive_entry_update_hardlink_utf8 "archive_entry_update_hardl
 
 /* Sets the symbolic link target (locale string). */
 /* Note: A hard link and a symbolic link share one storage in libarchive: an entry has one or the other. */
+// OBSOLETE (ANSI code page): use archive_entry_set_symlink_utf8 instead. The wrapper classes do not call this function.
 External_Function archive_entry_set_symlink "archive_entry_set_symlink" archive.dll ;
     Pointer pEntry ;
     Pointer pTarget ;
@@ -732,6 +748,7 @@ External_Function archive_entry_set_symlink_type "archive_entry_set_symlink_type
     Returns Void_Type
 
 /* Copies the symbolic link target (locale string). Same as archive_entry_set_symlink. */
+// OBSOLETE (ANSI code page): use archive_entry_copy_symlink_w instead. The wrapper classes do not call this function.
 External_Function archive_entry_copy_symlink "archive_entry_copy_symlink" archive.dll ;
     Pointer pEntry ;
     Pointer pTarget ;
@@ -754,6 +771,7 @@ External_Function archive_entry_update_symlink_utf8 "archive_entry_update_symlin
     Returns Integer
 
 /* Sets the link target of the kind that is currently set (hard link or symbolic link), locale string. */
+// OBSOLETE (ANSI code page): use archive_entry_set_link_utf8 instead. The wrapper classes do not call this function.
 External_Function archive_entry_set_link "archive_entry_set_link" archive.dll ;
     Pointer pEntry ;
     Pointer pTarget ;
@@ -766,6 +784,7 @@ External_Function archive_entry_set_link_utf8 "archive_entry_set_link_utf8" arch
     Returns Void_Type
 
 /* Copies the link target (locale string); same as archive_entry_set_link. */
+// OBSOLETE (ANSI code page): use archive_entry_copy_link_w instead. The wrapper classes do not call this function.
 External_Function archive_entry_copy_link "archive_entry_copy_link" archive.dll ;
     Pointer pEntry ;
     Pointer pTarget ;
@@ -821,6 +840,7 @@ External_Function archive_entry_set_fflags "archive_entry_set_fflags" archive.dl
     Returns Void_Type
 
 /* Sets the file flags from text. Returns a pointer to the first invalid token, or 0 when all were valid. */
+// OBSOLETE (ANSI code page): use archive_entry_copy_fflags_text_w instead. The wrapper classes do not call this function.
 External_Function archive_entry_copy_fflags_text "archive_entry_copy_fflags_text" archive.dll ;
     Pointer pEntry ;
     Pointer pFlags ;
@@ -906,6 +926,7 @@ External_Function archive_entry_acl_clear "archive_entry_acl_clear" archive.dll 
     Returns Void_Type
 
 /* Adds an ACL entry. Type is ARCHIVE_ENTRY_ACL_TYPE_*, tag ARCHIVE_ENTRY_ACL_USER etc. */
+// OBSOLETE (ANSI code page): use archive_entry_acl_add_entry_w instead. The wrapper classes do not call this function.
 External_Function archive_entry_acl_add_entry "archive_entry_acl_add_entry" archive.dll ;
     Pointer pEntry ;
     Integer iType ;
@@ -969,6 +990,7 @@ is stored when pLength is not 0. The memory is owned by the entry.
 Note: The returned text is allocated with malloc and must be freed by the caller (free from ucrtbase.dll); it
 is not owned by the entry.
 */
+// OBSOLETE (ANSI code page): use archive_entry_acl_to_text_w instead. The wrapper classes do not call this function.
 External_Function archive_entry_acl_to_text "archive_entry_acl_to_text" archive.dll ;
     Pointer pEntry ;
     Pointer pLength ;
@@ -991,6 +1013,7 @@ External_Function archive_entry_acl_to_text_w "archive_entry_acl_to_text_w" arch
 Note: The parsed entries are added to the existing ACL; they do not replace it (call archive_entry_acl_clear
 first to replace).
 */
+// OBSOLETE (ANSI code page): use archive_entry_acl_from_text_w instead. The wrapper classes do not call this function.
 External_Function archive_entry_acl_from_text "archive_entry_acl_from_text" archive.dll ;
     Pointer pEntry ;
     Pointer pText ;
@@ -1009,6 +1032,7 @@ External_Function archive_entry_acl_from_text_w "archive_entry_acl_from_text_w" 
     Returns Integer
 
 /* Deprecated; use archive_entry_acl_to_text. */
+// OBSOLETE (ANSI code page): use archive_entry_acl_text_w instead. The wrapper classes do not call this function.
 External_Function archive_entry_acl_text "archive_entry_acl_text" archive.dll ;
     Pointer pEntry ;
     Integer iFlags ;

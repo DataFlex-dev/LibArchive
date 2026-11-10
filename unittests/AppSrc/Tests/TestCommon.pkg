@@ -1,0 +1,312 @@
+﻿// Tests for the version, error, format and filter information functions (ArchiveCommon.h.pkg).
+Object oCommonTests is a cArchiveTestFixture
+    Set psTestFixtureName to "Common"
+
+    // Opens a file with a reader that knows all formats and filters. Returns the handle or 0 when opening failed.
+    Function OpenReaderFile String sFile Returns Pointer
+        Pointer pArchive
+        Integer iResult
+        WString wsFile
+
+        Move sFile to wsFile
+        Move (archive_read_new ()) to pArchive
+        Move (archive_read_support_format_all (pArchive)) to iResult
+        Move (archive_read_support_filter_all (pArchive)) to iResult
+        Move (archive_read_open_filename_w (pArchive, AddressOf (wsFile), 10240)) to iResult
+        If (iResult <> ARCHIVE_OK) Begin
+            Move (archive_read_free (pArchive)) to iResult
+            Function_Return 0
+        End
+        Function_Return pArchive
+    End_Function
+
+    // Reads all headers (skipping the data). Returns the number of entries that were read.
+    Function ReadAllHeaders Pointer pArchive Returns Integer
+        Pointer pEntry
+        Integer iCount iResult
+
+        Move 0 to iCount
+        Move (archive_read_next_header (pArchive, AddressOf (pEntry))) to iResult
+        While (iResult = ARCHIVE_OK)
+            Increment iCount
+            Move (archive_read_next_header (pArchive, AddressOf (pEntry))) to iResult
+        Loop
+        Function_Return iCount
+    End_Function
+
+    // Builds the sample archive in the given format with the given filter, reads it back and checks the format and
+    // filter information functions. iExpectedFormat is compared with the format code of the first entry when it
+    // is not 0, otherwise only the format family eFormat is compared.
+    Procedure CheckInfo String sLabel Integer eFormat Integer eFilter Integer iExpectedFilterCount String sExpectedFormatName String sExpectedFilterName
+        String sFile sName
+        Pointer pArchive pEntry pText
+        Integer iResult iFormat iCount iFilterCode
+        BigInt iBytesLast iBytesFirst
+
+        Get TempFile ("info-" + sLabel + ".bin") to sFile
+        Get BuildSampleArchiveFile sFile eFormat eFilter to iResult
+        Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "build sample archive")
+        Get OpenReaderFile sFile to pArchive
+        Send Assert (pArchive <> 0) (sLabel * "open archive")
+        If (pArchive = 0) Begin
+            Procedure_Return
+        End
+
+        Move (archive_read_next_header (pArchive, AddressOf (pEntry))) to iResult
+        Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "first header")
+        Move (archive_file_count (pArchive)) to iCount
+        Send AssertIAreEqual 1 iCount (sLabel * "file count after first header")
+
+        Move (archive_format (pArchive)) to iFormat
+        Send AssertIAreEqual eFormat (iFormat iand ARCHIVE_FORMAT_BASE_MASK) (sLabel * "format family")
+        Move (archive_format_name (pArchive)) to pText
+        Send Assert (pText <> 0) (sLabel * "format name is set")
+        If (pText <> 0) Begin
+            Move (PointerToString (pText)) to sName
+            Send AssertSAreEqual sExpectedFormatName sName (sLabel * "format name")
+        End
+
+        Move (archive_filter_count (pArchive)) to iCount
+        Send AssertIAreEqual iExpectedFilterCount iCount (sLabel * "filter count")
+        Move (archive_filter_code (pArchive, 0)) to iFilterCode
+        Send AssertIAreEqual eFilter iFilterCode (sLabel * "filter code 0")
+        Move (archive_filter_name (pArchive, 0)) to pText
+        Send Assert (pText <> 0) (sLabel * "filter name is set")
+        If (pText <> 0) Begin
+            Move (PointerToString (pText)) to sName
+            Send AssertSAreEqual sExpectedFilterName sName (sLabel * "filter name 0")
+        End
+        Move (archive_filter_code (pArchive, -1)) to iFilterCode
+        Send AssertIAreEqual ARCHIVE_FILTER_NONE iFilterCode (sLabel * "last filter (I/O layer) code")
+
+        Get ReadAllHeaders pArchive to iCount
+        Send AssertIAreEqual 3 iCount (sLabel * "remaining headers")
+        Move (archive_file_count (pArchive)) to iCount
+        Send AssertIAreEqual 4 iCount (sLabel * "file count after all headers")
+
+        Move (archive_filter_bytes (pArchive, -1)) to iBytesLast
+        Move (archive_filter_bytes (pArchive, 0)) to iBytesFirst
+        Send Assert (iBytesLast > 0) (sLabel * "bytes read from the file")
+        Send Assert (iBytesFirst > 0) (sLabel * "bytes delivered by the first filter")
+        If (eFilter <> ARCHIVE_FILTER_NONE) Begin
+            Send Assert (iBytesFirst > iBytesLast) (sLabel * "compression reduces the size")
+        End
+
+        Move (archive_read_free (pArchive)) to iResult
+        Send AssertIAreEqual ARCHIVE_OK iResult (sLabel * "free")
+        EraseFile sFile
+    End_Procedure
+
+    Object oVersionTest is a cTest
+        Procedure Test
+            String sVersion sDetails
+            Send AssertIAreEqual 3007007 (archive_version_number ())
+            Move (PointerToString (archive_version_string ())) to sVersion
+            Send AssertSAreEqual "libarchive 3.7.7" sVersion
+            Move (PointerToString (archive_version_details ())) to sDetails
+            Send AssertSAreEqual "libarchive 3.7.7" (Left (sDetails, 16)) "details start with the version string"
+            Send Assert (SizeOfString (sDetails) > 16) "details list the libraries that were built in"
+        End_Procedure
+    End_Object
+
+    Object oLibraryVersionsTest is a cTest
+        Procedure Test
+            Pointer pText
+            String sDetails sVersion
+
+            Move (PointerToString (archive_version_details ())) to sDetails
+
+            Move (archive_zlib_version ()) to pText
+            Send Assert (pText <> 0) "zlib version available"
+            If (pText <> 0) Begin
+                Move (PointerToString (pText)) to sVersion
+                Send Assert (SizeOfString (sVersion) > 0) "zlib version text"
+                Send Assert (Pos ("zlib/" + sVersion, sDetails) > 0) "zlib version is part of the details"
+            End
+
+            Move (archive_liblzma_version ()) to pText
+            Send Assert (pText <> 0) "liblzma version available"
+            If (pText <> 0) Begin
+                Move (PointerToString (pText)) to sVersion
+                Send Assert (SizeOfString (sVersion) > 0) "liblzma version text"
+                Send Assert (Pos ("liblzma/" + sVersion, sDetails) > 0) "liblzma version is part of the details"
+            End
+
+            Move (archive_bzlib_version ()) to pText
+            Send Assert (pText <> 0) "bzlib version available"
+            If (pText <> 0) Begin
+                Move (PointerToString (pText)) to sVersion
+                Send Assert (SizeOfString (sVersion) > 0) "bzlib version text"
+                Send Assert (Pos ("bz2lib/", sDetails) > 0) "bzlib is part of the details"
+            End
+
+            Move (archive_liblz4_version ()) to pText
+            Send Assert (pText <> 0) "liblz4 version available"
+            If (pText <> 0) Begin
+                Move (PointerToString (pText)) to sVersion
+                Send Assert (SizeOfString (sVersion) > 0) "liblz4 version text"
+                Send Assert (Pos ("liblz4/" + sVersion, sDetails) > 0) "liblz4 version is part of the details"
+            End
+
+            Move (archive_libzstd_version ()) to pText
+            Send Assert (pText <> 0) "libzstd version available"
+            If (pText <> 0) Begin
+                Move (PointerToString (pText)) to sVersion
+                Send Assert (SizeOfString (sVersion) > 0) "libzstd version text"
+                Send Assert (Pos ("libzstd/" + sVersion, sDetails) > 0) "libzstd version is part of the details"
+            End
+        End_Procedure
+    End_Object
+
+    // Provokes a real error (missing file) and works with errno, error_string, clear_error, set_error, copy_error.
+    Object oErrorFunctionsTest is a cTest
+        Procedure Test
+            Pointer pArchive pCopy pText
+            Integer iResult iErrno
+            String sMissing sMessage sFormat
+            WString wsMissing
+
+            Move (archive_read_new ()) to pArchive
+            Move (archive_read_support_format_all (pArchive)) to iResult
+
+            // A fresh handle has no error.
+            Move (archive_errno (pArchive)) to iErrno
+            Send AssertIAreEqual 0 iErrno "no errno on a fresh handle"
+            Move (archive_error_string (pArchive)) to pText
+            Send AssertPAreEqual 0 pText "no error string on a fresh handle"
+
+            Delegate Get TempFile "does-not-exist.zip" to sMissing
+            Move sMissing to wsMissing
+            Move (archive_read_open_filename_w (pArchive, AddressOf (wsMissing), 10240)) to iResult
+            Send AssertIAreEqual ARCHIVE_FATAL iResult "opening a missing file fails fatally"
+            Move (archive_errno (pArchive)) to iErrno
+            Send AssertIAreEqual 2 iErrno "errno is ENOENT (2)"
+            Move (archive_error_string (pArchive)) to pText
+            Send Assert (pText <> 0) "error string is set"
+            If (pText <> 0) Begin
+                Move (PointerToString (pText)) to sMessage
+                Send Assert (Pos ("Failed to open", sMessage) > 0) ("error text mentions the failed open:" * sMessage)
+            End
+
+            // copy_error: the copy has the same errno and message.
+            Move (archive_read_new ()) to pCopy
+            Move (archive_copy_error (pCopy, pArchive)) to iResult
+            Move (archive_errno (pCopy)) to iErrno
+            Send AssertIAreEqual 2 iErrno "copied errno"
+            Send AssertSAreEqual sMessage (PointerToString (archive_error_string (pCopy))) "copied error string"
+
+            // clear_error resets errno and message.
+            Move (archive_clear_error (pArchive)) to iResult
+            Move (archive_errno (pArchive)) to iErrno
+            Send AssertIAreEqual 0 iErrno "errno after clear_error"
+            Move (archive_error_string (pArchive)) to pText
+            Send AssertPAreEqual 0 pText "error string after clear_error"
+
+            // set_error stores errno and message.
+            Move "custom error message" to sMessage
+            Move "%s" to sFormat
+            Move (archive_set_error (pArchive, 42, AddressOf (sFormat), AddressOf (sMessage))) to iResult
+            Move (archive_errno (pArchive)) to iErrno
+            Send AssertIAreEqual 42 iErrno "errno after set_error"
+            Send AssertSAreEqual "custom error message" (PointerToString (archive_error_string (pArchive))) "error string after set_error"
+
+            // The copy was not affected by the changes of the source.
+            Send AssertIAreEqual 2 (archive_errno (pCopy)) "copy keeps its own errno"
+
+            Move (archive_read_free (pCopy)) to iResult
+            Move (archive_read_free (pArchive)) to iResult
+        End_Procedure
+    End_Object
+
+    Object oZipInfoTest is a cTest
+        Procedure Test
+            Delegate Send CheckInfo "zip" ARCHIVE_FORMAT_ZIP ARCHIVE_FILTER_NONE 1 "ZIP 2.0 (deflation)" "none"
+        End_Procedure
+    End_Object
+
+    Object oTarInfoTest is a cTest
+        Procedure Test
+            Delegate Send CheckInfo "tar" ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_NONE 1 "POSIX ustar format" "none"
+        End_Procedure
+    End_Object
+
+    Object oTarGzipInfoTest is a cTest
+        Procedure Test
+            Delegate Send CheckInfo "targz" ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_GZIP 2 "POSIX ustar format" "gzip"
+        End_Procedure
+    End_Object
+
+    Object oTarBzip2InfoTest is a cTest
+        Procedure Test
+            Delegate Send CheckInfo "tarbz2" ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_BZIP2 2 "POSIX ustar format" "bzip2"
+        End_Procedure
+    End_Object
+
+    Object oTarXzInfoTest is a cTest
+        Procedure Test
+            Delegate Send CheckInfo "tarxz" ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_XZ 2 "POSIX ustar format" "xz"
+        End_Procedure
+    End_Object
+
+    Object oSevenZipInfoTest is a cTest
+        Procedure Test
+            Delegate Send CheckInfo "7z" ARCHIVE_FORMAT_7ZIP ARCHIVE_FILTER_NONE 1 "7-Zip" "none"
+        End_Procedure
+    End_Object
+
+    Object oCpioInfoTest is a cTest
+        Procedure Test
+            Delegate Send CheckInfo "cpio" ARCHIVE_FORMAT_CPIO ARCHIVE_FILTER_NONE 1 "POSIX octet-oriented cpio" "none"
+        End_Procedure
+    End_Object
+
+    // The deprecated aliases return the same values as the filter functions they stand for.
+    Object oDeprecatedAliasesTest is a cTest
+        Procedure Test
+            String sFile
+            Pointer pArchive
+            Integer iResult iCount
+            BigInt iBytes
+
+            Delegate Get TempFile "deprecated.tgz" to sFile
+            Delegate Get BuildSampleArchiveFile sFile ARCHIVE_FORMAT_TAR ARCHIVE_FILTER_GZIP to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "build sample archive"
+            Delegate Get OpenReaderFile sFile to pArchive
+            Send Assert (pArchive <> 0) "open archive"
+            If (pArchive <> 0) Begin
+                Delegate Get ReadAllHeaders pArchive to iCount
+                Send AssertIAreEqual 4 iCount "entries"
+
+                Move (archive_position_compressed (pArchive)) to iBytes
+                Send Assert (iBytes > 0) "compressed position"
+                Send AssertBIAreEqual (archive_filter_bytes (pArchive, -1)) iBytes "position_compressed = filter_bytes(-1)"
+                Move (archive_position_uncompressed (pArchive)) to iBytes
+                Send Assert (iBytes > 0) "uncompressed position"
+                Send AssertBIAreEqual (archive_filter_bytes (pArchive, 0)) iBytes "position_uncompressed = filter_bytes(0)"
+                Send AssertSAreEqual "gzip" (PointerToString (archive_compression_name (pArchive))) "compression_name"
+                Send AssertIAreEqual ARCHIVE_FILTER_GZIP (archive_compression (pArchive)) "compression"
+                Send AssertIAreEqual (archive_filter_code (pArchive, 0)) (archive_compression (pArchive)) "compression = filter_code(0)"
+                Move (archive_read_free (pArchive)) to iResult
+            End
+            EraseFile sFile
+        End_Procedure
+    End_Object
+
+    // archive_free closes and frees both readers and writers.
+    Object oArchiveFreeTest is a cTest
+        Procedure Test
+            Pointer pArchive
+            Integer iResult
+
+            Move (archive_read_new ()) to pArchive
+            Send Assert (pArchive <> 0) "new reader"
+            Move (archive_free (pArchive)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "archive_free on a reader"
+
+            Move (archive_write_new ()) to pArchive
+            Send Assert (pArchive <> 0) "new writer"
+            Move (archive_free (pArchive)) to iResult
+            Send AssertIAreEqual ARCHIVE_OK iResult "archive_free on a writer"
+        End_Procedure
+    End_Object
+End_Object

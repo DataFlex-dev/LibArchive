@@ -1,24 +1,5 @@
 ﻿Use Archive.h.pkg
-
-// The C runtime free function. archive_entry_acl_to_text and archive_entry_acl_to_text_w return malloc'ed memory that
-// the caller has to release. archive.dll uses the universal C runtime, so ucrtbase.dll frees it.
-External_Function archive_wrapper_crt_free "free" ucrtbase.dll ;
-    Pointer pMemory ;
-    Returns Void_Type
-
-// Windows API functions used to turn the ANSI code page names libarchive returns for ACL entries into DataFlex strings.
-External_Function archive_wrapper_MultiByteToWideChar "MultiByteToWideChar" kernel32.dll ;
-    UInteger iCodePage ;
-    UInteger iFlags ;
-    Pointer pMultiByte ;
-    Integer iMultiByteLength ;
-    Pointer pWideChar ;
-    Integer iWideCharLength ;
-    Returns Integer
-
-External_Function archive_wrapper_lstrlenA "lstrlenA" kernel32.dll ;
-    Pointer pText ;
-    Returns Integer
+Use CharTranslate.pkg
 
 // One ACL entry as returned by cArchiveEntry.AclNext. eType is ARCHIVE_ENTRY_ACL_TYPE_* (0 means "no more entries"),
 // iPermset the permission bits (ARCHIVE_ENTRY_ACL_*), eTag the tag (ARCHIVE_ENTRY_ACL_USER, _GROUP, ...), iQualifier the
@@ -78,17 +59,79 @@ Class cArchiveEntry is a cObject
 
     // ---- helpers ------------------------------------------------------------------------------------------------
 
-    // True when the text is valid UTF-8 (MultiByteToWideChar with MB_ERR_INVALID_CHARS). The UTF-8 name setters call this
-    // before they call libarchive: invalid text is rejected with a DataFlex error, libarchive never sees it.
+    // True when the text is valid UTF-8 (RFC 3629: no overlong forms, no surrogates, nothing above U+10FFFF). The UTF-8
+    // name setters call this before they call libarchive: invalid text is rejected with a DataFlex error, libarchive never
+    // sees it.
     Function IsValidUtf8 String sText Returns Boolean
-        Integer iLength
+        Integer iLength iIndex iExtra iByte iNext iLow iHigh iTail iPosition iVoid
+        Boolean bValid
+        UChar[] ucText
 
-        If (sText = "") Begin
+        Move (SizeOfString (sText)) to iLength
+        If (iLength = 0) Begin
             Function_Return True
         End
-        // code page 65001 is CP_UTF8, flag 8 is MB_ERR_INVALID_CHARS; a length of -1 means zero terminated
-        Move (archive_wrapper_MultiByteToWideChar (65001, 8, AddressOf (sText), -1, 0, 0)) to iLength
-        Function_Return (iLength > 0)
+        Move (ResizeArray (ucText, iLength)) to ucText
+        Move (MemCopy (AddressOf (ucText), AddressOf (sText), iLength)) to iVoid
+        Move True to bValid
+        Move 0 to iIndex
+        While (bValid and iIndex < iLength)
+            Move ucText[iIndex] to iByte
+            Move 0 to iExtra
+            If (iByte < 128) Begin
+                Move 0 to iExtra
+            End
+            Else If (iByte >= 194 and iByte <= 223) Begin
+                Move 1 to iExtra
+            End
+            Else If (iByte >= 224 and iByte <= 239) Begin
+                Move 2 to iExtra
+            End
+            Else If (iByte >= 240 and iByte <= 244) Begin
+                Move 3 to iExtra
+            End
+            Else Begin
+                // a continuation byte without a lead byte, an overlong lead byte (C0, C1) or a byte above F4
+                Move False to bValid
+            End
+            If (bValid and iExtra > 0) Begin
+                If (iIndex + iExtra >= iLength) Begin
+                    Move False to bValid
+                End
+                Else Begin
+                    // the second byte has a narrower range after some lead bytes: no overlong forms (E0, F0), no
+                    // surrogates (ED), nothing above U+10FFFF (F4)
+                    Move 128 to iLow
+                    Move 191 to iHigh
+                    If (iByte = 224) Begin
+                        Move 160 to iLow
+                    End
+                    If (iByte = 237) Begin
+                        Move 159 to iHigh
+                    End
+                    If (iByte = 240) Begin
+                        Move 144 to iLow
+                    End
+                    If (iByte = 244) Begin
+                        Move 143 to iHigh
+                    End
+                    Move (iIndex + 1) to iPosition
+                    Move ucText[iPosition] to iNext
+                    If (iNext < iLow or iNext > iHigh) Begin
+                        Move False to bValid
+                    End
+                    For iTail from 2 to iExtra
+                        Move (iIndex + iTail) to iPosition
+                        Move ucText[iPosition] to iNext
+                        If (iNext < 128 or iNext > 191) Begin
+                            Move False to bValid
+                        End
+                    Loop
+                End
+            End
+            Move (iIndex + iExtra + 1) to iIndex
+        Loop
+        Function_Return bValid
     End_Function
 
     // Converts a zero terminated string pointer returned by libarchive to a DataFlex string. 0 gives "".
@@ -100,25 +143,23 @@ Class cArchiveEntry is a cObject
     End_Function
 
     // Converts a zero terminated string pointer in the ANSI code page of the program (what libarchive returns for ACL user
-    // and group names) to a DataFlex string. 0 gives "".
+    // and group names) to a DataFlex string with AnsiToUtf8 of CharTranslate.pkg. 0 gives "".
     Function AnsiPointerText Pointer pText Returns String
-        Integer iLength iWide
-        UChar[] ucWide
+        String sAnsi sText
 
         If (pText = 0) Begin
             Function_Return ""
         End
-        Move (archive_wrapper_lstrlenA (pText)) to iLength
-        If (iLength = 0) Begin
+        Move (PointerToString (pText)) to sAnsi
+        If (sAnsi = "") Begin
             Function_Return ""
         End
-        Move (ResizeArray (ucWide, (iLength + 1) * 2)) to ucWide
-        // code page 0 is CP_ACP
-        Move (archive_wrapper_MultiByteToWideChar (0, 0, pText, iLength, AddressOf (ucWide), iLength)) to iWide
-        If (iWide = 0) Begin
-            Function_Return (PointerToString (pText))
+        Move (AnsiToUtf8 (sAnsi)) to sText
+        If (sText = "") Begin
+            // not convertible: keep the bytes as they are
+            Function_Return sAnsi
         End
-        Function_Return (PointerToWString (AddressOf (ucWide)))
+        Function_Return sText
     End_Function
 
     // Converts a zero terminated wide string pointer returned by libarchive to a DataFlex string. 0 gives "".
@@ -131,7 +172,10 @@ Class cArchiveEntry is a cObject
 
     // Passes a libarchive result on; ARCHIVE_FAILED or worse raises a DataFlex error when pbRaiseErrors is True.
     Function CheckResult Integer iResult String sOperation Returns Integer
-        If (iResult <= ARCHIVE_FAILED and pbRaiseErrors (Self)) Begin
+        Boolean bRaiseErrors
+
+        Get pbRaiseErrors to bRaiseErrors
+        If (iResult <= ARCHIVE_FAILED and bRaiseErrors) Begin
             Error DFERR_PROGRAM (SFormat ("%1 failed (%2)", sOperation, String (iResult)))
         End
         Function_Return iResult
@@ -141,7 +185,10 @@ Class cArchiveEntry is a cObject
 
     // True when the object wraps an entry.
     Function HasEntry Returns Boolean
-        Function_Return (ppEntry (Self) <> 0)
+        Pointer pEntry
+
+        Get ppEntry to pEntry
+        Function_Return (pEntry <> 0)
     End_Function
 
     // Frees the current entry (when owned) and creates a new empty owned entry (archive_entry_new).
@@ -172,11 +219,13 @@ Class cArchiveEntry is a cObject
 
     // Frees the entry when it is owned and forgets it.
     Procedure FreeEntry
+        Boolean bOwnsEntry
         Pointer pEntry
         Void_Type iVoid
 
         Get ppEntry to pEntry
-        If (pEntry <> 0 and pbOwnsEntry (Self)) Begin
+        Get pbOwnsEntry to bOwnsEntry
+        If (pEntry <> 0 and bOwnsEntry) Begin
             Move (archive_entry_free (pEntry)) to iVoid
         End
         Set ppEntry to 0
@@ -209,7 +258,7 @@ Class cArchiveEntry is a cObject
             Function_Return 0
         End
         Get Parent to hoParent
-        Get Create of hoParent U_cArchiveEntry to hoClone
+        Get CreateNamed of hoParent (RefClass (cArchiveEntry)) "oArchiveEntryClone" to hoClone
         Send AttachEntry of hoClone pClone True
         Function_Return hoClone
     End_Function
@@ -221,26 +270,25 @@ Class cArchiveEntry is a cObject
     //                converted to the ANSI code page without loss (for example Japanese text on a Western Windows) is
     //                stored as it is; pbLastTextLossless tells whether the last setter call converted without loss.
     //                Setting an empty string removes the name.
-    //   psXLocale    narrow text through archive_entry_X / archive_entry_set_X: the bytes of the DataFlex string (UTF-8) are
-    //                passed and returned unchanged, libarchive interprets them in the ANSI code page. Only ASCII text is
-    //                portable; use psX or psXWide for everything else.
     //   psXWide      wide (UTF-16) text (archive_entry_X_w / archive_entry_copy_X_w); lossless for every character.
     //   SetXUtf8     archive_entry_set_X_utf8 (no validity report; psX is the checked variant).
-    //   CopyXLocale  archive_entry_copy_X (same as setting psXLocale).
 
     // Path name as UTF-8 text (archive_entry_pathname_utf8 / archive_entry_update_pathname_utf8). Empty when not set.
     { MethodType = Property }
     Function psPathname Returns String
+        String sPointerText
         Pointer pEntry
         Get ppEntry to pEntry
         If (pEntry = 0) Begin
             Function_Return ""
         End
-        Function_Return (PointerText (Self, archive_entry_pathname_utf8 (pEntry)))
+        Get PointerText (archive_entry_pathname_utf8 (pEntry)) to sPointerText
+        Function_Return sPointerText
     End_Function
 
     { MethodType = Property }
     Procedure Set psPathname String sValue
+        Boolean bIsValidUtf8
         Pointer pEntry
         Integer iResult
         Void_Type iVoid
@@ -250,7 +298,8 @@ Class cArchiveEntry is a cObject
                 Move (archive_entry_set_pathname_utf8 (pEntry, 0)) to iVoid
             End
             Else Begin
-                If (not (IsValidUtf8 (Self, sValue))) Begin
+                Get IsValidUtf8 sValue to bIsValidUtf8
+                If (not (bIsValidUtf8)) Begin
                     Error DFERR_PROGRAM "Could not set the path name: the text is not valid UTF-8"
                 End
                 Else Begin
@@ -261,41 +310,17 @@ Class cArchiveEntry is a cObject
         End
     End_Procedure
 
-    // Path name in the current ANSI code page (archive_entry_pathname / archive_entry_set_pathname).
-    { MethodType = Property }
-    Function psPathnameLocale Returns String
-        Pointer pEntry
-        Get ppEntry to pEntry
-        If (pEntry = 0) Begin
-            Function_Return ""
-        End
-        Function_Return (PointerText (Self, archive_entry_pathname (pEntry)))
-    End_Function
-
-    { MethodType = Property }
-    Procedure Set psPathnameLocale String sValue
-        Pointer pEntry
-        Void_Type iVoid
-        Get ppEntry to pEntry
-        If (pEntry <> 0) Begin
-            If (sValue = "") Begin
-                Move (archive_entry_set_pathname (pEntry, 0)) to iVoid
-            End
-            Else Begin
-                Move (archive_entry_set_pathname (pEntry, AddressOf (sValue))) to iVoid
-            End
-        End
-    End_Procedure
-
     // Path name as wide (UTF-16) text (archive_entry_pathname_w / archive_entry_copy_pathname_w).
     { MethodType = Property }
     Function psPathnameWide Returns String
+        String sPointerWideText
         Pointer pEntry
         Get ppEntry to pEntry
         If (pEntry = 0) Begin
             Function_Return ""
         End
-        Function_Return (PointerWideText (Self, archive_entry_pathname_w (pEntry)))
+        Get PointerWideText (archive_entry_pathname_w (pEntry)) to sPointerWideText
+        Function_Return sPointerWideText
     End_Function
 
     { MethodType = Property }
@@ -330,34 +355,22 @@ Class cArchiveEntry is a cObject
         End
     End_Procedure
 
-    // Copies the path name from text in the current ANSI code page (archive_entry_copy_pathname). Empty removes it.
-    Procedure CopyPathnameLocale String sValue
-        Pointer pEntry
-        Void_Type iVoid
-        Get ppEntry to pEntry
-        If (pEntry <> 0) Begin
-            If (sValue = "") Begin
-                Move (archive_entry_copy_pathname (pEntry, 0)) to iVoid
-            End
-            Else Begin
-                Move (archive_entry_copy_pathname (pEntry, AddressOf (sValue))) to iVoid
-            End
-        End
-    End_Procedure
-
     // Hard link target as UTF-8 text (archive_entry_hardlink_utf8 / archive_entry_update_hardlink_utf8). Empty when not set.
     { MethodType = Property }
     Function psHardlink Returns String
+        String sPointerText
         Pointer pEntry
         Get ppEntry to pEntry
         If (pEntry = 0) Begin
             Function_Return ""
         End
-        Function_Return (PointerText (Self, archive_entry_hardlink_utf8 (pEntry)))
+        Get PointerText (archive_entry_hardlink_utf8 (pEntry)) to sPointerText
+        Function_Return sPointerText
     End_Function
 
     { MethodType = Property }
     Procedure Set psHardlink String sValue
+        Boolean bIsValidUtf8
         Pointer pEntry
         Integer iResult
         Void_Type iVoid
@@ -367,7 +380,8 @@ Class cArchiveEntry is a cObject
                 Move (archive_entry_set_hardlink_utf8 (pEntry, 0)) to iVoid
             End
             Else Begin
-                If (not (IsValidUtf8 (Self, sValue))) Begin
+                Get IsValidUtf8 sValue to bIsValidUtf8
+                If (not (bIsValidUtf8)) Begin
                     Error DFERR_PROGRAM "Could not set the hard link target: the text is not valid UTF-8"
                 End
                 Else Begin
@@ -378,41 +392,17 @@ Class cArchiveEntry is a cObject
         End
     End_Procedure
 
-    // Hard link target in the current ANSI code page (archive_entry_hardlink / archive_entry_set_hardlink).
-    { MethodType = Property }
-    Function psHardlinkLocale Returns String
-        Pointer pEntry
-        Get ppEntry to pEntry
-        If (pEntry = 0) Begin
-            Function_Return ""
-        End
-        Function_Return (PointerText (Self, archive_entry_hardlink (pEntry)))
-    End_Function
-
-    { MethodType = Property }
-    Procedure Set psHardlinkLocale String sValue
-        Pointer pEntry
-        Void_Type iVoid
-        Get ppEntry to pEntry
-        If (pEntry <> 0) Begin
-            If (sValue = "") Begin
-                Move (archive_entry_set_hardlink (pEntry, 0)) to iVoid
-            End
-            Else Begin
-                Move (archive_entry_set_hardlink (pEntry, AddressOf (sValue))) to iVoid
-            End
-        End
-    End_Procedure
-
     // Hard link target as wide (UTF-16) text (archive_entry_hardlink_w / archive_entry_copy_hardlink_w).
     { MethodType = Property }
     Function psHardlinkWide Returns String
+        String sPointerWideText
         Pointer pEntry
         Get ppEntry to pEntry
         If (pEntry = 0) Begin
             Function_Return ""
         End
-        Function_Return (PointerWideText (Self, archive_entry_hardlink_w (pEntry)))
+        Get PointerWideText (archive_entry_hardlink_w (pEntry)) to sPointerWideText
+        Function_Return sPointerWideText
     End_Function
 
     { MethodType = Property }
@@ -447,34 +437,22 @@ Class cArchiveEntry is a cObject
         End
     End_Procedure
 
-    // Copies the hard link target from text in the current ANSI code page (archive_entry_copy_hardlink). Empty removes it.
-    Procedure CopyHardlinkLocale String sValue
-        Pointer pEntry
-        Void_Type iVoid
-        Get ppEntry to pEntry
-        If (pEntry <> 0) Begin
-            If (sValue = "") Begin
-                Move (archive_entry_copy_hardlink (pEntry, 0)) to iVoid
-            End
-            Else Begin
-                Move (archive_entry_copy_hardlink (pEntry, AddressOf (sValue))) to iVoid
-            End
-        End
-    End_Procedure
-
     // Symbolic link target as UTF-8 text (archive_entry_symlink_utf8 / archive_entry_update_symlink_utf8). Empty when not set.
     { MethodType = Property }
     Function psSymlink Returns String
+        String sPointerText
         Pointer pEntry
         Get ppEntry to pEntry
         If (pEntry = 0) Begin
             Function_Return ""
         End
-        Function_Return (PointerText (Self, archive_entry_symlink_utf8 (pEntry)))
+        Get PointerText (archive_entry_symlink_utf8 (pEntry)) to sPointerText
+        Function_Return sPointerText
     End_Function
 
     { MethodType = Property }
     Procedure Set psSymlink String sValue
+        Boolean bIsValidUtf8
         Pointer pEntry
         Integer iResult
         Void_Type iVoid
@@ -484,7 +462,8 @@ Class cArchiveEntry is a cObject
                 Move (archive_entry_set_symlink_utf8 (pEntry, 0)) to iVoid
             End
             Else Begin
-                If (not (IsValidUtf8 (Self, sValue))) Begin
+                Get IsValidUtf8 sValue to bIsValidUtf8
+                If (not (bIsValidUtf8)) Begin
                     Error DFERR_PROGRAM "Could not set the symbolic link target: the text is not valid UTF-8"
                 End
                 Else Begin
@@ -495,41 +474,17 @@ Class cArchiveEntry is a cObject
         End
     End_Procedure
 
-    // Symbolic link target in the current ANSI code page (archive_entry_symlink / archive_entry_set_symlink).
-    { MethodType = Property }
-    Function psSymlinkLocale Returns String
-        Pointer pEntry
-        Get ppEntry to pEntry
-        If (pEntry = 0) Begin
-            Function_Return ""
-        End
-        Function_Return (PointerText (Self, archive_entry_symlink (pEntry)))
-    End_Function
-
-    { MethodType = Property }
-    Procedure Set psSymlinkLocale String sValue
-        Pointer pEntry
-        Void_Type iVoid
-        Get ppEntry to pEntry
-        If (pEntry <> 0) Begin
-            If (sValue = "") Begin
-                Move (archive_entry_set_symlink (pEntry, 0)) to iVoid
-            End
-            Else Begin
-                Move (archive_entry_set_symlink (pEntry, AddressOf (sValue))) to iVoid
-            End
-        End
-    End_Procedure
-
     // Symbolic link target as wide (UTF-16) text (archive_entry_symlink_w / archive_entry_copy_symlink_w).
     { MethodType = Property }
     Function psSymlinkWide Returns String
+        String sPointerWideText
         Pointer pEntry
         Get ppEntry to pEntry
         If (pEntry = 0) Begin
             Function_Return ""
         End
-        Function_Return (PointerWideText (Self, archive_entry_symlink_w (pEntry)))
+        Get PointerWideText (archive_entry_symlink_w (pEntry)) to sPointerWideText
+        Function_Return sPointerWideText
     End_Function
 
     { MethodType = Property }
@@ -564,34 +519,22 @@ Class cArchiveEntry is a cObject
         End
     End_Procedure
 
-    // Copies the symbolic link target from text in the current ANSI code page (archive_entry_copy_symlink). Empty removes it.
-    Procedure CopySymlinkLocale String sValue
-        Pointer pEntry
-        Void_Type iVoid
-        Get ppEntry to pEntry
-        If (pEntry <> 0) Begin
-            If (sValue = "") Begin
-                Move (archive_entry_copy_symlink (pEntry, 0)) to iVoid
-            End
-            Else Begin
-                Move (archive_entry_copy_symlink (pEntry, AddressOf (sValue))) to iVoid
-            End
-        End
-    End_Procedure
-
     // User (owner) name as UTF-8 text (archive_entry_uname_utf8 / archive_entry_update_uname_utf8). Empty when not set.
     { MethodType = Property }
     Function psUname Returns String
+        String sPointerText
         Pointer pEntry
         Get ppEntry to pEntry
         If (pEntry = 0) Begin
             Function_Return ""
         End
-        Function_Return (PointerText (Self, archive_entry_uname_utf8 (pEntry)))
+        Get PointerText (archive_entry_uname_utf8 (pEntry)) to sPointerText
+        Function_Return sPointerText
     End_Function
 
     { MethodType = Property }
     Procedure Set psUname String sValue
+        Boolean bIsValidUtf8
         Pointer pEntry
         Integer iResult
         Void_Type iVoid
@@ -601,7 +544,8 @@ Class cArchiveEntry is a cObject
                 Move (archive_entry_set_uname_utf8 (pEntry, 0)) to iVoid
             End
             Else Begin
-                If (not (IsValidUtf8 (Self, sValue))) Begin
+                Get IsValidUtf8 sValue to bIsValidUtf8
+                If (not (bIsValidUtf8)) Begin
                     Error DFERR_PROGRAM "Could not set the user name: the text is not valid UTF-8"
                 End
                 Else Begin
@@ -612,41 +556,17 @@ Class cArchiveEntry is a cObject
         End
     End_Procedure
 
-    // User (owner) name in the current ANSI code page (archive_entry_uname / archive_entry_set_uname).
-    { MethodType = Property }
-    Function psUnameLocale Returns String
-        Pointer pEntry
-        Get ppEntry to pEntry
-        If (pEntry = 0) Begin
-            Function_Return ""
-        End
-        Function_Return (PointerText (Self, archive_entry_uname (pEntry)))
-    End_Function
-
-    { MethodType = Property }
-    Procedure Set psUnameLocale String sValue
-        Pointer pEntry
-        Void_Type iVoid
-        Get ppEntry to pEntry
-        If (pEntry <> 0) Begin
-            If (sValue = "") Begin
-                Move (archive_entry_set_uname (pEntry, 0)) to iVoid
-            End
-            Else Begin
-                Move (archive_entry_set_uname (pEntry, AddressOf (sValue))) to iVoid
-            End
-        End
-    End_Procedure
-
     // User (owner) name as wide (UTF-16) text (archive_entry_uname_w / archive_entry_copy_uname_w).
     { MethodType = Property }
     Function psUnameWide Returns String
+        String sPointerWideText
         Pointer pEntry
         Get ppEntry to pEntry
         If (pEntry = 0) Begin
             Function_Return ""
         End
-        Function_Return (PointerWideText (Self, archive_entry_uname_w (pEntry)))
+        Get PointerWideText (archive_entry_uname_w (pEntry)) to sPointerWideText
+        Function_Return sPointerWideText
     End_Function
 
     { MethodType = Property }
@@ -681,34 +601,22 @@ Class cArchiveEntry is a cObject
         End
     End_Procedure
 
-    // Copies the user name from text in the current ANSI code page (archive_entry_copy_uname). Empty removes it.
-    Procedure CopyUnameLocale String sValue
-        Pointer pEntry
-        Void_Type iVoid
-        Get ppEntry to pEntry
-        If (pEntry <> 0) Begin
-            If (sValue = "") Begin
-                Move (archive_entry_copy_uname (pEntry, 0)) to iVoid
-            End
-            Else Begin
-                Move (archive_entry_copy_uname (pEntry, AddressOf (sValue))) to iVoid
-            End
-        End
-    End_Procedure
-
     // Group (owner) name as UTF-8 text (archive_entry_gname_utf8 / archive_entry_update_gname_utf8). Empty when not set.
     { MethodType = Property }
     Function psGname Returns String
+        String sPointerText
         Pointer pEntry
         Get ppEntry to pEntry
         If (pEntry = 0) Begin
             Function_Return ""
         End
-        Function_Return (PointerText (Self, archive_entry_gname_utf8 (pEntry)))
+        Get PointerText (archive_entry_gname_utf8 (pEntry)) to sPointerText
+        Function_Return sPointerText
     End_Function
 
     { MethodType = Property }
     Procedure Set psGname String sValue
+        Boolean bIsValidUtf8
         Pointer pEntry
         Integer iResult
         Void_Type iVoid
@@ -718,7 +626,8 @@ Class cArchiveEntry is a cObject
                 Move (archive_entry_set_gname_utf8 (pEntry, 0)) to iVoid
             End
             Else Begin
-                If (not (IsValidUtf8 (Self, sValue))) Begin
+                Get IsValidUtf8 sValue to bIsValidUtf8
+                If (not (bIsValidUtf8)) Begin
                     Error DFERR_PROGRAM "Could not set the group name: the text is not valid UTF-8"
                 End
                 Else Begin
@@ -729,41 +638,17 @@ Class cArchiveEntry is a cObject
         End
     End_Procedure
 
-    // Group (owner) name in the current ANSI code page (archive_entry_gname / archive_entry_set_gname).
-    { MethodType = Property }
-    Function psGnameLocale Returns String
-        Pointer pEntry
-        Get ppEntry to pEntry
-        If (pEntry = 0) Begin
-            Function_Return ""
-        End
-        Function_Return (PointerText (Self, archive_entry_gname (pEntry)))
-    End_Function
-
-    { MethodType = Property }
-    Procedure Set psGnameLocale String sValue
-        Pointer pEntry
-        Void_Type iVoid
-        Get ppEntry to pEntry
-        If (pEntry <> 0) Begin
-            If (sValue = "") Begin
-                Move (archive_entry_set_gname (pEntry, 0)) to iVoid
-            End
-            Else Begin
-                Move (archive_entry_set_gname (pEntry, AddressOf (sValue))) to iVoid
-            End
-        End
-    End_Procedure
-
     // Group (owner) name as wide (UTF-16) text (archive_entry_gname_w / archive_entry_copy_gname_w).
     { MethodType = Property }
     Function psGnameWide Returns String
+        String sPointerWideText
         Pointer pEntry
         Get ppEntry to pEntry
         If (pEntry = 0) Begin
             Function_Return ""
         End
-        Function_Return (PointerWideText (Self, archive_entry_gname_w (pEntry)))
+        Get PointerWideText (archive_entry_gname_w (pEntry)) to sPointerWideText
+        Function_Return sPointerWideText
     End_Function
 
     { MethodType = Property }
@@ -794,21 +679,6 @@ Class cArchiveEntry is a cObject
             End
             Else Begin
                 Move (archive_entry_set_gname_utf8 (pEntry, AddressOf (sValue))) to iVoid
-            End
-        End
-    End_Procedure
-
-    // Copies the group name from text in the current ANSI code page (archive_entry_copy_gname). Empty removes it.
-    Procedure CopyGnameLocale String sValue
-        Pointer pEntry
-        Void_Type iVoid
-        Get ppEntry to pEntry
-        If (pEntry <> 0) Begin
-            If (sValue = "") Begin
-                Move (archive_entry_copy_gname (pEntry, 0)) to iVoid
-            End
-            Else Begin
-                Move (archive_entry_copy_gname (pEntry, AddressOf (sValue))) to iVoid
             End
         End
     End_Procedure
@@ -871,12 +741,14 @@ Class cArchiveEntry is a cObject
     // Source path as wide text.
     { MethodType = Property }
     Function psSourcePath Returns String
+        String sPointerWideText
         Pointer pEntry
         Get ppEntry to pEntry
         If (pEntry = 0) Begin
             Function_Return ""
         End
-        Function_Return (PointerWideText (Self, archive_entry_sourcepath_w (pEntry)))
+        Get PointerWideText (archive_entry_sourcepath_w (pEntry)) to sPointerWideText
+        Function_Return sPointerWideText
     End_Function
 
     { MethodType = Property }
@@ -896,32 +768,6 @@ Class cArchiveEntry is a cObject
         End
     End_Procedure
 
-    // Source path in the current ANSI code page (archive_entry_sourcepath / archive_entry_copy_sourcepath).
-    { MethodType = Property }
-    Function psSourcePathLocale Returns String
-        Pointer pEntry
-        Get ppEntry to pEntry
-        If (pEntry = 0) Begin
-            Function_Return ""
-        End
-        Function_Return (PointerText (Self, archive_entry_sourcepath (pEntry)))
-    End_Function
-
-    { MethodType = Property }
-    Procedure Set psSourcePathLocale String sValue
-        Pointer pEntry
-        Void_Type iVoid
-        Get ppEntry to pEntry
-        If (pEntry <> 0) Begin
-            If (sValue = "") Begin
-                Move (archive_entry_copy_sourcepath (pEntry, 0)) to iVoid
-            End
-            Else Begin
-                Move (archive_entry_copy_sourcepath (pEntry, AddressOf (sValue))) to iVoid
-            End
-        End
-    End_Procedure
-
     // ---- link target of the kind that is currently set -----------------------------------------------------------
 
     // Link target: the hard link target when the entry has one, otherwise the symbolic link target. Hard link and symbolic
@@ -930,19 +776,23 @@ Class cArchiveEntry is a cObject
     // called) and raises a DataFlex error only when the text is not valid UTF-8 (nothing is stored then).
     { MethodType = Property }
     Function psLink Returns String
+        String sPointerText
         Pointer pEntry
         Get ppEntry to pEntry
         If (pEntry = 0) Begin
             Function_Return ""
         End
         If (archive_entry_hardlink_is_set (pEntry) <> 0) Begin
-            Function_Return (PointerText (Self, archive_entry_hardlink_utf8 (pEntry)))
+            Get PointerText (archive_entry_hardlink_utf8 (pEntry)) to sPointerText
+            Function_Return sPointerText
         End
-        Function_Return (PointerText (Self, archive_entry_symlink_utf8 (pEntry)))
+        Get PointerText (archive_entry_symlink_utf8 (pEntry)) to sPointerText
+        Function_Return sPointerText
     End_Function
 
     { MethodType = Property }
     Procedure Set psLink String sValue
+        Boolean bIsValidUtf8
         Pointer pEntry
         Integer iResult
         Void_Type iVoid
@@ -952,28 +802,14 @@ Class cArchiveEntry is a cObject
                 Move (archive_entry_set_link_utf8 (pEntry, 0)) to iVoid
             End
             Else Begin
-                If (not (IsValidUtf8 (Self, sValue))) Begin
+                Get IsValidUtf8 sValue to bIsValidUtf8
+                If (not (bIsValidUtf8)) Begin
                     Error DFERR_PROGRAM "Could not set the link target: the text is not valid UTF-8"
                 End
                 Else Begin
                     Move (archive_entry_update_link_utf8 (pEntry, AddressOf (sValue))) to iResult
                     Set pbLastTextLossless to (iResult <> 0)
                 End
-            End
-        End
-    End_Procedure
-
-    // Sets the link target from text in the current ANSI code page (archive_entry_set_link).
-    Procedure SetLinkLocale String sValue
-        Pointer pEntry
-        Void_Type iVoid
-        Get ppEntry to pEntry
-        If (pEntry <> 0) Begin
-            If (sValue = "") Begin
-                Move (archive_entry_set_link (pEntry, 0)) to iVoid
-            End
-            Else Begin
-                Move (archive_entry_set_link (pEntry, AddressOf (sValue))) to iVoid
             End
         End
     End_Procedure
@@ -989,21 +825,6 @@ Class cArchiveEntry is a cObject
             End
             Else Begin
                 Move (archive_entry_set_link_utf8 (pEntry, AddressOf (sValue))) to iVoid
-            End
-        End
-    End_Procedure
-
-    // Copies the link target from text in the current ANSI code page (archive_entry_copy_link).
-    Procedure CopyLinkLocale String sValue
-        Pointer pEntry
-        Void_Type iVoid
-        Get ppEntry to pEntry
-        If (pEntry <> 0) Begin
-            If (sValue = "") Begin
-                Move (archive_entry_copy_link (pEntry, 0)) to iVoid
-            End
-            Else Begin
-                Move (archive_entry_copy_link (pEntry, AddressOf (sValue))) to iVoid
             End
         End
     End_Procedure
@@ -1655,12 +1476,14 @@ Class cArchiveEntry is a cObject
     // Mode as text like "-rw-r--r-- " (archive_entry_strmode).
     { MethodType = Property }
     Function psStrMode Returns String
+        String sPointerText
         Pointer pEntry
         Get ppEntry to pEntry
         If (pEntry = 0) Begin
             Function_Return ""
         End
-        Function_Return (PointerText (Self, archive_entry_strmode (pEntry)))
+        Get PointerText (archive_entry_strmode (pEntry)) to sPointerText
+        Function_Return sPointerText
     End_Function
 
     // Size of the entry data in bytes (archive_entry_size / archive_entry_set_size).
@@ -1904,18 +1727,35 @@ Class cArchiveEntry is a cObject
     // (CopyFFlagsText) and raises a DataFlex error naming the first invalid token; an empty string clears the flags.
     { MethodType = Property }
     Function psFFlagsText Returns String
+        String sPointerText
         Pointer pEntry
         Get ppEntry to pEntry
         If (pEntry = 0) Begin
             Function_Return ""
         End
-        Function_Return (PointerText (Self, archive_entry_fflags_text (pEntry)))
+        Get PointerText (archive_entry_fflags_text (pEntry)) to sPointerText
+        Function_Return sPointerText
     End_Function
 
-    // Sets the file flags from text (archive_entry_copy_fflags_text). Returns the first invalid token, or "" when the
+    // Like CopyFFlagsText, but only the first iLength bytes of the text are used (archive_entry_copy_fflags_text_len).
+    Function CopyFFlagsTextLen String sFlags Integer iLength Returns String
+        String sPointerText
+        Pointer pEntry pBad
+        Get ppEntry to pEntry
+        If (pEntry = 0 or sFlags = "") Begin
+            Function_Return ""
+        End
+        Move (archive_entry_copy_fflags_text_len (pEntry, AddressOf (sFlags), iLength)) to pBad
+        Get PointerText pBad to sPointerText
+        Function_Return sPointerText
+    End_Function
+
+    // Sets the file flags from text (archive_entry_copy_fflags_text_w). Returns the first invalid token, or "" when the
     // whole text was valid (valid tokens are applied either way). An empty text clears the flags.
     Function CopyFFlagsText String sFlags Returns String
+        String sPointerWideText
         Pointer pEntry pBad
+        WString wsFlags
         Void_Type iVoid
         Get ppEntry to pEntry
         If (pEntry = 0) Begin
@@ -1925,32 +1765,10 @@ Class cArchiveEntry is a cObject
             Move (archive_entry_set_fflags (pEntry, 0, 0)) to iVoid
             Function_Return ""
         End
-        Move (archive_entry_copy_fflags_text (pEntry, AddressOf (sFlags))) to pBad
-        Function_Return (PointerText (Self, pBad))
-    End_Function
-
-    // Like CopyFFlagsText, but only the first iLength bytes of the text are used (archive_entry_copy_fflags_text_len).
-    Function CopyFFlagsTextLen String sFlags Integer iLength Returns String
-        Pointer pEntry pBad
-        Get ppEntry to pEntry
-        If (pEntry = 0 or sFlags = "") Begin
-            Function_Return ""
-        End
-        Move (archive_entry_copy_fflags_text_len (pEntry, AddressOf (sFlags), iLength)) to pBad
-        Function_Return (PointerText (Self, pBad))
-    End_Function
-
-    // Like CopyFFlagsText with wide text (archive_entry_copy_fflags_text_w).
-    Function CopyFFlagsTextWide String sFlags Returns String
-        Pointer pEntry pBad
-        WString wsFlags
-        Get ppEntry to pEntry
-        If (pEntry = 0 or sFlags = "") Begin
-            Function_Return ""
-        End
         Move sFlags to wsFlags
         Move (archive_entry_copy_fflags_text_w (pEntry, AddressOf (wsFlags))) to pBad
-        Function_Return (PointerWideText (Self, pBad))
+        Get PointerWideText pBad to sPointerWideText
+        Function_Return sPointerWideText
     End_Function
 
     { MethodType = Property }
@@ -2093,8 +1911,8 @@ Class cArchiveEntry is a cObject
     // ARCHIVE_ENTRY_ACL_* bits. For POSIX.1e the owner, group and other entries of an access ACL are stored in the mode of the
     // entry (piMode) and only reported by AclReset/AclNext/AclCount/AclToText when the ACL has extended entries; they come
     // first (owner, group, other), followed by the extended entries (user, group, mask) in the order they were added.
-    // libarchive keeps the names of ACL entries in the ANSI code page: AclNext converts them to DataFlex strings, AclAddEntry
-    // takes the bytes of its name as they are (ASCII names only), AclAddEntryWide takes any text.
+    // libarchive keeps the names of ACL entries in the ANSI code page: AclNext converts them to DataFlex strings (archive_entry_acl_next
+    // has no wide variant, so this is the only place that uses the ANSI code page); AclAddEntry takes any text.
 
     // Pointer to the opaque ACL object of the entry (archive_entry_acl). Nothing a client can do with it; provided for completeness.
     Function AclPointer Returns Pointer
@@ -2116,39 +1934,23 @@ Class cArchiveEntry is a cObject
         End
     End_Procedure
 
-    // Adds an ACL entry (archive_entry_acl_add_entry). sName is the user or group name ("" for none). Returns ARCHIVE_OK or
-    // ARCHIVE_FAILED (invalid type or tag; raises an error when pbRaiseErrors).
+    // Adds an ACL entry (archive_entry_acl_add_entry_w). sName is the user or group name, any text ("" for none). Returns
+    // ARCHIVE_OK or ARCHIVE_FAILED (invalid type or tag; raises an error when pbRaiseErrors).
     Function AclAddEntry Integer eType Integer iPermset Integer eTag Integer iQualifier String sName Returns Integer
         Pointer pEntry pName
         Integer iResult
-        Get ppEntry to pEntry
-        If (pEntry = 0) Begin
-            Get CheckResult ARCHIVE_FAILED "archive_entry_acl_add_entry (no entry)" to iResult
-            Function_Return iResult
-        End
-        If (sName = "") Begin
-            Move 0 to pName
-        End
-        Else Begin
-            Move (AddressOf (sName)) to pName
-        End
-        Move (archive_entry_acl_add_entry (pEntry, eType, iPermset, eTag, iQualifier, pName)) to iResult
-        Get CheckResult iResult "archive_entry_acl_add_entry" to iResult
-        Function_Return iResult
-    End_Function
-
-    // Like AclAddEntry with a wide user or group name (archive_entry_acl_add_entry_w).
-    Function AclAddEntryWide Integer eType Integer iPermset Integer eTag Integer iQualifier String sName Returns Integer
-        Pointer pEntry pName
-        Integer iResult
         WString wsName
+        UChar[] ucEmptyName
         Get ppEntry to pEntry
         If (pEntry = 0) Begin
             Get CheckResult ARCHIVE_FAILED "archive_entry_acl_add_entry_w (no entry)" to iResult
             Function_Return iResult
         End
+        // archive_entry_acl_add_entry_w calls wcslen on the name and crashes on NULL: a missing name is passed as a
+        // buffer that holds only the terminating zero.
         If (sName = "") Begin
-            Move 0 to pName
+            Move (ResizeArray (ucEmptyName, 4)) to ucEmptyName
+            Move (AddressOf (ucEmptyName)) to pName
         End
         Else Begin
             Move sName to wsName
@@ -2187,7 +1989,7 @@ Class cArchiveEntry is a cObject
             Move iPermset to stAcl.iPermset
             Move iTag to stAcl.eTag
             Move iQualifier to stAcl.iQualifier
-            Move (AnsiPointerText (Self, pName)) to stAcl.sName
+            Get AnsiPointerText pName to stAcl.sName
         End
         Function_Return stAcl
     End_Function
@@ -2229,31 +2031,14 @@ Class cArchiveEntry is a cObject
         Function_Return (archive_entry_acl_types (pEntry))
     End_Function
 
-    // Text form of the ACL (archive_entry_acl_to_text). iFlags combines the wanted types (ARCHIVE_ENTRY_ACL_TYPE_ACCESS,
+    // Text form of the ACL (archive_entry_acl_to_text_w). iFlags combines the wanted types (ARCHIVE_ENTRY_ACL_TYPE_ACCESS,
     // _DEFAULT, _NFS4, ...) with ARCHIVE_ENTRY_ACL_STYLE_* flags. Empty when there is nothing to output. The memory libarchive
-    // allocates for the text is released here.
+    // allocates for the text (malloc) is released here with the DataFlex function Free, which hands it to the C runtime
+    // free of the process; no C runtime library has to be named.
     Function AclToText Integer iFlags Returns String
         Pointer pEntry pText
         String sText
-        Void_Type iVoid
-        Get ppEntry to pEntry
-        If (pEntry = 0) Begin
-            Function_Return ""
-        End
-        Move (archive_entry_acl_to_text (pEntry, 0, iFlags)) to pText
-        If (pText = 0) Begin
-            Function_Return ""
-        End
-        Move (PointerToString (pText)) to sText
-        Move (archive_wrapper_crt_free (pText)) to iVoid
-        Function_Return sText
-    End_Function
-
-    // Wide text variant of AclToText (archive_entry_acl_to_text_w).
-    Function AclToTextWide Integer iFlags Returns String
-        Pointer pEntry pText
-        String sText
-        Void_Type iVoid
+        Boolean bFreed
         Get ppEntry to pEntry
         If (pEntry = 0) Begin
             Function_Return ""
@@ -2263,49 +2048,27 @@ Class cArchiveEntry is a cObject
             Function_Return ""
         End
         Move (PointerToWString (pText)) to sText
-        Move (archive_wrapper_crt_free (pText)) to iVoid
+        Move (Free (pText)) to bFreed
         Function_Return sText
     End_Function
 
-    // Text form of the ACL of the deprecated archive_entry_acl_text (text owned by the entry). Prefer AclToText.
+    // Text form of the ACL of the deprecated archive_entry_acl_text_w (text owned by the entry). Prefer AclToText.
     Function AclTextLegacy Integer iFlags Returns String
+        String sPointerWideText
         Pointer pEntry
         Get ppEntry to pEntry
         If (pEntry = 0) Begin
             Function_Return ""
         End
-        Function_Return (PointerText (Self, archive_entry_acl_text (pEntry, iFlags)))
+        Get PointerWideText (archive_entry_acl_text_w (pEntry, iFlags)) to sPointerWideText
+        Function_Return sPointerWideText
     End_Function
 
-    // Wide text variant of AclTextLegacy (archive_entry_acl_text_w).
-    Function AclTextLegacyWide Integer iFlags Returns String
-        Pointer pEntry
-        Get ppEntry to pEntry
-        If (pEntry = 0) Begin
-            Function_Return ""
-        End
-        Function_Return (PointerWideText (Self, archive_entry_acl_text_w (pEntry, iFlags)))
-    End_Function
-
-    // Parses ACL text (archive_entry_acl_from_text) of the type eType (ARCHIVE_ENTRY_ACL_TYPE_ACCESS, _DEFAULT or _NFS4)
+    // Parses ACL text (archive_entry_acl_from_text_w) of the type eType (ARCHIVE_ENTRY_ACL_TYPE_ACCESS, _DEFAULT or _NFS4)
     // and adds the entries to the ACL; entries that are already there stay (call AclClear first to replace the ACL).
     // Returns ARCHIVE_OK, ARCHIVE_WARN (some entries were not understood) or ARCHIVE_FAILED (raises an error when
     // pbRaiseErrors).
     Function AclFromText String sText Integer eType Returns Integer
-        Pointer pEntry
-        Integer iResult
-        Get ppEntry to pEntry
-        If (pEntry = 0 or sText = "") Begin
-            Get CheckResult ARCHIVE_FAILED "archive_entry_acl_from_text (no entry or text)" to iResult
-            Function_Return iResult
-        End
-        Move (archive_entry_acl_from_text (pEntry, AddressOf (sText), eType)) to iResult
-        Get CheckResult iResult "archive_entry_acl_from_text" to iResult
-        Function_Return iResult
-    End_Function
-
-    // Wide text variant of AclFromText (archive_entry_acl_from_text_w).
-    Function AclFromTextWide String sText Integer eType Returns Integer
         Pointer pEntry
         Integer iResult
         WString wsText
